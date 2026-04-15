@@ -102,8 +102,9 @@ Agents should:
 # 🛠️ Planned Stack
 
 - Python 3.11+
+- uv (Mandatory for dependency and virtual environment management)
+- **Docker / Docker Compose (Standalone Containerized Architecture)**
 - Prefect (workflow orchestration)
-- Docker (execution environment)
 - SeaweedFS (S3-compatible storage)
 - OpenAI-compatible LLM APIs
 - AcoustID / MusicBrainz / VGMdb

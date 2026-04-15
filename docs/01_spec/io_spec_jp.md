@@ -1,6 +1,6 @@
-# I/O Specification
+# I/O仕様
 
-## Scout Output (scout_result.json)
+## Scoutの出力 (scout_result.json)
 
 ```json
 {
@@ -20,7 +20,7 @@
 
 ---
 
-## Worker Input
+## Workerの入力
 
 ```json
 {
@@ -33,7 +33,7 @@
 
 ---
 
-## Worker Output
+## Workerの出力
 
 ```json
 {
@@ -70,14 +70,14 @@
 
 ---
 
-## Status Values
+## ステータス値
 
 * success
 * review
 
 ---
 
-## Constraints
+## 制約事項
 
-* Output must always be valid JSON
-* All paths must be S3-compatible
+* 出力は常に有効なJSONでなければならない
+* すべてのパスはS3互換でなければならない

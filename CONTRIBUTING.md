@@ -132,9 +132,12 @@ Before merging:
 
 ---
 
-# 🧩 Code Style
+# 🧩 Code Style & Environment
 
 - Language: Python 3.11+
+- **Environment Management: `uv` is MANDATORY.**
+  - All virtual environments must be created and managed via `uv`.
+  - Dependency locking must be handled by `uv`.
 - Stateless functions preferred
 - Pure functions where possible
 - Side effects must be explicit
@@ -150,7 +153,7 @@ Before merging:
 [type] short description
 
 Examples:
-feat: add vgmdb client
+feat: add musicbrainz client
 fix: handle acoustid timeout
 refactor: split pipeline step
 
