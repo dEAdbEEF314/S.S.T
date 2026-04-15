@@ -11,9 +11,14 @@
 
 ## Setup
 
-1. Install dependencies
-2. Configure environment variables
-3. Prepare config.yaml
+1. Install `uv` if not already present.
+2. Clone the repository.
+3. Setup virtual environment and install dependencies:
+   ```bash
+   uv sync
+   ```
+4. Configure environment variables (`.env`).
+5. Prepare `config.yaml`.
 
 ---
 

@@ -139,7 +139,7 @@ Never:
 
 Order:
 
-1. VGMdb
+1. Existing Audio Metadata (Validated)
 2. MusicBrainz
 3. Steam
 
@@ -220,7 +220,11 @@ If any unchecked:
 
 ---
 
-# 🔚 Final Rule
+## 10. Environment Management
+
+* **You MUST use `uv`** for any Python-related environment or dependency management.
+* Never use `pip` or `venv` directly.
+* Use `uv run` for executing scripts to ensure environment consistency.
 
 If uncertain:
 

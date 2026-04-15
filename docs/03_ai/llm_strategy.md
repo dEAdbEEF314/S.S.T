@@ -1,5 +1,12 @@
 # LLM Strategy
 
+## Primary Role
+
+- Formatting and normalization ONLY (e.g., standardizing language, removing "- OST" suffixes, correcting casing).
+- **CRITICAL: LLM MUST NOT GUESS or invent missing metadata (artists, years, titles). If data is missing, the LLM must flag it for `review/`.**
+
+---
+
 ## Dual Provider
 
 - Primary
@@ -19,6 +26,7 @@
 
 - One fails → fallback to other (penalty)
 - Both fail → rule-based fallback
+- Missing required data → route to review (No hallucination allowed)
 
 ---
 
