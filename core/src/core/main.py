@@ -1,83 +1,106 @@
+import os
 import json
 import logging
 from datetime import datetime
-from typing import List
+from typing import List, Dict
 
-from prefect import flow, task, get_run_logger
-from pydantic_settings import BaseSettings
+from prefect import flow, task, get_run_logger, unmapped
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Assume we can import models from the same workspace
-from .models import ScoutResult, JobState
+# Import logic from other modules (since we have them mounted)
+from scout.models import ScoutResult
+from worker.main import WorkerService
+from worker.models import WorkerInput, SteamMetadata
 
-# For now, we simulate the Scout execution
-# In a real environment, this might be a separate Prefect task running a Docker container
 class CoreConfig(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", case_sensitive=False)
+    
     s3_endpoint_url: str
     s3_access_key: str
     s3_secret_key: str
     s3_bucket_name: str
+    musicbrainz_user_agent: str
     log_level: str = "INFO"
 
-    class Config:
-        env_file = ".env"
-
-@task(retries=3, retry_delay_seconds=10)
-def run_worker_task(scout_data: dict) -> dict:
+@task(retries=2, retry_delay_seconds=30)
+def process_single_album_task(scout_data: dict, config_dict: dict) -> dict:
     """
-    Simulates triggering a Worker container for a specific App ID.
-    In production, this would use a Docker/Kubernetes infrastructure block.
+    Prefect task that runs the Worker logic for a specific album.
     """
     logger = get_run_logger()
     app_id = scout_data["app_id"]
-    logger.info(f"Triggering Worker for App ID: {app_id}")
-    
-    # Here we would interface with the worker/src/worker/main.py logic
-    # or send a request to a worker service.
-    # For this implementation, we assume the Worker logic is available as a service.
-    
-    # Simulated Success Response
-    return {
-        "app_id": app_id,
-        "status": "success", # or "review"
-        "resolved_source": "musicbrainz",
-        "finished_at": datetime.utcnow().isoformat()
-    }
+    album_name = scout_data["name"]
+    logger.info(f">>> Starting worker processing for: {album_name} ({app_id})")
 
-@task
-def archive_job_result(result: dict, bucket: str):
-    """Archives the final job metadata to S3."""
-    logger = get_run_logger()
-    app_id = result["app_id"]
-    logger.info(f"Archiving results for App ID: {app_id} into bucket: {bucket}")
-    # Implementation for S3 upload of the final JSON report
-    pass
+    try:
+        # Initialize Worker with global config
+        service = WorkerService(config_dict)
+        
+        # Construct WorkerInput from Scout output
+        # Ensure 'files' is present (passed from the orchestrator)
+        worker_input = WorkerInput(
+            app_id=app_id,
+            files=scout_data.get("files", []),
+            steam=SteamMetadata(
+                app_id=app_id,
+                name=album_name,
+                developer=scout_data.get("developer"),
+                publisher=scout_data.get("publisher"),
+                genre=scout_data.get("genre"),
+                tags=scout_data.get("tags", []),
+                url=scout_data.get("url")
+            )
+        )
+        
+        result = service.process_job(worker_input)
+        logger.info(f"<<< Finished worker processing for {app_id}. Status: {result.status}")
+        return result.model_dump()
+        
+    except Exception as e:
+        logger.error(f"Worker task failed for {app_id}: {e}", exc_info=True)
+        raise
 
-@flow(name="SST-Main-Pipeline")
+@flow(name="SST-Production-Pipeline")
 def sst_main_flow(scout_results: List[dict]):
     """
     The main SST orchestration flow.
-    Takes a list of Scout results and processes them in parallel.
     """
     config = CoreConfig()
     logger = get_run_logger()
-    logger.info(f"Starting SST Pipeline with {len(scout_results)} soundtracks.")
+    logger.info(f"SST Pipeline triggered for {len(scout_results)} albums.")
 
-    # 1. Map worker tasks to each scout result
-    worker_results = run_worker_task.map(scout_results)
+    # Convert config to dict for worker initialization
+    config_dict = config.model_dump(by_alias=True)
+    env_mapping = {
+        "s3_endpoint_url": "S3_ENDPOINT_URL",
+        "s3_access_key": "S3_ACCESS_KEY",
+        "s3_secret_key": "S3_SECRET_KEY",
+        "s3_bucket_name": "S3_BUCKET_NAME",
+        "musicbrainz_user_agent": "MUSICBRAINZ_USER_AGENT"
+    }
+    worker_config = {env_mapping.get(k, k): v for k, v in config_dict.items()}
 
-    # 2. Collect and Archive results
-    for result in worker_results:
-        archive_job_result(result, bucket=config.s3_bucket_name)
+    # Parallel execution with unmapped configuration
+    futures = process_single_album_task.map(scout_results, config_dict=unmapped(worker_config))
+
+    # Summary
+    success_count = 0
+    review_count = 0
+    final_results = []
+
+    for f in futures:
+        try:
+            res = f.result()
+            final_results.append(res)
+            if res.get("status") == "success":
+                success_count += 1
+            elif res.get("status") == "review":
+                review_count += 1
+        except Exception as e:
+            logger.error(f"Task future failed: {e}")
+    
+    logger.info(f"Pipeline Finished. Success: {success_count}, Review: {review_count}")
+    return final_results
 
 if __name__ == "__main__":
-    # Example execution for testing
-    example_scout = [
-        {
-            "app_id": 123456,
-            "name": "Example Soundtrack",
-            "install_dir": "Example",
-            "track_count": 10,
-            "uploaded_at": datetime.utcnow().isoformat()
-        }
-    ]
-    sst_main_flow(example_scout)
+    pass

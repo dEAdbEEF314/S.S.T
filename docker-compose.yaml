@@ -1,53 +1,54 @@
 services:
-  # --- Storage (S3 Compatible) ---
-  # Assuming SeaweedFS or MinIO is provided externally or added here
-  # For demonstration, we assume external or previously setup storage via .env
-
-  # --- Scout Service ---
   scout:
     build:
       context: ./scout
       dockerfile: Dockerfile
     container_name: sst-scout
-    env_file:
-      - .env
     volumes:
       - ${STEAM_LIBRARY_PATH}:/steam_library:ro
+      - ./.env:/app/.env:ro
+      - ./scout/src/scout:/app/src/scout:ro
     environment:
       - STEAM_LIBRARY_PATH=/steam_library
+      - PYTHONPATH=/app/src
     networks:
       - sst-network
 
-  # --- Worker Service ---
   worker:
     build:
       context: ./worker
       dockerfile: Dockerfile
     container_name: sst-worker
-    env_file:
-      - .env
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./worker/src/worker:/app/src/worker:ro
+      - ./scout/src/scout:/app/src/scout:ro  # Worker needs Scout models
+    environment:
+      - PYTHONPATH=/app/src
     networks:
       - sst-network
-    # Scalable: docker-compose up --scale worker=3
     deploy:
       resources:
         limits:
           cpus: '1.0'
           memory: 2G
 
-  # --- Core (Orchestrator) ---
   core:
     build:
       context: ./core
       dockerfile: Dockerfile
     container_name: sst-core
-    env_file:
-      - .env
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./core/src/core:/app/src/core:ro
+      - ./scout/src/scout:/app/src/scout:ro   # Core needs Scout models
+      - ./worker/src/worker:/app/src/worker:ro # Core needs Worker logic
+    environment:
+      - PREFECT_API_URL=${PREFECT_API_URL:-http://localhost:4200/api}
+      - PYTHONPATH=/app/src
     depends_on:
       - scout
       - worker
-    environment:
-      - PREFECT_API_URL=${PREFECT_API_URL:-http://localhost:4200/api}
     networks:
       - sst-network
 

@@ -21,6 +21,7 @@ Scout Container → ingest → Worker Container → archive/review
 ### Scout Container
 - Scans Steam library (local filesystem access required)
 - Parses ACF files
+- Fetches enriched metadata (Developer, Publisher, Genre) from Steam Store API
 - Collects soundtrack files
 - Uploads to ingest storage
 

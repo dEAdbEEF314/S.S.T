@@ -3,7 +3,7 @@ import logging
 import shutil
 import tempfile
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from .models import WorkerInput, WorkerOutput, ResolvedMetadata
 from .storage import WorkerStorage
 from .ident.embedded import EmbeddedMetadataExtractor

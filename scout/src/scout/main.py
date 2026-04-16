@@ -5,7 +5,7 @@ import argparse
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .scanner import SteamScanner
 from .uploader import S3Uploader
@@ -16,6 +16,13 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger("scout")
 
 class Config(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env", 
+        extra="ignore",
+        env_ignore_empty=True,
+        case_sensitive=False
+    )
+
     steam_library_path: str
     s3_endpoint_url: str
     s3_access_key: str
@@ -25,8 +32,6 @@ class Config(BaseSettings):
     env_mode: str = "development"
     log_level: str = "INFO"
 
-    class Config:
-        env_file = ".env"
 
 def main():
     # Argument Parsing

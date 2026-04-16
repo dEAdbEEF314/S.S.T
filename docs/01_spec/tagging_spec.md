@@ -23,7 +23,7 @@
 
 1. Existing Metadata (Validated via cross-format check)
 2. MusicBrainz (Tie-broken via spec)
-3. Steam Metadata (.acf & Store info)
+3. Steam Metadata (.acf & Store API info)
 
 ---
 
