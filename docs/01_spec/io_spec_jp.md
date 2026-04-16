@@ -1,83 +1,61 @@
 # I/O仕様
 
-## Scoutの出力 (scout_result.json)
+## Scoutの出力と ingest ストレージ
 
-```json
-{
-  "app_id": 123456,
-  "name": "Example Game",
-  "install_dir": "ExampleDir",
-  "storage_location": "local",
-  "track_count": 10,
-  "files_by_ext": {
-    "flac": 10
-  },
-  "acf_key": "123456",
-  "uploaded_at": "2026-01-01T00:00:00Z",
-  "dry_run": false
-}
+### ディレクトリ構造 (S3: ingest/)
+```
+ingest/{AppID}/
+├ appmanifest_{AppID}.acf   <-- 新規: オリジナルのマニフェストのコピー
+├ [音声ファイル].flac
+└ [音声ファイル].mp3
 ```
 
 ---
 
-## Workerの入力
+## Workerの出力と最終ストレージ
 
+### ディレクトリ構造 (S3: archive/ または review/)
+```
+{archive|review}/{AppID}/
+├ metadata.json            <-- 新規: UIおよび手動確認用の正解データ
+├ appmanifest_{AppID}.acf   <-- 新規: 保存されたマニフェスト
+└ {Disc}/
+    └ {filename}.{ext}
+```
+
+### メタデータ JSON スキーマ (metadata.json)
+このファイルには、処理プロセスの全記録が含まれます。
 ```json
 {
   "app_id": 123456,
-  "files": [
-    "ingest/123456/Disc 1/flac/01 - Track One.flac"
+  "album_name": "Example Album",
+  "status": "success | review",
+  "scanned_at": "2026-01-01T00:00:00Z",
+  "processed_at": "2026-01-01T00:05:00Z",
+  "steam_info": {
+    "developer": "...",
+    "publisher": "...",
+    "url": "..."
+  },
+  "external_info": {
+    "source": "musicbrainz",
+    "mbid": "...",
+    "vgmdb_url": "..."
+  },
+  "tracks": [
+    {
+      "file_path": "1/01. Title.aiff",
+      "original_filename": "01_original.flac",
+      "title": "Title",
+      "artist": "Artist",
+      "confidence": 0.95
+    }
   ]
 }
 ```
 
 ---
 
-## Workerの出力
-
-```json
-{
-  "app_id": 123456,
-  "file_refs": [
-    "archive/123456/Disc 1/aiff/Disc_1 - 1 - Example Track Title.aiff"
-  ],
-  "status": "success",
-  "resolved": {
-    "resolved": true,
-    "source": "musicbrainz",
-    "album": "Example Album",
-    "artist": "Example Artist",
-    "composer": "Example Composer",
-    "mbid": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-    "vgmdb_url": "https://vgmdb.net/album/123456",
-    "catalog_number": "ABCD-1234",
-    "discid": "...",
-    "title": "Example Track Title",
-    "resolution": "musicbrainz_enriched",
-    "partial_ratio": 0.85
-  },
-  "tag_result": {
-    "updated": 1,
-    "dry_run": false
-  },
-  "candidate_count": 5,
-  "storage": {
-    "bucket": "sst",
-    "key": "archive/app_123456_20260101T000000Z.json"
-  }
-}
-```
-
----
-
-## ステータス値
-
-* success
-* review
-
----
-
-## 制約事項
-
-* 出力は常に有効なJSONでなければならない
-* すべてのパスはS3互換でなければならない
+## 重複防止ルール
+Scoutは `ingest/` へのアップロード前に、`{archive|review}/{AppID}/metadata.json` の存在を確認しなければなりません。
+存在する場合、`--force` フラグが指定されていない限り、そのアルバムの処理をスキップします。

@@ -1,83 +1,61 @@
 # I/O Specification
 
-## Scout Output (scout_result.json)
+## Scout Output & Ingest Storage
 
-```json
-{
-  "app_id": 123456,
-  "name": "Example Game",
-  "install_dir": "ExampleDir",
-  "storage_location": "local",
-  "track_count": 10,
-  "files_by_ext": {
-    "flac": 10
-  },
-  "acf_key": "123456",
-  "uploaded_at": "2026-01-01T00:00:00Z",
-  "dry_run": false
-}
+### Directory Structure (S3: ingest/)
+```
+ingest/{AppID}/
+├ appmanifest_{AppID}.acf   <-- NEW: Copy of the original manifest
+├ [Track Files].flac
+└ [Track Files].mp3
 ```
 
 ---
 
-## Worker Input
+## Worker Output & Final Storage
 
+### Directory Structure (S3: archive/ or review/)
+```
+{archive|review}/{AppID}/
+├ metadata.json            <-- NEW: Source of truth for UI and manual review
+├ appmanifest_{AppID}.acf   <-- NEW: Preserved manifest
+└ {Disc}/
+    └ {filename}.{ext}
+```
+
+### Metadata JSON Schema (metadata.json)
+This file contains the complete record of the processing attempt.
 ```json
 {
   "app_id": 123456,
-  "files": [
-    "ingest/123456/Disc 1/flac/01 - Track One.flac"
+  "album_name": "Example Album",
+  "status": "success | review",
+  "scanned_at": "2026-01-01T00:00:00Z",
+  "processed_at": "2026-01-01T00:05:00Z",
+  "steam_info": {
+    "developer": "...",
+    "publisher": "...",
+    "url": "..."
+  },
+  "external_info": {
+    "source": "musicbrainz",
+    "mbid": "...",
+    "vgmdb_url": "..."
+  },
+  "tracks": [
+    {
+      "file_path": "1/01. Title.aiff",
+      "original_filename": "01_original.flac",
+      "title": "Title",
+      "artist": "Artist",
+      "confidence": 0.95
+    }
   ]
 }
 ```
 
 ---
 
-## Worker Output
-
-```json
-{
-  "app_id": 123456,
-  "file_refs": [
-    "archive/123456/Disc 1/aiff/Disc_1 - 1 - Example Track Title.aiff"
-  ],
-  "status": "success",
-  "resolved": {
-    "resolved": true,
-    "source": "musicbrainz",
-    "album": "Example Album",
-    "artist": "Example Artist",
-    "composer": "Example Composer",
-    "mbid": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-    "vgmdb_url": "https://vgmdb.net/album/123456",
-    "catalog_number": "ABCD-1234",
-    "discid": "...",
-    "title": "Example Track Title",
-    "resolution": "musicbrainz_enriched",
-    "partial_ratio": 0.85
-  },
-  "tag_result": {
-    "updated": 1,
-    "dry_run": false
-  },
-  "candidate_count": 5,
-  "storage": {
-    "bucket": "sst",
-    "key": "archive/app_123456_20260101T000000Z.json"
-  }
-}
-```
-
----
-
-## Status Values
-
-* success
-* review
-
----
-
-## Constraints
-
-* Output must always be valid JSON
-* All paths must be S3-compatible
+## Duplicate Prevention Rule
+Scout MUST check for the existence of `{archive|review}/{AppID}/metadata.json` before uploading to `ingest/`. 
+If found, the album is skipped unless the `--force` flag is used.

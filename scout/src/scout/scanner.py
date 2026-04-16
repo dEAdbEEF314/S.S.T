@@ -131,8 +131,16 @@ class SteamScanner:
             logger.warning(f"Install directory not found for {install_dir} in common/ or music/")
             return []
 
-        for root, _, files in os.walk(found_dir):
+        for root, dirs, files in os.walk(found_dir):
+            # Ignore __MACOSX directories
+            if "__MACOSX" in dirs:
+                dirs.remove("__MACOSX")
+
             for file in files:
+                # Ignore hidden files and macOS resource forks (._*)
+                if file.startswith("."):
+                    continue
+                
                 file_path = Path(root) / file
                 if file_path.suffix.lower() in MUSIC_EXTENSIONS:
                     music_files.append(file_path)

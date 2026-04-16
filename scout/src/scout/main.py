@@ -32,11 +32,11 @@ class Config(BaseSettings):
     env_mode: str = "development"
     log_level: str = "INFO"
 
-
 def main():
     # Argument Parsing
     parser = argparse.ArgumentParser(description="SST Scout - Scan Steam library for soundtracks.")
-    parser.add_argument("--limit", "-n", type=int, default=None, help="Limit the number of soundtracks to process (for testing).")
+    parser.add_argument("--limit", "-n", type=int, default=None, help="Limit the number of soundtracks to process.")
+    parser.add_argument("--force", "-f", action="store_true", help="Force re-processing of already completed albums.")
     args = parser.parse_args()
 
     load_dotenv()
@@ -60,14 +60,23 @@ def main():
     logger.info(f"Scanning library: {config.steam_library_path}")
     soundtracks = scanner.find_soundtracks()
     
-    # Apply limit if specified
-    if args.limit:
-        logger.info(f"Test Mode: Limiting processing to first {args.limit} soundtracks.")
-        soundtracks = soundtracks[:args.limit]
-
-    logger.info(f"Found {len(soundtracks)} soundtrack manifests to process.")
-
+    # 1. Duplicate Check (Skip if exists and not forced)
+    active_list = []
     for ost in soundtracks:
+        app_id = ost["app_id"]
+        if not args.force and uploader.check_exists(app_id):
+            logger.info(f"Skipping already processed album: {ost['name']} ({app_id})")
+            continue
+        active_list.append(ost)
+
+    # 2. Apply limit
+    if args.limit:
+        logger.info(f"Test Mode: Limiting processing to first {args.limit} albums.")
+        active_list = active_list[:args.limit]
+
+    logger.info(f"Processing {len(active_list)} soundtracks.")
+
+    for ost in active_list:
         app_id = ost["app_id"]
         logger.info(f"Processing App ID {app_id}: {ost['name']}")
         
@@ -76,17 +85,23 @@ def main():
             logger.warning(f"No music files found for {ost['name']}. Skipping.")
             continue
 
-        logger.info(f"Found {len(music_files)} music files. Uploading...")
-        
         # Prepare for upload: (local_path, relative_path)
-        upload_queue = [
-            (f, scanner.get_relative_path(f, ost["install_dir"])) 
-            for f in music_files
-        ]
+        upload_queue = []
+        
+        # A. Add audio files
+        for f in music_files:
+            upload_queue.append((f, scanner.get_relative_path(f, ost["install_dir"])))
+        
+        # B. Add ACF file (New Requirement)
+        acf_path = Path(ost["acf_path"])
+        if acf_path.exists():
+            upload_queue.append((acf_path, Path(acf_path.name)))
 
+        logger.info(f"Uploading {len(upload_queue)} files (incl. manifest)...")
         uploaded_keys = uploader.upload_files(app_id, upload_queue)
 
-        # Generate Result
+        # Generate Result (Filtering out the manifest from track counts)
+        audio_keys = [k for k in uploaded_keys if not k.endswith('.acf')]
         ext_counts = {}
         for f in music_files:
             ext = f.suffix.lower().lstrip('.')
@@ -99,7 +114,7 @@ def main():
             developer=ost.get("developer"),
             publisher=ost.get("publisher"),
             url=ost.get("url"),
-            track_count=len(uploaded_keys),
+            track_count=len(audio_keys),
             files_by_ext=ext_counts,
             acf_key=str(app_id),
             uploaded_at=datetime.utcnow()
@@ -107,10 +122,11 @@ def main():
 
         worker_input = WorkerInput(
             app_id=app_id,
-            files=uploaded_keys
+            files=audio_keys,
+            steam=scout_result # Pass full metadata to worker
         )
 
-        # Output results (to stdout as JSON for Prefect/next step to capture)
+        # Output results
         print("--- SCOUT RESULT ---")
         print(scout_result.model_dump_json(indent=2))
         print("--- WORKER INPUT ---")
