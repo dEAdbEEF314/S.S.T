@@ -1,7 +1,7 @@
 import boto3
 import logging
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)

@@ -7,14 +7,17 @@ RUN apt-get update && apt-get install -y ffmpeg libmagic1 && rm -rf /var/lib/apt
 # Set working directory
 WORKDIR /app
 
-# Copy dependency files
-COPY pyproject.toml uv.lock ./
+# Copy dependency files and metadata
+COPY pyproject.toml uv.lock README.md ./
 
-# Install dependencies
-RUN uv sync --frozen
+# Install dependencies ONLY
+RUN uv sync --frozen --no-install-project
 
 # Copy source code
 COPY src/ ./src/
+
+# Now install the project itself
+RUN uv sync --frozen
 
 # Environment variables
 ENV PYTHONUNBUFFERED=1

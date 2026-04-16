@@ -58,8 +58,8 @@ class AudioTagger:
         cmd += ["-ar", MAX_SAMPLE_RATE]
 
         if quality_tier == "lossless":
-            # Convert to AIFF 24-bit
-            cmd += ["-sample_fmt", "s32p", str(target_path)] 
+            # Convert to AIFF 24-bit (pcm_s24be)
+            cmd += ["-c:a", "pcm_s24be", str(target_path)] 
         else:
             # Convert other lossy to 320kbps CBR MP3
             cmd += ["-codec:a", "libmp3lame", "-b:a", MP3_BITRATE, str(target_path)]
@@ -78,24 +78,33 @@ class AudioTagger:
         except:
             audio = ID3()
 
+        def _safe_text(val):
+            return [str(val)] if val is not None and str(val).strip() != "" else []
+
         # Frame Mapping (ID3v2.3)
-        frames = {
-            "TIT2": TIT2(encoding=3, text=tags.get("title")),
-            "TPE1": TPE1(encoding=3, text=tags.get("artist")),
-            "TALB": TALB(encoding=3, text=tags.get("album")),
-            "TPE2": TPE2(encoding=3, text=tags.get("album_artist")),
-            "TCON": TCON(encoding=3, text=tags.get("genre")),
-            "TIT1": TIT1(encoding=3, text=tags.get("grouping")),
-            "COMM": COMM(encoding=3, lang="eng", desc="", text=tags.get("comment")),
-            "TCOM": TCOM(encoding=3, text=tags.get("composer")),
-            "TDRC": TDRC(encoding=3, text=str(tags.get("year")) if tags.get("year") else ""),
-            "TRCK": TRCK(encoding=3, text=tags.get("track_num")),
-            "TPOS": TPOS(encoding=3, text=tags.get("disc_num")),
+        # Using lists for 'text' to satisfy mutagen
+        mapping = {
+            "TIT2": (TIT2, tags.get("title")),
+            "TPE1": (TPE1, tags.get("artist")),
+            "TALB": (TALB, tags.get("album")),
+            "TPE2": (TPE2, tags.get("album_artist")),
+            "TCON": (TCON, tags.get("genre")),
+            "TIT1": (TIT1, tags.get("grouping")),
+            "TCOM": (TCOM, tags.get("composer")),
+            "TDRC": (TDRC, tags.get("year")),
+            "TRCK": (TRCK, tags.get("track_num")),
+            "TPOS": (TPOS, tags.get("disc_num")),
         }
 
-        for frame in frames.values():
-            if frame.text and frame.text[0]:
-                audio.add(frame)
+        for frame_class, value in mapping.values():
+            text_list = _safe_text(value)
+            if text_list:
+                audio.add(frame_class(encoding=3, text=text_list))
+
+        # Comment frame is special (needs lang and desc)
+        comment_text = tags.get("comment")
+        if comment_text:
+            audio.add(COMM(encoding=3, lang="eng", desc="", text=[str(comment_text)]))
 
         # Custom TXXX fields
         if tags.get("mbid"):
