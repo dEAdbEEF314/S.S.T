@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }} - S.S.T</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
+</head>
+<body>
+    <header>
+        <a href="/">← Home</a>
+        <h1>{{ title }}</h1>
+    </header>
+
+    <table>
+        <thead>
+            <tr>
+                <th>アルバム名</th>
+                <th>トラック数</th>
+                <th>最終更新</th>
+                <th>アクション</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for album in albums %}
+            <tr>
+                <td>
+                    <strong>{{ album.name }}</strong>
+                    <br>
+                    <small style="color: gray;">AppID: {{ album.app_id }}</small>
+                </td>
+                <td>{{ album.track_count }}</td>
+                <td>{{ album.last_modified.strftime('%Y-%m-%d %H:%M') if album.last_modified else '-' }}</td>
+                <td>
+                    <div style="display: flex; gap: 5px;">
+                        <a href="/download/{{ status }}/{{ album.app_id }}"><button>Download ZIP</button></a>
+                    </div>
+                </td>
+            </tr>
+            <tr style="background-color: #f9f9f9;">
+                <td colspan="4">
+                    <div style="padding: 10px;">
+                        <strong>収集情報 (参考):</strong>
+                        <ul>
+                            <li><strong>Developer/Publisher:</strong> {{ album.developer or '-' }} / {{ album.publisher or '-' }}</li>
+                            {% if album.url %}
+                            <li><strong>Steam Store:</strong> <a href="{{ album.url }}" target="_blank">View on Steam</a></li>
+                            {% endif %}
+                            {% if album.vgmdb_url %}
+                            <li><strong>VGMdb:</strong> <a href="{{ album.vgmdb_url }}" target="_blank">{{ album.vgmdb_url }}</a></li>
+                            {% endif %}
+                        </ul>
+                        <hr>
+                        <strong>Tracks:</strong>
+                        <table style="font-size: 0.9em; margin-top: 10px;">
+                            <thead>
+                                <tr><th>Path</th><th>Title</th><th>Artist</th><th>Quality</th></tr>
+                            </thead>
+                            <tbody>
+                                {% for track in album.tracks %}
+                                <tr>
+                                    <td>{{ track.file_path }}</td>
+                                    <td>{{ track.title }}</td>
+                                    <td>{{ track.artist }}</td>
+                                    <td>{{ track.tier }}</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+            {% if not albums %}
+            <tr>
+                <td colspan="4" style="text-align: center;">表示できるアルバムはありません。</td>
+            </tr>
+            {% endif %}
+        </tbody>
+    </table>
+</body>
+</html>

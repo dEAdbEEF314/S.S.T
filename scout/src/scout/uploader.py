@@ -35,3 +35,14 @@ class S3Uploader:
                 logger.error(f"Failed to upload {local_path}: {e}")
         
         return uploaded_keys
+
+    def check_exists(self, app_id: int) -> bool:
+        """Checks if metadata.json exists in either archive/ or review/ folders."""
+        for prefix in ["archive", "review"]:
+            key = f"{prefix}/{app_id}/metadata.json"
+            try:
+                self.s3_client.head_object(Bucket=self.bucket_name, Key=key)
+                return True
+            except ClientError:
+                continue
+        return False

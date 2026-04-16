@@ -52,6 +52,21 @@ services:
     networks:
       - sst-network
 
+  ui:
+    build:
+      context: ./ui
+      dockerfile: Dockerfile
+    container_name: sst-ui
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./ui/src/ui:/app/src/ui:ro
+    environment:
+      - PYTHONPATH=/app/src
+    networks:
+      - sst-network
+
 networks:
   sst-network:
     driver: bridge

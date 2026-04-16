@@ -52,3 +52,26 @@ class WorkerStorage:
             logger.debug(f"Deleted ingest file: {s3_key}")
         except ClientError as e:
             logger.warning(f"Failed to delete ingest file {s3_key}: {e}")
+
+    def copy_file(self, src_key: str, dest_key: str):
+        """Copies a file within S3 (e.g., from ingest to archive)."""
+        copy_source = {'Bucket': self.bucket_name, 'Key': src_key}
+        try:
+            self.s3_client.copy(copy_source, self.bucket_name, dest_key)
+            logger.debug(f"Copied: {src_key} -> {dest_key}")
+        except ClientError as e:
+            logger.error(f"Failed to copy {src_key}: {e}")
+
+    def upload_json(self, data: dict, s3_key: str):
+        """Uploads a dictionary as a JSON file to S3."""
+        import json
+        try:
+            self.s3_client.put_object(
+                Bucket=self.bucket_name,
+                Key=s3_key,
+                Body=json.dumps(data, indent=2, ensure_ascii=False),
+                ContentType="application/json"
+            )
+            logger.info(f"Uploaded JSON: {s3_key}")
+        except ClientError as e:
+            logger.error(f"Failed to upload JSON {s3_key}: {e}")

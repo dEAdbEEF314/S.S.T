@@ -4,6 +4,7 @@ import shutil
 import tempfile
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+from datetime import datetime
 from .models import WorkerInput, WorkerOutput, ResolvedMetadata
 from .storage import WorkerStorage
 from .ident.embedded import EmbeddedMetadataExtractor
@@ -15,13 +16,15 @@ logger = logging.getLogger("worker")
 
 class WorkerService:
     def __init__(self, config: dict):
+        self.config = config
         self.storage = WorkerStorage(
             endpoint_url=config["S3_ENDPOINT_URL"],
             access_key=config["S3_ACCESS_KEY"],
             secret_key=config["S3_SECRET_KEY"],
             bucket_name=config["S3_BUCKET_NAME"]
         )
-        self.mbz = MusicBrainzIdentifier(app_name="SST", version="1.0.0", contact="contact@example.com")
+        mbz_agent = config.get("MUSICBRAINZ_USER_AGENT", "SST/1.0.0 (contact@example.com)")
+        self.mbz = MusicBrainzIdentifier(app_name="SST", version="1.0.0", contact=mbz_agent)
 
     def process_job(self, input_data: WorkerInput) -> WorkerOutput:
         app_id = input_data.app_id
@@ -36,42 +39,35 @@ class WorkerService:
                 if self.storage.download_file(s3_key, dest):
                     local_files.append(dest)
 
-            # 2. Extract Metadata & Group by "Unique Track"
-            # Key = (disc, track_num, title_hint)
+            # 2. Extract & Group
             track_groups = self._group_by_track(local_files)
+            format_map = self._get_format_map(local_files)
             
-            # 3. Validation & Identification (Album level)
-            format_map = {ext: [m for m in tracks] for ext, tracks in self._get_format_map(local_files).items()}
+            # 3. Identification
             validated_album = CrossFormatValidator.validate_album(format_map)
             mb_result = self.mbz.search_release(input_data.steam.name, len(track_groups))
             
             resolved = self._merge_metadata(input_data, validated_album, mb_result)
             status = "success" if (resolved.resolved and resolved.album) else "review"
 
-            # 4. Exclusive Selection & Tagging
+            # 4. Processing & Tagging
             tagger = AudioTagger(temp_dir / "output")
+            processed_tracks_meta = []
             output_refs = []
 
             for track_id, tracks in track_groups.items():
-                # SELECT BEST QUALITY TRACK
                 best_file_meta = self._select_best_quality(tracks)
                 source_path = best_file_meta["path"]
                 tier = best_file_meta["tier"]
                 
-                logger.info(f"Selected {tier} for track {track_id}: {source_path.name}")
-                
-                # Convert with strict 48kHz/24bit/320k limits
                 processed_path = tagger.convert_and_limit(source_path, tier)
                 
-                # Process Artwork (Track-specific)
                 artwork_bytes = None
                 if best_file_meta.get("has_artwork"):
-                    # Extract raw bytes first (simplified here)
                     artwork_bytes = self._extract_raw_artwork(source_path)
                     if artwork_bytes:
                         artwork_bytes = tagger.process_artwork(artwork_bytes)
 
-                # Write Tags
                 track_tags = self._assemble_tags(best_file_meta, resolved, input_data.steam)
                 tagger.write_tags(processed_path, track_tags, artwork_bytes)
                 
@@ -79,6 +75,42 @@ class WorkerService:
                 rel_path = f"{track_id[0]}/{processed_path.name}"
                 s3_key = self.storage.upload_result(processed_path, status, app_id, rel_path)
                 output_refs.append(s3_key)
+                
+                # Record track metadata for metadata.json
+                processed_tracks_meta.append({
+                    "file_path": rel_path,
+                    "original_filename": source_path.name,
+                    "title": track_tags["title"],
+                    "artist": track_tags["artist"],
+                    "tier": tier
+                })
+
+            # 5. Save metadata.json & Preserve .acf (New Requirements)
+            final_prefix = f"{status}/{app_id}"
+            
+            # A. Generate metadata.json
+            metadata_payload = {
+                "app_id": app_id,
+                "album_name": resolved.album,
+                "status": status,
+                "processed_at": datetime.utcnow().isoformat(),
+                "steam_info": {
+                    "developer": input_data.steam.developer,
+                    "publisher": input_data.steam.publisher,
+                    "url": input_data.steam.url
+                },
+                "external_info": {
+                    "source": resolved.source,
+                    "mbid": resolved.mbid,
+                    "vgmdb_url": resolved.vgmdb_url
+                },
+                "tracks": processed_tracks_meta
+            }
+            self.storage.upload_json(metadata_payload, f"{final_prefix}/metadata.json")
+
+            # B. Preserve .acf if exists in ingest
+            acf_key = f"ingest/{app_id}/appmanifest_{app_id}.acf"
+            self.storage.copy_file(acf_key, f"{final_prefix}/appmanifest_{app_id}.acf")
 
             return WorkerOutput(app_id=app_id, status=status, file_refs=output_refs, resolved=resolved)
 
@@ -92,7 +124,6 @@ class WorkerService:
         groups = {}
         for f in files:
             meta = EmbeddedMetadataExtractor.extract(f)
-            # Use disc/track/title as unique key to group format variants
             key = (meta.get("disc_number", 1), meta.get("track_number", 0), meta.get("title") or f.stem)
             if key not in groups: groups[key] = []
             meta["path"] = f
@@ -100,24 +131,19 @@ class WorkerService:
         return groups
 
     def _select_best_quality(self, variants: List[dict]) -> dict:
-        """Priority: Lossless -> MP3 -> Other Lossy"""
-        # 1. Lossless
         for v in variants:
             if v["path"].suffix.lower() in [".flac", ".wav", ".aiff", ".m4a"]:
                 v["tier"] = "lossless"
                 return v
-        # 2. MP3
         for v in variants:
             if v["path"].suffix.lower() == ".mp3":
                 v["tier"] = "mp3"
                 return v
-        # 3. Other Lossy
         v = variants[0]
         v["tier"] = "lossy"
         return v
 
     def _merge_metadata(self, input_data, validated, mb) -> ResolvedMetadata:
-        # Implementation of about_TAG.txt mapping (simplified here)
         s = input_data.steam
         return ResolvedMetadata(
             resolved=bool(mb or validated),
@@ -127,7 +153,8 @@ class WorkerService:
             album_artist=f"{s.developer} | {s.publisher}" if s else None,
             genre=f"STEAM, VGM, {s.genre or ''}",
             year=validated.get("year") or (mb.get("year") if mb else None),
-            mbid=mb.get("mbid") if mb else None
+            mbid=mb.get("mbid") if mb else None,
+            vgmdb_url=mb.get("vgmdb_url") if mb else None
         )
 
     def _assemble_tags(self, track_meta, album_resolved, steam) -> dict:
@@ -142,7 +169,8 @@ class WorkerService:
             "track_num": str(track_meta.get("track_number", 1)),
             "disc_num": f"{track_meta.get('disc_number', 1)}/{total_discs or 1}",
             "steam_appid": steam.app_id if steam else None,
-            "mbid": album_resolved.mbid
+            "mbid": album_resolved.mbid,
+            "vgmdb_url": album_resolved.vgmdb_url
         }
 
     def _get_format_map(self, files):
