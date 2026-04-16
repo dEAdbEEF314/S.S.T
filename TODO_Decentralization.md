@@ -15,10 +15,10 @@ This document outlines the required steps to migrate the current `docker-compose
 - **Requirement**: High CPU and network bandwidth. Can be scaled horizontally across multiple servers.
 - **Action**: Runs continuously as a `prefect worker` (polling the Core Node's work pool for tasks). Does *not* require access to the Steam library.
 
-### 3. Server C: Core & Storage Node (Orchestrator)
-- **Role**: Hosts the Prefect Server (state management, UI, task queue) and SeaweedFS (S3-compatible storage).
-- **Requirement**: Must have a reachable IP/VPN accessible by both Server A and Server B.
-- **Action**: Constantly running. Manages task state and storage.
+### 3. Server C: Core, Storage & UI Node (Management)
+- **Role**: Hosts the Prefect Server (state management, task queue), SeaweedFS (S3-compatible storage), and the S.S.T Web UI (`ui` container).
+- **Requirement**: Must have a reachable IP/VPN accessible by Server A, Server B, and end-users (for Web UI access).
+- **Action**: Constantly running. Manages task state, storage, and serves the user interface.
 
 ## Required Implementation Steps
 
@@ -31,3 +31,6 @@ This document outlines the required steps to migrate the current `docker-compose
   - Update `scout/src/scout/main.py` to send an HTTP POST request to the Prefect Server (Server C) after uploading files to S3, initiating the `sst_main_flow` with the generated JSON payload.
 - [ ] **Step 4: Environment Variable Segregation**
   - Define separate `.env.example` templates for each node type, ensuring `PREFECT_API_URL` and `S3_ENDPOINT_URL` point to Server C's address.
+- [ ] **Step 5: UI Deployment Configuration**
+  - Ensure the `ui` container is deployed on Server C alongside the S3 storage.
+  - Configure the UI's `.env` to point to the local or internal S3 endpoint for fast ZIP generation, and expose port 8000 securely.
