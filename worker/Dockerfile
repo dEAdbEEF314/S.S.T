@@ -23,5 +23,5 @@ RUN uv sync --frozen
 ENV PYTHONUNBUFFERED=1
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Run the worker module
-CMD ["uv", "run", "-m", "worker.main"]
+# Run the Prefect worker process
+CMD ["uv", "run", "prefect", "worker", "start", "--pool", "sst-worker-pool"]

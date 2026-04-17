@@ -1,0 +1,20 @@
+version: '3.8'
+services:
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    container_name: sst-worker
+    volumes:
+      - ./.env.worker:/app/.env:ro
+      - ./worker/src/worker:/app/src/worker:ro
+    environment:
+      - PYTHONPATH=/app/src
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+    # Worker runs as a long-lived Prefect worker process
+    # Command is overridden in the Dockerfile or here.
+    network_mode: bridge

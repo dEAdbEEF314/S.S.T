@@ -29,8 +29,30 @@ class Config(BaseSettings):
     s3_secret_key: str
     s3_bucket_name: str
     s3_region: str = "us-east-1"
+    prefect_api_url: str = "http://localhost:4200/api"
     env_mode: str = "development"
     log_level: str = "INFO"
+
+def trigger_prefect_flow(api_url: str, payload: dict):
+    """Triggers the Prefect flow deployment."""
+    import requests
+    # Find the deployment ID for 'sst-production-pipeline/sst-decentralized-deployment'
+    # Actually, we can trigger by name using the /deployments/name/{flow_name}/{deployment_name}/create_flow_run endpoint
+    url = f"{api_url}/deployments/name/sst-production-pipeline/sst-decentralized-deployment/create_flow_run"
+    try:
+        # We need to pass the payload as the 'scout_results' parameter
+        req_payload = {
+            "parameters": {
+                "scout_results": [payload]
+            }
+        }
+        resp = requests.post(url, json=req_payload, timeout=10)
+        if resp.status_code in [200, 201]:
+            logger.info(f"Successfully triggered Prefect flow for App ID: {payload['app_id']}")
+        else:
+            logger.error(f"Failed to trigger Prefect flow: {resp.status_code} - {resp.text}")
+    except Exception as e:
+        logger.error(f"Exception triggering Prefect flow: {e}")
 
 def main():
     # Argument Parsing

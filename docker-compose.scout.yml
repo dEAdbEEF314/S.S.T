@@ -1,0 +1,30 @@
+version: '3.8'
+services:
+  scout:
+    build:
+      context: ./scout
+      dockerfile: Dockerfile
+    container_name: sst-scout
+    volumes:
+      - ${STEAM_LIBRARY_PATH}:/steam_library:ro
+      - ./.env.scout:/app/.env:ro
+      - ./scout/src/scout:/app/src/scout:ro
+    environment:
+      - STEAM_LIBRARY_PATH=/steam_library
+      - PYTHONPATH=/app/src
+    network_mode: bridge
+
+  ui:
+    build:
+      context: ./ui
+      dockerfile: Dockerfile
+    container_name: sst-ui
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./.env.scout:/app/.env:ro
+      - ./ui/src/ui:/app/src/ui:ro
+    environment:
+      - PYTHONPATH=/app/src
+    restart: always
+    network_mode: bridge

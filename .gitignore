@@ -32,6 +32,9 @@ ENV/
 .env.development.local
 .env.test.local
 .env.production.local
+.env.scout
+.env.worker
+.env.core
 
 # IDEs
 .vscode/
