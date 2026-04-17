@@ -73,14 +73,13 @@ def sst_main_flow(scout_results: List[dict]):
     return final_results
 
 def deploy():
-    """Registers the flow with Prefect Server."""
-    deployment = Deployment.build_from_flow(
-        flow=sst_main_flow,
+    """Registers and serves the flow for the Prefect Server."""
+    # In Prefect 3.x, we use .serve() or .deploy()
+    print("Starting Prefect Flow Server...")
+    sst_main_flow.serve(
         name="sst-decentralized-deployment",
         work_pool_name="sst-worker-pool",
     )
-    deployment.apply()
-    print("Deployment registered successfully.")
 
 if __name__ == "__main__":
     deploy()
