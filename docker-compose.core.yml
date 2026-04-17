@@ -1,0 +1,16 @@
+version: '3.8'
+services:
+  core:
+    build:
+      context: ./core
+      dockerfile: Dockerfile
+    container_name: sst-core
+    volumes:
+      - ./.env.core:/app/.env:ro
+      - ./core/src/core:/app/src/core:ro
+    environment:
+      - PREFECT_API_URL=${PREFECT_API_URL:-http://localhost:4200/api}
+      - PYTHONPATH=/app/src
+    ports:
+      - "4200:4200" # Prefect Dashboard
+    network_mode: bridge
