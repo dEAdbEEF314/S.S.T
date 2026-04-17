@@ -5,14 +5,51 @@ import tempfile
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
-from .models import WorkerInput, WorkerOutput, ResolvedMetadata
+from .models import WorkerInput, WorkerOutput, ResolvedMetadata, SteamMetadata
 from .storage import WorkerStorage
 from .ident.embedded import EmbeddedMetadataExtractor
 from .ident.cross_val import CrossFormatValidator
 from .ident.mbz import MusicBrainzIdentifier
 from .tagger import AudioTagger
 
+import logging
 logger = logging.getLogger("worker")
+from prefect import task
+
+@task(retries=2, retry_delay_seconds=30)
+def process_single_album_task(scout_data: dict, config_dict: dict) -> dict:
+    """
+    Prefect task that runs the Worker logic for a specific album.
+    This runs on the worker pool.
+    """
+    app_id = scout_data["app_id"]
+    album_name = scout_data["name"]
+    logger.info(f">>> Starting worker processing for: {album_name} ({app_id})")
+
+    try:
+        service = WorkerService(config_dict)
+        worker_input = WorkerInput(
+            app_id=app_id,
+            files=scout_data.get("files", []),
+            steam=SteamMetadata(
+                app_id=app_id,
+                name=album_name,
+                developer=scout_data.get("developer"),
+                publisher=scout_data.get("publisher"),
+                genre=scout_data.get("genre"),
+                tags=scout_data.get("tags", []),
+                url=scout_data.get("url")
+            )
+        )
+        
+        result = service.process_job(worker_input)
+        logger.info(f"<<< Finished worker processing for {app_id}. Status: {result.status}")
+        return result.model_dump()
+        
+    except Exception as e:
+        logger.error(f"Worker task failed for {app_id}: {e}", exc_info=True)
+        raise
+
 
 class WorkerService:
     def __init__(self, config: dict):
