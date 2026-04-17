@@ -30,6 +30,7 @@ class Config(BaseSettings):
     s3_bucket_name: str
     s3_region: str = "us-east-1"
     prefect_api_url: str = "http://localhost:4200/api"
+    steam_language: str = "japanese" # Default to Japanese
     env_mode: str = "development"
     log_level: str = "INFO"
 
@@ -70,7 +71,7 @@ def main():
 
     logging.getLogger().setLevel(config.log_level)
 
-    scanner = SteamScanner(config.steam_library_path)
+    scanner = SteamScanner(config.steam_library_path, language=config.steam_language)
     uploader = S3Uploader(
         endpoint_url=config.s3_endpoint_url,
         access_key=config.s3_access_key,
