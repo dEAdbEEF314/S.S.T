@@ -11,13 +11,9 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 
 # Install dependencies ONLY
-RUN uv sync --frozen --no-install-project
-
-# Copy source code
+RUN uv sync --no-install-project
 COPY src/ ./src/
-
-# Now install the project itself
-RUN uv sync --frozen
+RUN uv sync
 
 # Environment variables
 ENV PYTHONUNBUFFERED=1
