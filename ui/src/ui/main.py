@@ -26,14 +26,13 @@ def get_s3():
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="index.html")
 
 @app.get("/archive", response_class=HTMLResponse)
 async def archive_page(request: Request):
     s3 = get_s3()
     albums = s3.list_albums("archive")
-    return templates.TemplateResponse("list.html", {
-        "request": request, 
+    return templates.TemplateResponse(request=request, name="list.html", context={
         "title": "Archive (Success)", 
         "albums": albums,
         "status": "archive"
@@ -43,8 +42,7 @@ async def archive_page(request: Request):
 async def review_page(request: Request):
     s3 = get_s3()
     albums = s3.list_albums("review")
-    return templates.TemplateResponse("list.html", {
-        "request": request, 
+    return templates.TemplateResponse(request=request, name="list.html", context={
         "title": "Review (Pending)", 
         "albums": albums,
         "status": "review"
