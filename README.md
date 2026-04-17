@@ -95,7 +95,17 @@ Agents should:
 - ✅ Architecture defined
 - ✅ Specifications defined
 - ✅ Execution model defined
-- 🔄 Implementation in progress
+- ✅ Core workflow (Prefect 3.x) implemented
+- ✅ Scout with Local Caching & Rate Limiting implemented
+- ✅ Distributed Worker nodes implemented
+- ✅ Web UI for album browsing implemented
+
+# ✨ Key New Features (Decentralized Update)
+
+- **Local Scan Caching**: Scout uses `scout_cache.json` to skip non-soundtrack apps and already-scanned metadata, drastically reducing Steam API calls.
+- **Intelligent Rate Limiting**: Automatic 429 (Too Many Requests) detection with exponential backoff (1m, 3m, 5m, 10m intervals).
+- **Multi-language Support**: Preferred metadata language (e.g., Japanese) with automatic fallback to English.
+- **Standalone UI**: UI can be deployed on the edge (Server A) for direct access to processed files.
 
 ---
 
@@ -223,7 +233,17 @@ docs/
 - ✅ アーキテクチャ定義済み
 - ✅ 仕様定義済み
 - ✅ 実行モデル定義済み
-- 🔄 実装中
+- ✅ コアワークフロー（Prefect 3.x）実装済み
+- ✅ スカウト（キャッシュ・レート制限機能付き）実装済み
+- ✅ 分散ワーカーノード実装済み
+- ✅ ブラウズ用Web UI実装済み
+
+# ✨ 主な新機能（分散デプロイ対応）
+
+- **ローカルスキャンキャッシュ**: `scout_cache.json` を使用して非サウンドトラックアプリや取得済みメタデータをスキップ。Steam APIへの負荷を激減させます。
+- **インテリジェント・レート制限**: Steam APIの429（過剰アクセス）を検知し、指数関数的バックオフ（1分、3分、5分、10分間隔）で自動待機。
+- **多言語対応**: `.env.scout` で指定した言語（日本語等）を優先して取得。失敗時は自動的に英語にフォールバック。
+- **独立UIデプロイ**: UIをエッジ（Server A）で実行でき、ブラウザから直接成果物の確認・ダウンロードが可能。
 
 ---
 

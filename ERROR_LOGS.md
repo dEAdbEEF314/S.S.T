@@ -23,3 +23,20 @@ This file documents significant errors encountered during development and testin
 **Phase:** Full Production Pipeline Test
 **Result:** `Success: 9, Review: 0` (Out of 10 limit, 1 was skipped/cached).
 **Notes:** After resolving the `PrefectImportError` and the `SteamMetadata` `NameError`, the pipeline successfully processed a large batch of new soundtracks in parallel. The separation of Scout, Worker, and Core components functioned perfectly under load.
+
+## [2026-04-18] Prefect 3.x Migration - .serve() Specification
+**Error:** `TypeError: Flow.serve() got an unexpected keyword argument 'work_pool_name'`
+**Root Cause:** In Prefect 3.x, `.serve()` directly hosts the flow and does not support `work_pool_name`.
+**Solution:** Removed `work_pool_name` from the `.serve()` call in `core/src/core/main.py`.
+
+## [2026-04-18] Starlette/FastAPI TemplateResponse Compatibility
+**Error:** `TypeError: unhashable type: 'dict'` when accessing UI.
+**Root Cause:** Newer versions of Starlette require the `request` object as the first positional argument or a keyword argument in `TemplateResponse`.
+**Solution:** Updated `ui/src/ui/main.py` to use keyword arguments: `templates.TemplateResponse(request=request, name="index.html")`.
+
+## [2026-04-18] Steam API 429 Rate Limiting
+**Error:** HTTP 429 Too Many Requests during bulk scanning.
+**Root Cause:** Rapid sequential requests to Steam Store API for metadata.
+**Solution:**
+- Implemented exponential backoff in `scout.scanner.SteamScanner` (1m, 3m, 5m, 10m).
+- Added local caching (`scout_cache.json`) to minimize redundant API calls.
