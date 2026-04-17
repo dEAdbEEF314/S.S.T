@@ -62,6 +62,9 @@ docker-compose -f docker-compose.scout.yml up -d ui
 ```bash
 docker-compose -f docker-compose.scout.yml run --rm scout uv run -m scout.main
 ```
+- 初回実行時に `scout_cache.json` がカレントディレクトリに作成されます。
+- 2回目以降、サウンドトラック以外のアプリや取得済みのメタデータはキャッシュから読み込まれ、スキャンが大幅に高速化されます。
+- 強制的に再スキャン（API再取得）したい場合は、コマンドの末尾に `--force` を追加してください。
 
 ---
 
