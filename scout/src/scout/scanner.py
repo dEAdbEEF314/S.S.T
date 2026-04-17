@@ -11,10 +11,14 @@ logger = logging.getLogger(__name__)
 # Target music extensions
 MUSIC_EXTENSIONS = {".flac", ".wav", ".mp3", ".aiff", ".m4a"}
 
+import json
+
 class SteamScanner:
-    def __init__(self, library_path: str, language: str = "japanese"):
+    def __init__(self, library_path: str, cache_path: str = "scout_cache.json", language: str = "japanese"):
         self.library_path = Path(library_path)
+        self.cache_path = Path(cache_path)
         self.language = language
+        self.cache = self._load_cache()
         
         # Strategy: Find where the .acf files actually are
         if (self.library_path / "steamapps").exists():
@@ -27,35 +31,94 @@ class SteamScanner:
             self.steamapps_path = self.library_path / "steamapps"
             logger.warning(f"Could not find .acf files in {self.library_path} or its steamapps subdir.")
 
-    def find_soundtracks(self) -> List[dict]:
-        """Finds soundtrack app manifests in the library."""
+    def _load_cache(self) -> dict:
+        if self.cache_path.exists():
+            try:
+                with open(self.cache_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.warning(f"Failed to load cache: {e}")
+        return {"ignored": [], "processed": {}}
+
+    def _save_cache(self):
+        try:
+            with open(self.cache_path, "w", encoding="utf-8") as f:
+                json.dump(self.cache, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"Failed to save cache: {e}")
+
+    def find_soundtracks(self, force: bool = False) -> List[dict]:
+        """Finds soundtrack app manifests and fetches metadata, using cache to skip repeats."""
         if not self.steamapps_path.exists():
             logger.error(f"Steamapps directory not found: {self.steamapps_path}")
             return []
 
         soundtracks = []
-        for acf_file in self.steamapps_path.glob("*.acf"):
+        acf_files = list(self.steamapps_path.glob("*.acf"))
+        logger.info(f"Found {len(acf_files)} ACF files. Checking cache...")
+
+        for acf_file in acf_files:
+            # Extract AppID from filename (appmanifest_XXXX.acf)
+            try:
+                app_id_str = acf_file.stem.split("_")[1]
+                app_id = int(app_id_str)
+            except:
+                continue
+
+            # 1. Skip if known ignored
+            if not force and app_id in self.cache["ignored"]:
+                continue
+
+            # 2. Check if already processed (exists in cache and S3 check will happen later)
+            # However, to avoid Steam API, we check if we have the metadata in cache
+            cached_data = self.cache["processed"].get(str(app_id))
+            
             manifest = self._parse_acf(acf_file)
-            if manifest and self._is_soundtrack(manifest):
-                app_state = manifest.get("AppState", {})
-                app_id = int(app_state.get("appid", 0))
-                
-                # Fetch enriched metadata from Store API
-                enriched = self.fetch_steam_metadata(app_id, self.language)
-                
-                soundtracks.append({
-                    "app_id": app_id,
-                    "name": app_state.get("name", ""),
-                    "install_dir": app_state.get("installdir", ""),
-                    "developer": enriched.get("developer"),
-                    "publisher": enriched.get("publisher"),
-                    "genre": enriched.get("genre"),
-                    "tags": enriched.get("tags", []),
-                    "url": f"https://store.steampowered.com/app/{app_id}",
-                    "acf_path": acf_file
-                })
-                # Base delay to be kind to the API
-                time.sleep(2.0)
+            if not manifest:
+                continue
+
+            if not self._is_soundtrack(manifest):
+                if app_id not in self.cache["ignored"]:
+                    self.cache["ignored"].append(app_id)
+                continue
+
+            # It's a soundtrack!
+            app_state = manifest.get("AppState", {})
+            
+            if not force and cached_data:
+                logger.info(f"Using cached metadata for {app_state.get('name')} ({app_id})")
+                ost_data = cached_data.copy()
+                ost_data["app_id"] = app_id
+                ost_data["acf_path"] = str(acf_file)
+                soundtracks.append(ost_data)
+                continue
+
+            # Fetch fresh metadata (Heavy)
+            enriched = self.fetch_steam_metadata(app_id, self.language)
+            
+            ost_info = {
+                "app_id": app_id,
+                "name": app_state.get("name", ""),
+                "install_dir": app_state.get("installdir", ""),
+                "developer": enriched.get("developer"),
+                "publisher": enriched.get("publisher"),
+                "genre": enriched.get("genre"),
+                "tags": enriched.get("tags", []),
+                "url": f"https://store.steampowered.com/app/{app_id}",
+                "acf_path": str(acf_file)
+            }
+            
+            # Update cache
+            self.cache["processed"][str(app_id)] = ost_info.copy()
+            # Remove app_id and acf_path from persistent cache to keep it clean if needed, 
+            # but here we keep them for simplicity.
+            
+            soundtracks.append(ost_info)
+            
+            # Base delay to be kind to the API
+            time.sleep(2.0)
+        
+        self._save_cache()
         return soundtracks
 
     def fetch_steam_metadata(self, app_id: int, language: str = "japanese") -> dict:

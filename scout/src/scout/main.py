@@ -71,7 +71,11 @@ def main():
 
     logging.getLogger().setLevel(config.log_level)
 
-    scanner = SteamScanner(config.steam_library_path, language=config.steam_language)
+    scanner = SteamScanner(
+        config.steam_library_path, 
+        cache_path="/app/scout_cache.json",
+        language=config.steam_language
+    )
     uploader = S3Uploader(
         endpoint_url=config.s3_endpoint_url,
         access_key=config.s3_access_key,
@@ -81,7 +85,7 @@ def main():
     )
 
     logger.info(f"Scanning library: {config.steam_library_path}")
-    soundtracks = scanner.find_soundtracks()
+    soundtracks = scanner.find_soundtracks(force=args.force)
     
     # 1. Duplicate Check (Skip if exists and not forced)
     active_list = []
