@@ -236,6 +236,45 @@ docs/
 - OpenAI互換LLM
 - AcoustID / MusicBrainz / VGMdb
 
+## 🏗️ 独立インフラストラクチャの構築
+
+S.S.Tシステムは、自身のdocker-composeスタック外で独立して稼働するインフラコンポーネントを前提としています。
+
+### 1. Prefect サーバー（オーケストレーター）
+タスクキューの管理とフローの監視を行う中央サーバーです。
+```bash
+docker run -d --name prefect-server -p 4200:4200 -e PREFECT_SERVER_API_HOST=0.0.0.0 prefecthq/prefect:2-python3.11 prefect server start --host 0.0.0.0
+```
+`.env` ファイルの `PREFECT_API_URL` を `http://<サーバーのIP>:4200/api` に更新してください。
+
+### 2. SeaweedFS (S3互換ストレージ)
+`ingest`、`archive`、`review` 用のファイルストレージです。
+SeaweedFS用の `docker-compose.yml` を作成します：
+```yaml
+version: '3'
+services:
+  master:
+    image: chrislusf/seaweedfs
+    ports:
+      - 9333:9333
+    command: "master"
+  volume:
+    image: chrislusf/seaweedfs
+    ports:
+      - 8080:8080
+    command: "volume -max=5 -mserver=master:9333 -port=8080"
+  s3:
+    image: chrislusf/seaweedfs
+    ports:
+      - 8333:8333
+    command: "s3 -mserver=master:9333 -port=8333"
+```
+`docker-compose up -d` で起動後、`.env` ファイルの `S3_ENDPOINT_URL`（例: `http://<サーバーのIP>:8333`）と認証情報を設定してください。
+
+### 3. LLM サーバー (OpenAI互換)
+テキストの正規化に使用します。ローカルモデル（OllamaやvLLMなど）または外部APIを利用可能です。
+`.env` ファイルの `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL_NAME` を更新してください。
+
 ---
 
 # ⚠️ 注意事項
