@@ -64,12 +64,13 @@ def parse_scout_output(stdout):
 
 def run_test():
     # Step 1: Scout
-    logger.info(">>> Step 1: Running Scout (Limit 5)...")
+    logger.info(">>> Step 1: Running Scout (Limit 10)...")
     cmd_scout = [
         "docker-compose", "run", "--rm", 
         "-e", "PYTHONPATH=/app/src", 
-        "scout", "uv", "run", "-m", "scout.main", "--limit", "5"
+        "scout", "uv", "run", "-m", "scout.main", "--limit", "10"
     ]
+
     rc, stdout = run_command_with_output(cmd_scout)
     if rc != 0:
         logger.error("Scout failed.")
