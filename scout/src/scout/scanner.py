@@ -12,8 +12,9 @@ logger = logging.getLogger(__name__)
 MUSIC_EXTENSIONS = {".flac", ".wav", ".mp3", ".aiff", ".m4a"}
 
 class SteamScanner:
-    def __init__(self, library_path: str):
+    def __init__(self, library_path: str, language: str = "japanese"):
         self.library_path = Path(library_path)
+        self.language = language
         
         # Strategy: Find where the .acf files actually are
         if (self.library_path / "steamapps").exists():
@@ -40,7 +41,7 @@ class SteamScanner:
                 app_id = int(app_state.get("appid", 0))
                 
                 # Fetch enriched metadata from Store API
-                enriched = self.fetch_steam_metadata(app_id)
+                enriched = self.fetch_steam_metadata(app_id, self.language)
                 
                 soundtracks.append({
                     "app_id": app_id,
@@ -53,39 +54,63 @@ class SteamScanner:
                     "url": f"https://store.steampowered.com/app/{app_id}",
                     "acf_path": acf_file
                 })
-                # Prevent rate limiting
-                time.sleep(1.0)
+                # Base delay to be kind to the API
+                time.sleep(2.0)
         return soundtracks
 
-    def fetch_steam_metadata(self, app_id: int) -> dict:
-        """Fetches developer, publisher, and genre from Steam Store API."""
-        url = f"https://store.steampowered.com/api/appdetails?appids={app_id}&l=english"
-        try:
-            response = requests.get(url, timeout=10)
-            data = response.json()
-            if data and data.get(str(app_id), {}).get("success"):
-                info = data[str(app_id)]["data"]
-                
-                metadata = {
-                    "developer": ", ".join(info.get("developers", [])),
-                    "publisher": ", ".join(info.get("publishers", [])),
-                    "genre": info.get("genres", [{}])[0].get("description") if info.get("genres") else None,
-                    "tags": [g.get("description") for g in info.get("genres", [])]
-                }
+    def fetch_steam_metadata(self, app_id: int, language: str = "japanese") -> dict:
+        """
+        Fetches metadata with backoff strategy for 429 errors.
+        Falls back from specified language to English if needed.
+        """
+        languages = [language, "english"] if language != "english" else ["english"]
+        
+        for lang in languages:
+            backoff_delays = [60, 180, 300, 600] # 1m, 3m, 5m, 10m
+            for attempt, delay in enumerate(backoff_delays + [None]):
+                url = f"https://store.steampowered.com/api/appdetails?appids={app_id}&l={lang}"
+                try:
+                    response = requests.get(url, timeout=15)
+                    
+                    if response.status_code == 429:
+                        if delay is None:
+                            logger.error(f"Steam API 429 limit exceeded even after retries for {app_id}")
+                            return {}
+                        logger.warning(f"Steam API 429 detected for {app_id}. Waiting {delay}s (Attempt {attempt+1})...")
+                        time.sleep(delay)
+                        continue # Retry same language
+                    
+                    if response.status_code != 200:
+                        logger.warning(f"Steam API returned {response.status_code} for {app_id}")
+                        break # Try next language
 
-                # If basic info is missing, try to fetch from parent game
-                if not metadata["developer"] and "fullgame" in info:
-                    parent_id = info["fullgame"].get("appid")
-                    if parent_id:
-                        logger.info(f"Metadata missing for soundtrack {app_id}, falling back to parent {parent_id}")
-                        return self.fetch_steam_metadata(int(parent_id))
+                    data = response.json()
+                    if data and data.get(str(app_id), {}).get("success"):
+                        info = data[str(app_id)]["data"]
+                        
+                        metadata = {
+                            "developer": ", ".join(info.get("developers", [])),
+                            "publisher": ", ".join(info.get("publishers", [])),
+                            "genre": info.get("genres", [{}])[0].get("description") if info.get("genres") else None,
+                            "tags": [g.get("description") for g in info.get("genres", [])]
+                        }
+
+                        # If basic info is missing, try to fetch from parent game
+                        if not metadata["developer"] and "fullgame" in info:
+                            parent_id = info["fullgame"].get("appid")
+                            if parent_id:
+                                logger.info(f"Metadata missing for soundtrack {app_id}, falling back to parent {parent_id}")
+                                return self.fetch_steam_metadata(int(parent_id), lang)
+                        
+                        logger.info(f"Successfully fetched Steam metadata for {app_id} in {lang}")
+                        return metadata
+                    else:
+                        logger.warning(f"Steam API returned success=False for {app_id} in {lang}")
+                        break # Try next language (English)
                 
-                logger.info(f"Successfully fetched Steam metadata for {app_id}")
-                return metadata
-            else:
-                logger.warning(f"Steam API returned success=False for {app_id}")
-        except Exception as e:
-            logger.warning(f"Failed to fetch Steam API for {app_id}: {e}")
+                except Exception as e:
+                    logger.warning(f"Failed to fetch Steam API for {app_id}: {e}")
+                    break
         return {}
 
     def _parse_acf(self, path: Path) -> Optional[dict]:
