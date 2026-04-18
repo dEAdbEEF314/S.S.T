@@ -22,6 +22,12 @@ def process_single_album_task(scout_data: dict, config_dict: dict) -> dict:
     Prefect task that runs the Worker logic for a specific album.
     This runs on the worker pool.
     """
+    # Setup logging inside the task based on config
+    log_level = config_dict.get("LOG_LEVEL", "INFO").upper()
+    numeric_level = getattr(logging, log_level, logging.INFO)
+    logging.basicConfig(level=numeric_level, force=True)
+    logger.setLevel(numeric_level)
+
     app_id = scout_data["app_id"]
     album_name = scout_data["name"]
     logger.info(f">>> Starting worker processing for: {album_name} ({app_id})")

@@ -30,6 +30,10 @@ def sst_main_flow(scout_results: List[dict]):
     The main SST orchestration flow.
     This flow delegates the heavy lifting to the worker pool.
     """
+    config = CoreConfig()
+    numeric_level = getattr(logging, config.log_level.upper(), logging.INFO)
+    logging.basicConfig(level=numeric_level, force=True)
+    
     logger = get_run_logger()
     logger.info(f"SST Pipeline triggered for {len(scout_results)} albums.")
 
