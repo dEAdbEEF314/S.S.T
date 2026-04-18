@@ -15,13 +15,9 @@ services:
       - prefect_data:/root/.prefect
     network_mode: bridge
 
-    core:
-    ...
-    network_mode: bridge
-
-    volumes:
-    prefect_data:
-
+  core:
+    build:
+      context: ./core
       dockerfile: Dockerfile
     container_name: sst-core
     depends_on:
@@ -33,3 +29,6 @@ services:
       - PREFECT_API_URL=${PREFECT_API_URL:-http://localhost:4200/api}
       - PYTHONPATH=/app/src
     network_mode: bridge
+
+volumes:
+  prefect_data:
