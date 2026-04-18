@@ -9,7 +9,8 @@ services:
     environment:
       - PREFECT_SERVER_API_HOST=0.0.0.0
       - PREFECT_API_URL=${PREFECT_API_URL:-http://localhost:4200/api}
-      - PREFECT_API_DATABASE_TIMEOUT=30.0
+      - PREFECT_API_DATABASE_TIMEOUT=30
+      - PREFECT_API_DATABASE_CONNECTION_URL=sqlite+aiosqlite:////root/.prefect/prefect.db?timeout=30
     network_mode: bridge
 
   core:
