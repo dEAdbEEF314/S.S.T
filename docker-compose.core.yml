@@ -1,7 +1,7 @@
 version: '3.8'
 services:
   prefect-server:
-    image: prefecthq/prefect:3-latest
+    image: prefecthq/prefect:3.6.26-python3.12
     container_name: sst-prefect-server
     command: prefect server start
     ports:
@@ -9,6 +9,7 @@ services:
     environment:
       - PREFECT_SERVER_API_HOST=0.0.0.0
       - PREFECT_API_URL=${PREFECT_API_URL:-http://localhost:4200/api}
+      - PREFECT_API_DATABASE_TIMEOUT=30.0
     network_mode: bridge
 
   core:
