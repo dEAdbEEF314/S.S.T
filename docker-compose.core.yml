@@ -4,12 +4,12 @@ services:
     container_name: sst-db
     restart: always
     environment:
-      - POSTGRES_USER=prefect
-      - POSTGRES_PASSWORD=prefect
-      - POSTGRES_DB=prefect
-      - TZ=Asia/Tokyo
+      - POSTGRES_USER=${POSTGRES_USER:-prefect}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-prefect}
+      - POSTGRES_DB=${POSTGRES_DB:-prefect}
+      - TZ=${TZ:-Asia/Tokyo}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U prefect"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-prefect}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -27,10 +27,10 @@ services:
       db:
         condition: service_healthy
     environment:
-      - TZ=Asia/Tokyo
+      - TZ=${TZ:-Asia/Tokyo}
       - PREFECT_SERVER_API_HOST=0.0.0.0
       - PREFECT_API_URL=${PREFECT_API_URL:-http://localhost:4200/api}
-      - PREFECT_API_DATABASE_CONNECTION_URL=postgresql+asyncpg://prefect:prefect@db:5432/prefect
+      - PREFECT_API_DATABASE_CONNECTION_URL=postgresql+asyncpg://${POSTGRES_USER:-prefect}:${POSTGRES_PASSWORD:-prefect}@db:5432/${POSTGRES_DB:-prefect}
     network_mode: bridge
 
   core:
@@ -45,7 +45,7 @@ services:
       - ./.env.core:/app/.env:ro
       - ./core/src/core:/app/src/core:ro
     environment:
-      - TZ=Asia/Tokyo
+      - TZ=${TZ:-Asia/Tokyo}
       - PREFECT_API_URL=${PREFECT_API_URL:-http://localhost:4200/api}
       - PYTHONPATH=/app/src
     network_mode: bridge
