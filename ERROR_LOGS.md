@@ -40,3 +40,8 @@ This file documents significant errors encountered during development and testin
 **Solution:**
 - Implemented exponential backoff in `scout.scanner.SteamScanner` (1m, 3m, 5m, 10m).
 - Added local caching (`scout_cache.json`) to minimize redundant API calls.
+
+## [2026-04-18] Prefect Trigger Serialization Error
+**Error:** `Exception triggering Prefect flow: Object of type datetime is not JSON serializable`
+**Root Cause:** The `scout_result` object contained a `datetime` field which cannot be automatically serialized by the standard `json` library used by `requests.post`.
+**Solution:** Updated `scout/src/scout/main.py` to use `model_dump(mode='json')` which converts complex types like `datetime` into JSON-compatible strings.
