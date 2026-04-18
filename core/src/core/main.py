@@ -1,9 +1,11 @@
 import os
 import json
 import logging
+import asyncio
 from typing import List, Dict, Optional
 
-from prefect import flow, task, get_run_logger, unmapped
+from prefect import flow, task, get_run_logger
+from prefect.deployments import run_deployment
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class CoreConfig(BaseSettings):
@@ -20,22 +22,11 @@ class CoreConfig(BaseSettings):
 # Define the flow name from environment for consistency with trigger
 FLOW_NAME = os.getenv("PREFECT_FLOW_NAME", "SST-Production-Pipeline")
 
-# We define the task shell here. Prefect 3.x will match this by name 
-# when it schedules the task to the worker pool.
-# The worker implementation MUST have the same task name.
-@task(name="process_single_album_task")
-def process_single_album_task_shell(album_data: dict, config_dict: dict):
-    """
-    Shell task that will be executed by the worker.
-    The implementation is provided by the worker component.
-    """
-    pass
-
 @flow(name=FLOW_NAME)
-def sst_main_flow(scout_results: List[dict]):
+async def sst_main_flow(scout_results: List[dict]):
     """
     The main SST orchestration flow.
-    This flow delegates the heavy lifting to the worker pool.
+    This flow triggers remote worker flows via run_deployment.
     """
     config = CoreConfig()
     numeric_level = getattr(logging, config.log_level.upper(), logging.INFO)
@@ -46,29 +37,32 @@ def sst_main_flow(scout_results: List[dict]):
 
     config_dict = config.model_dump()
     env_mapping = {
-        "s3_endpoint_url": "S3_ENDPOINT_URL",
-        "s3_access_key": "S3_ACCESS_KEY",
-        "s3_secret_key": "S3_SECRET_KEY",
-        "s3_bucket_name": "S3_BUCKET_NAME",
-        "musicbrainz_user_agent": "MUSICBRAINZ_USER_AGENT"
+        "S3_ENDPOINT_URL": config.s3_endpoint_url,
+        "S3_ACCESS_KEY": config.s3_access_key,
+        "S3_SECRET_KEY": config.s3_secret_key,
+        "S3_BUCKET_NAME": config.s3_bucket_name,
+        "MUSICBRAINZ_USER_AGENT": config.musicbrainz_user_agent,
+        "LOG_LEVEL": config.log_level
     }
-    worker_config = {env_mapping.get(k, k): v for k, v in config_dict.items() if v is not None}
 
-    # Map the shell task over all scout results.
-    # Prefect handles the distribution to the worker pool.
-    results = process_single_album_task_shell.map(
-        scout_results,
-        unmapped(worker_config)
-    )
+    # Trigger each album processing in the worker pool concurrently
+    for album in scout_results:
+        logger.info(f"Triggering worker for App ID {album.get('app_id')}...")
+        flow_run = await run_deployment(
+            name="sst-worker-flow/sst-worker-deployment",
+            parameters={
+                "scout_data": album,
+                "config_dict": env_mapping
+            },
+            timeout=0 # Don't wait for flow to FINISH, but wait for it to be CREATED
+        )
+        logger.info(f"Successfully created sub-flow run: {flow_run.id}")
     
-    logger.info(f"SST Pipeline scheduled {len(scout_results)} tasks to worker pool.")
-    return results
+    logger.info(f"SST Pipeline delegated {len(scout_results)} albums to worker deployments.")
 
 def deploy():
     """Registers and serves the flow for the Prefect Server."""
-    # In Prefect 3.x, .serve() hosts the flow directly.
-    # It will poll for flow runs and delegate tasks to the 'sst-worker-pool'.
-    print("Starting Prefect Flow Server...")
+    print("Starting SST Core Flow Server...")
     sst_main_flow.serve(
         name="sst-decentralized-deployment",
     )

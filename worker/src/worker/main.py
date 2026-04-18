@@ -15,15 +15,15 @@ from .llm import LLMService
 
 import logging
 logger = logging.getLogger("worker")
-from prefect import task
+from prefect import flow, task
 
-@task(retries=2, retry_delay_seconds=30)
-def process_single_album_task(scout_data: dict, config_dict: dict) -> dict:
+@flow(name="sst-worker-flow")
+def process_single_album_flow(scout_data: dict, config_dict: dict) -> dict:
     """
-    Prefect task that runs the Worker logic for a specific album.
-    This runs on the worker pool.
+    Prefect flow that runs the Worker logic for a specific album.
+    This can be triggered remotely by Core.
     """
-    # Setup logging inside the task based on config
+    # Setup logging inside the flow based on config
     log_level = config_dict.get("LOG_LEVEL", "INFO").upper()
     numeric_level = getattr(logging, log_level, logging.INFO)
     logging.basicConfig(level=numeric_level, force=True)
@@ -54,7 +54,7 @@ def process_single_album_task(scout_data: dict, config_dict: dict) -> dict:
         return result.model_dump()
         
     except Exception as e:
-        logger.error(f"Worker task failed for {app_id}: {e}", exc_info=True)
+        logger.error(f"Worker flow failed for {app_id}: {e}", exc_info=True)
         raise
 
 
@@ -81,7 +81,6 @@ class WorkerService:
             # 1. Download & Categorize
             local_files_with_rel = []
             for s3_key in input_data.files:
-                # relative_path is e.g. "soundtrack_LLB/01.mp3"
                 relative_path = str(Path(s3_key).relative_to(f"ingest/{app_id}"))
                 dest = temp_dir / relative_path
                 if self.storage.download_file(s3_key, dest):
@@ -134,10 +133,8 @@ class WorkerService:
                     "tier": tier
                 })
 
-            # 5. Save metadata.json & Preserve .acf (New Requirements)
+            # 5. Save metadata.json & Preserve .acf
             final_prefix = f"{status}/{app_id}"
-            
-            # A. Generate metadata.json
             metadata_payload = {
                 "app_id": app_id,
                 "album_name": resolved.album,
@@ -157,7 +154,6 @@ class WorkerService:
             }
             self.storage.upload_json(metadata_payload, f"{final_prefix}/metadata.json")
 
-            # B. Preserve .acf if exists in ingest
             acf_key = f"ingest/{app_id}/appmanifest_{app_id}.acf"
             self.storage.copy_file(acf_key, f"{final_prefix}/appmanifest_{app_id}.acf")
 
@@ -176,11 +172,8 @@ class WorkerService:
             key = (meta.get("disc_number", 1), meta.get("track_number", 0), meta.get("title") or f.stem)
             if key not in groups: groups[key] = []
             meta["path"] = f
-            
-            # Extract parent directory from rel_path
             p = Path(rel_path).parent
             meta["parent_dir"] = p.as_posix() if str(p) != "." else ""
-            
             groups[key].append(meta)
         return groups
 
@@ -213,9 +206,8 @@ class WorkerService:
 
     def _assemble_tags(self, track_meta, album_resolved, steam) -> dict:
         total_discs = album_resolved.total_discs if hasattr(album_resolved, 'total_discs') else 1
-        
         raw_title = track_meta.get("title") or track_meta["path"].stem
-        # Placeholder: Always normalize title using LLM for now to test the UI flow
+        
         normalized_title = self.llm.ask(
             "title_normalization",
             [
@@ -258,3 +250,13 @@ class WorkerService:
                 if apics: return apics[0].data
         except: pass
         return None
+
+def deploy():
+    """Starts the Worker and serves its processing flow."""
+    print("Starting SST Worker Flow Server...")
+    process_single_album_flow.serve(
+        name="sst-worker-deployment",
+    )
+
+if __name__ == "__main__":
+    deploy()

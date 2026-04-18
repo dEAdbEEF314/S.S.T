@@ -110,7 +110,7 @@ def main():
     )
 
     logger.info(f"Scanning library: {config.steam_library_path}")
-    soundtracks = scanner.find_soundtracks(force=args.force)
+    soundtracks = scanner.find_soundtracks(force=args.force, limit=args.limit)
     
     # 1. Duplicate Check (Skip if exists and not forced)
     active_list = []
@@ -120,11 +120,6 @@ def main():
             logger.info(f"Skipping already processed album: {ost['name']} ({app_id})")
             continue
         active_list.append(ost)
-
-    # 2. Apply limit
-    if args.limit:
-        logger.info(f"Test Mode: Limiting processing to first {args.limit} albums.")
-        active_list = active_list[:args.limit]
 
     logger.info(f"Processing {len(active_list)} soundtracks.")
 
