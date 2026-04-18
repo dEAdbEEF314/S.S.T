@@ -35,3 +35,9 @@
 - Title normalization
 - Artist normalization
 - Album normalization
+
+---
+
+## Context Utilization
+
+- **Directory Names**: LLM should use the `parent_dir` field as a secondary source of truth. Folder names like "CD1", "Disc 2", or "Bonus" provide high-confidence context for disc numbering and track categorization when embedded tags are missing.

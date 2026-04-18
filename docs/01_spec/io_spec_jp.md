@@ -46,6 +46,7 @@ ingest/{AppID}/
     {
       "file_path": "1/01. Title.aiff",
       "original_filename": "01_original.flac",
+      "parent_dir": "CD 1",
       "title": "Title",
       "artist": "Artist",
       "confidence": 0.95
