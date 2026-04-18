@@ -1,4 +1,3 @@
-version: '3.8'
 services:
   worker:
     build:
@@ -10,6 +9,7 @@ services:
       - ./worker/src/worker:/app/src/worker:ro
     environment:
       - PYTHONPATH=/app/src
+      - TZ=${TZ:-Asia/Tokyo}
     deploy:
       resources:
         limits:
@@ -17,4 +17,3 @@ services:
           memory: 4G
     # Worker runs as a long-lived Prefect worker process
     # Command is overridden in the Dockerfile or here.
-    network_mode: bridge
