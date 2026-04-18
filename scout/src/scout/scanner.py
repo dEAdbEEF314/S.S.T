@@ -47,7 +47,7 @@ class SteamScanner:
         except Exception as e:
             logger.error(f"Failed to save cache: {e}")
 
-    def find_soundtracks(self, force: bool = False) -> List[dict]:
+    def find_soundtracks(self, force: bool = False, limit: Optional[int] = None) -> List[dict]:
         """Finds soundtrack app manifests and fetches metadata, using cache to skip repeats."""
         if not self.steamapps_path.exists():
             logger.error(f"Steamapps directory not found: {self.steamapps_path}")
@@ -55,9 +55,12 @@ class SteamScanner:
 
         soundtracks = []
         acf_files = list(self.steamapps_path.glob("*.acf"))
-        logger.info(f"Found {len(acf_files)} ACF files. Checking cache...")
+        logger.info(f"Found {len(acf_files)} ACF files. Scanning for soundtracks...")
 
         for acf_file in acf_files:
+            if limit and len(soundtracks) >= limit:
+                logger.info(f"Reached limit of {limit} soundtracks. Stopping scan.")
+                break
             # Extract AppID from filename (appmanifest_XXXX.acf)
             try:
                 app_id_str = acf_file.stem.split("_")[1]

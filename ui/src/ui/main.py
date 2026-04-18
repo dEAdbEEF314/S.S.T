@@ -66,12 +66,12 @@ async def get_stats():
     """Returns aggregated system statistics."""
     s3 = get_s3()
     config = UIConfig()
-    import requests
+    import httpx
     
     # 1. Scanned (ingest/)
     scanned = 0
     try:
-        resp = s3.s3_client.list_objects_v2(Bucket=s3.bucket_name, Prefix="ingest/", Delimiter="/")
+        resp = s3.s3.list_objects_v2(Bucket=s3.bucket, Prefix="ingest/", Delimiter="/")
         scanned = len(resp.get("CommonPrefixes", []))
     except: pass
     
@@ -79,22 +79,23 @@ async def get_stats():
     archive = 0
     review = 0
     try:
-        resp_a = s3.s3_client.list_objects_v2(Bucket=s3.bucket_name, Prefix="archive/", Delimiter="/")
+        resp_a = s3.s3.list_objects_v2(Bucket=s3.bucket, Prefix="archive/", Delimiter="/")
         archive = len(resp_a.get("CommonPrefixes", []))
-        resp_r = s3.s3_client.list_objects_v2(Bucket=s3.bucket_name, Prefix="review/", Delimiter="/")
+        resp_r = s3.s3.list_objects_v2(Bucket=s3.bucket, Prefix="review/", Delimiter="/")
         review = len(resp_r.get("CommonPrefixes", []))
     except: pass
     
     # 3. Processing (from Prefect)
     processing = 0
     try:
-        resp = requests.post(
-            f"{config.prefect_api_url}/flow_runs/filter",
-            json={"flow_runs": {"state": {"type": {"any_": ["RUNNING"]}}}},
-            timeout=5
-        )
-        if resp.status_code == 200:
-            processing = len(resp.json())
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{config.prefect_api_url}/flow_runs/filter",
+                json={"flow_runs": {"state": {"type": {"any_": ["RUNNING"]}}}},
+                timeout=5
+            )
+            if resp.status_code == 200:
+                processing = len(resp.json())
     except: pass
 
     return {
@@ -108,17 +109,18 @@ async def get_stats():
 async def get_pipeline():
     """Proxy for Prefect flow runs."""
     config = UIConfig()
-    import requests
+    import httpx
     try:
-        resp = requests.post(
-            f"{config.prefect_api_url}/flow_runs/filter",
-            json={
-                "limit": 20,
-                "sort": "START_TIME_DESC"
-            },
-            timeout=5
-        )
-        return resp.json()
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{config.prefect_api_url}/flow_runs/filter",
+                json={
+                    "limit": 20,
+                    "sort": "START_TIME_DESC"
+                },
+                timeout=5
+            )
+            return resp.json()
     except Exception as e:
         return {"error": str(e)}
 
@@ -127,7 +129,7 @@ async def list_llm_logs():
     """List LLM interaction log files from S3."""
     s3 = get_s3()
     try:
-        resp = s3.s3_client.list_objects_v2(Bucket=s3.bucket_name, Prefix="logs/llm/")
+        resp = s3.s3.list_objects_v2(Bucket=s3.bucket, Prefix="logs/llm/")
         if "Contents" not in resp:
             return []
         
@@ -152,7 +154,7 @@ async def get_llm_log_detail(key: str):
     s3 = get_s3()
     import json
     try:
-        obj = s3.s3_client.get_object(Bucket=s3.bucket_name, Key=key)
+        obj = s3.s3.get_object(Bucket=s3.bucket, Key=key)
         data = json.loads(obj["Body"].read().decode("utf-8"))
         return data
     except Exception as e:

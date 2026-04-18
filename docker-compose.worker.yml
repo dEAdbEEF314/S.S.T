@@ -11,10 +11,12 @@ services:
       - PYTHONPATH=/app/src
       - TZ=${TZ:-Asia/Tokyo}
       - PREFECT_API_URL=http://sst-prefect-server:4200/api
+      - PYTHONUNBUFFERED=1
     deploy:
       resources:
         limits:
           cpus: '2.0'
           memory: 4G
-    # Worker runs as a long-lived Prefect worker process
-    # Command is overridden in the Dockerfile or here.
+    # Worker runs as a flow server hosting the processing logic
+    command: ["uv", "run", "-m", "worker.main"]
+    restart: always
