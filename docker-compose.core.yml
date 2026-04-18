@@ -1,4 +1,3 @@
-version: '3.8'
 services:
   prefect-server:
     image: prefecthq/prefect:3.6.26-python3.12
@@ -10,7 +9,7 @@ services:
       - PREFECT_SERVER_API_HOST=0.0.0.0
       - PREFECT_API_URL=${PREFECT_API_URL:-http://localhost:4200/api}
       - PREFECT_API_DATABASE_TIMEOUT=60
-      - PREFECT_API_DATABASE_CONNECTION_URL=sqlite+aiosqlite:////root/.prefect/prefect.db?timeout=60
+      - PREFECT_API_DATABASE_SQLITE_PRAGMAS={"journal_mode":"WAL","synchronous":"NORMAL"}
     volumes:
       - prefect_data:/root/.prefect
     network_mode: bridge
