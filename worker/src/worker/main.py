@@ -11,6 +11,7 @@ from .ident.embedded import EmbeddedMetadataExtractor
 from .ident.cross_val import CrossFormatValidator
 from .ident.mbz import MusicBrainzIdentifier
 from .tagger import AudioTagger
+from .llm import LLMService
 
 import logging
 logger = logging.getLogger("worker")
@@ -68,9 +69,11 @@ class WorkerService:
         )
         mbz_agent = config.get("MUSICBRAINZ_USER_AGENT", "SST/1.0.0 (contact@example.com)")
         self.mbz = MusicBrainzIdentifier(app_name="SST", version="1.0.0", contact=mbz_agent)
+        self.llm = LLMService(config, self.storage)
 
     def process_job(self, input_data: WorkerInput) -> WorkerOutput:
         app_id = input_data.app_id
+        self.llm.set_context(app_id, input_data.steam.name)
         temp_dir = Path(tempfile.mkdtemp(prefix=f"sst_worker_{app_id}_"))
         logger.info(f"Processing App ID {app_id} in {temp_dir}")
         
@@ -210,8 +213,19 @@ class WorkerService:
 
     def _assemble_tags(self, track_meta, album_resolved, steam) -> dict:
         total_discs = album_resolved.total_discs if hasattr(album_resolved, 'total_discs') else 1
+        
+        raw_title = track_meta.get("title") or track_meta["path"].stem
+        # Placeholder: Always normalize title using LLM for now to test the UI flow
+        normalized_title = self.llm.ask(
+            "title_normalization",
+            [
+                {"role": "system", "content": "You are a professional music metadata editor. Normalize the given track title. Remove track numbers, extensions, and clarify Japanese titles if possible. Return ONLY the title."},
+                {"role": "user", "content": f"Title: {raw_title}"}
+            ]
+        ) or raw_title
+
         return {
-            "title": track_meta.get("title") or track_meta["path"].stem,
+            "title": normalized_title,
             "artist": track_meta.get("artist") or album_resolved.artist,
             "album": album_resolved.album,
             "album_artist": album_resolved.album_artist,
