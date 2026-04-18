@@ -161,5 +161,9 @@ def main():
         print(worker_input.model_dump_json(indent=2))
         print("--------------------")
 
+        # 3. Trigger Prefect Flow
+        logger.info(f"Triggering Prefect flow for App ID {app_id}...")
+        trigger_prefect_flow(config.prefect_api_url, scout_result.model_dump())
+
 if __name__ == "__main__":
     main()
