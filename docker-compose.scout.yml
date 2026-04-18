@@ -1,4 +1,3 @@
-version: '3.8'
 services:
   scout:
     build:
@@ -13,7 +12,7 @@ services:
     environment:
       - STEAM_LIBRARY_PATH=/steam_library
       - PYTHONPATH=/app/src
-    network_mode: bridge
+      - TZ=${TZ:-Asia/Tokyo}
 
   ui:
     build:
@@ -27,5 +26,5 @@ services:
       - ./ui/src/ui:/app/src/ui:ro
     environment:
       - PYTHONPATH=/app/src
+      - TZ=${TZ:-Asia/Tokyo}
     restart: always
-    network_mode: bridge
