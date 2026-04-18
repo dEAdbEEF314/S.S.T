@@ -163,7 +163,7 @@ def main():
 
         # 3. Trigger Prefect Flow
         logger.info(f"Triggering Prefect flow for App ID {app_id}...")
-        trigger_prefect_flow(config.prefect_api_url, scout_result.model_dump())
+        trigger_prefect_flow(config.prefect_api_url, scout_result.model_dump(mode='json'))
 
 if __name__ == "__main__":
     main()
