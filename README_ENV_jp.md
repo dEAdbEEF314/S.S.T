@@ -10,6 +10,7 @@ S.S.Tシステムを動作させるために必要な外部要素の設定項目
 ### 2. オーケストレーション (Prefect)
 ワークフローの状態を管理する Prefect Core との通信設定です。
 - `PREFECT_API_URL`: Prefect サーバーのAPIエンドポイント。
+- `PREFECT_FLOW_NAME`: 実行するフローの名前（デフォルト: `SST-Production-Pipeline`）。CoreとScoutで一致させる必要があります。
 
 ### 3. AI / LLM (OpenAI互換)
 音楽タイトルの正規化や判定の検証に使用します。

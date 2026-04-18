@@ -30,28 +30,43 @@ class Config(BaseSettings):
     s3_bucket_name: str
     s3_region: str = "us-east-1"
     prefect_api_url: str = "http://localhost:4200/api"
+    prefect_flow_name: str = "SST-Production-Pipeline"
     steam_language: str = "japanese" # Default to Japanese
     env_mode: str = "development"
     log_level: str = "INFO"
 
-def trigger_prefect_flow(api_url: str, payload: dict):
+def trigger_prefect_flow(api_url: str, flow_name: str, payload: dict):
     """Triggers the Prefect flow deployment."""
     import requests
-    # Find the deployment ID for 'sst-production-pipeline/sst-decentralized-deployment'
-    # Actually, we can trigger by name using the /deployments/name/{flow_name}/{deployment_name}/create_flow_run endpoint
-    url = f"{api_url}/deployments/name/sst-production-pipeline/sst-decentralized-deployment/create_flow_run"
+    
+    # Prefect 3.x: Must get ID by name first
+    lookup_url = f"{api_url}/deployments/name/{flow_name}/sst-decentralized-deployment"
     try:
+        resp = requests.get(lookup_url, timeout=10)
+        if resp.status_code != 200:
+            logger.error(f"Failed to lookup deployment by name: {resp.status_code} - {resp.text}")
+            return
+        
+        deployment_id = resp.json().get("id")
+        if not deployment_id:
+            logger.error(f"Deployment ID not found in response for {flow_name}")
+            return
+
+        trigger_url = f"{api_url}/deployments/{deployment_id}/create_flow_run"
         # We need to pass the payload as the 'scout_results' parameter
         req_payload = {
             "parameters": {
                 "scout_results": [payload]
-            }
+            },
+            "state": {"type": "SCHEDULED"},
+            "name": f"Scout-Trigger-{payload.get('app_id', 'unknown')}"
         }
-        resp = requests.post(url, json=req_payload, timeout=10)
-        if resp.status_code in [200, 201]:
-            logger.info(f"Successfully triggered Prefect flow for App ID: {payload['app_id']}")
+        
+        response = requests.post(trigger_url, json=req_payload, timeout=10)
+        if response.status_code in (200, 201):
+            logger.info(f"Successfully triggered Prefect flow for App ID {payload['app_id']}. Run ID: {response.json().get('id')}")
         else:
-            logger.error(f"Failed to trigger Prefect flow: {resp.status_code} - {resp.text}")
+            logger.error(f"Failed to trigger Prefect flow: {response.status_code} - {response.text}")
     except Exception as e:
         logger.error(f"Exception triggering Prefect flow: {e}")
 
@@ -172,7 +187,7 @@ def main():
 
         # 3. Trigger Prefect Flow
         logger.info(f"Triggering Prefect flow for App ID {app_id}...")
-        trigger_prefect_flow(config.prefect_api_url, scout_result.model_dump(mode='json'))
+        trigger_prefect_flow(config.prefect_api_url, config.prefect_flow_name, scout_result.model_dump(mode='json'))
 
 if __name__ == "__main__":
     main()
