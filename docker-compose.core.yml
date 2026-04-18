@@ -6,10 +6,11 @@ services:
     ports:
       - "4200:4200"
     environment:
+      - TZ=Asia/Tokyo
       - PREFECT_SERVER_API_HOST=0.0.0.0
       - PREFECT_API_URL=${PREFECT_API_URL:-http://localhost:4200/api}
       - PREFECT_API_DATABASE_TIMEOUT=60
-      - PREFECT_API_DATABASE_SQLITE_PRAGMAS={"journal_mode":"WAL","synchronous":"NORMAL"}
+      - PREFECT_API_DATABASE_SQLITE_PRAGMAS={"journal_mode":"WAL","synchronous":"NORMAL","busy_timeout":60000}
     volumes:
       - prefect_data:/root/.prefect
     network_mode: bridge
@@ -25,6 +26,7 @@ services:
       - ./.env.core:/app/.env:ro
       - ./core/src/core:/app/src/core:ro
     environment:
+      - TZ=Asia/Tokyo
       - PREFECT_API_URL=${PREFECT_API_URL:-http://localhost:4200/api}
       - PYTHONPATH=/app/src
     network_mode: bridge
