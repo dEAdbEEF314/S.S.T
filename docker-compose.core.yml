@@ -17,7 +17,7 @@ services:
       - db_data:/var/lib/postgresql/data
 
   prefect-server:
-    image: prefecthq/prefect:3.6.26-python3.12
+    image: prefecthq/prefect:3.6.27-python3.12
     container_name: sst-prefect-server
     command: prefect server start
     ports:
