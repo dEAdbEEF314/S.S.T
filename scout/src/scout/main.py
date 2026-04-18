@@ -66,10 +66,19 @@ def main():
     try:
         config = Config()
     except Exception as e:
-        logger.error(f"Configuration error: {e}")
+        print(f"Configuration error: {e}")
         return
 
-    logging.getLogger().setLevel(config.log_level)
+    # Initialize logging with the level from config
+    numeric_level = getattr(logging, config.log_level.upper(), logging.INFO)
+    logging.basicConfig(
+        level=numeric_level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        force=True
+    )
+    logger.setLevel(numeric_level)
+    
+    logger.info(f"Scout starting in {config.env_mode} mode (Log Level: {config.log_level})")
 
     scanner = SteamScanner(
         config.steam_library_path,
