@@ -9,13 +9,19 @@ services:
     environment:
       - PREFECT_SERVER_API_HOST=0.0.0.0
       - PREFECT_API_URL=${PREFECT_API_URL:-http://localhost:4200/api}
-      - PREFECT_API_DATABASE_TIMEOUT=30
-      - PREFECT_API_DATABASE_CONNECTION_URL=sqlite+aiosqlite:////root/.prefect/prefect.db?timeout=30
+      - PREFECT_API_DATABASE_TIMEOUT=60
+      - PREFECT_API_DATABASE_CONNECTION_URL=sqlite+aiosqlite:////root/.prefect/prefect.db?timeout=60
+    volumes:
+      - prefect_data:/root/.prefect
     network_mode: bridge
 
-  core:
-    build:
-      context: ./core
+    core:
+    ...
+    network_mode: bridge
+
+    volumes:
+    prefect_data:
+
       dockerfile: Dockerfile
     container_name: sst-core
     depends_on:
