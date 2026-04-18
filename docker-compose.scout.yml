@@ -13,6 +13,7 @@ services:
       - STEAM_LIBRARY_PATH=/steam_library
       - PYTHONPATH=/app/src
       - TZ=${TZ:-Asia/Tokyo}
+      - PREFECT_API_URL=http://sst-prefect-server:4200/api
 
   ui:
     build:
@@ -27,4 +28,5 @@ services:
     environment:
       - PYTHONPATH=/app/src
       - TZ=${TZ:-Asia/Tokyo}
+      - PREFECT_API_URL=http://sst-prefect-server:4200/api
     restart: always

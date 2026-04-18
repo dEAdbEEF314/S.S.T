@@ -22,14 +22,14 @@ This document outlines the required steps to migrate the current `docker-compose
 
 ## Required Implementation Steps
 
-- [ ] **Step 1: Separate Worker Execution**
+- [x] **Step 1: Separate Worker Execution**
   - Change the `CMD` in `worker/Dockerfile` from running a local test to starting a Prefect worker: `uv run prefect worker start --pool "sst-worker-pool"`.
   - Remove direct logic import (`from worker.main import WorkerService`) from the Core container.
-- [ ] **Step 2: Create Prefect Deployments**
+- [x] **Step 2: Create Prefect Deployments**
   - Update `core/src/core/main.py` to deploy `process_single_album_task` to the `sst-worker-pool` instead of running it locally.
-- [ ] **Step 3: Implement Scout Trigger**
+- [x] **Step 3: Implement Scout Trigger**
   - Update `scout/src/scout/main.py` to send an HTTP POST request to the Prefect Server (Server C) after uploading files to S3, initiating the `sst_main_flow` with the generated JSON payload.
-- [ ] **Step 4: Environment Variable Segregation**
+- [x] **Step 4: Environment Variable Segregation**
   - Define separate `.env.example` templates for each node type, ensuring `PREFECT_API_URL` and `S3_ENDPOINT_URL` point to Server C's address.
 - [ ] **Step 5: UI Deployment Configuration**
   - Ensure the `ui` container is deployed on Server C alongside the S3 storage.

@@ -22,14 +22,14 @@
 
 ## 必要な実装ステップ
 
-- [ ] **ステップ 1: Worker 実行の分離**
+- [x] **ステップ 1: Worker 実行の分離**
   - `worker/Dockerfile` の起動コマンド (`CMD`) を、ローカルテストの実行からPrefectワーカーの起動 (`uv run prefect worker start --pool "sst-worker-pool"`) に変更する。
-  - CoreコンテナからWorkerロジックの直接インポート (`from worker.main import WorkerService`) を廃止する。
-- [ ] **ステップ 2: Prefect デプロイメントの作成**
+  - CoreコンテナからWorkerロジック의 直接インポート (`from worker.main import WorkerService`) を廃止する。
+- [x] **ステップ 2: Prefect デプロイメントの作成**
   - `core/src/core/main.py` を更新し、タスクをローカル実行するのではなく `sst-worker-pool` にデプロイ（タスク登録）するように変更する。
-- [ ] **ステップ 3: Scout からのトリガー実装**
+- [x] **ステップ 3: Scout からのトリガー実装**
   - `scout/src/scout/main.py` を更新し、S3へのアップロード完了後に生成されたJSONペイロードを含めて、Prefect サーバー (サーバー C) へ HTTP POST リクエストを送り `sst_main_flow` を開始させる。
-- [ ] **ステップ 4: 環境変数の分離**
+- [x] **ステップ 4: 環境変数の分離**
   - 各ノード専用の `.env.example` テンプレートを作成し、`PREFECT_API_URL` および `S3_ENDPOINT_URL` がサーバー C のアドレスを指すように設定を整備する。
 - [ ] **ステップ 5: UI コンテナのデプロイ設定**
   - `ui` コンテナをサーバー C 上（S3ストレージと同じノード）に配置する。

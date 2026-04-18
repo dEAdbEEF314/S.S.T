@@ -10,6 +10,7 @@ services:
     environment:
       - PYTHONPATH=/app/src
       - TZ=${TZ:-Asia/Tokyo}
+      - PREFECT_API_URL=http://sst-prefect-server:4200/api
     deploy:
       resources:
         limits:

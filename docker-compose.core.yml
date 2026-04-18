@@ -44,7 +44,7 @@ services:
       - ./core/src/core:/app/src/core:ro
     environment:
       - TZ=${TZ:-Asia/Tokyo}
-      - PREFECT_API_URL=${PREFECT_API_URL:-http://localhost:4200/api}
+      - PREFECT_API_URL=http://sst-prefect-server:4200/api
       - PYTHONPATH=/app/src
 
 volumes:
