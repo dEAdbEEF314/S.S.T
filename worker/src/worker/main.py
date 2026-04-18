@@ -70,15 +70,17 @@ class WorkerService:
         
         try:
             # 1. Download & Categorize
-            local_files = []
+            local_files_with_rel = []
             for s3_key in input_data.files:
-                dest = temp_dir / Path(s3_key).relative_to("ingest")
+                # relative_path is e.g. "soundtrack_LLB/01.mp3"
+                relative_path = str(Path(s3_key).relative_to(f"ingest/{app_id}"))
+                dest = temp_dir / relative_path
                 if self.storage.download_file(s3_key, dest):
-                    local_files.append(dest)
+                    local_files_with_rel.append((dest, relative_path))
 
             # 2. Extract & Group
-            track_groups = self._group_by_track(local_files)
-            format_map = self._get_format_map(local_files)
+            track_groups = self._group_by_track(local_files_with_rel)
+            format_map = self._get_format_map([f for f, _ in local_files_with_rel])
             
             # 3. Identification
             validated_album = CrossFormatValidator.validate_album(format_map)
@@ -117,6 +119,7 @@ class WorkerService:
                 processed_tracks_meta.append({
                     "file_path": rel_path,
                     "original_filename": source_path.name,
+                    "parent_dir": best_file_meta.get("parent_dir", ""),
                     "title": track_tags["title"],
                     "artist": track_tags["artist"],
                     "tier": tier
@@ -157,13 +160,18 @@ class WorkerService:
         finally:
             shutil.rmtree(temp_dir)
 
-    def _group_by_track(self, files: List[Path]) -> Dict[tuple, List[dict]]:
+    def _group_by_track(self, files_with_rel: List[tuple]) -> Dict[tuple, List[dict]]:
         groups = {}
-        for f in files:
+        for f, rel_path in files_with_rel:
             meta = EmbeddedMetadataExtractor.extract(f)
             key = (meta.get("disc_number", 1), meta.get("track_number", 0), meta.get("title") or f.stem)
             if key not in groups: groups[key] = []
             meta["path"] = f
+            
+            # Extract parent directory from rel_path
+            p = Path(rel_path).parent
+            meta["parent_dir"] = p.as_posix() if str(p) != "." else ""
+            
             groups[key].append(meta)
         return groups
 
