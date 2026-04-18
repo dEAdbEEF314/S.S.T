@@ -72,10 +72,11 @@ def main():
     logging.getLogger().setLevel(config.log_level)
 
     scanner = SteamScanner(
-        config.steam_library_path, 
-        cache_path="/app/scout_cache.json",
+        config.steam_library_path,
+        cache_path="/app/data/scout_cache.json",
         language=config.steam_language
     )
+
     uploader = S3Uploader(
         endpoint_url=config.s3_endpoint_url,
         access_key=config.s3_access_key,
