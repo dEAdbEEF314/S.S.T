@@ -41,3 +41,14 @@
 ## Context Utilization
 
 - **Directory Names**: LLM should use the `parent_dir` field as a secondary source of truth. Folder names like "CD1", "Disc 2", or "Bonus" provide high-confidence context for disc numbering and track categorization when embedded tags are missing.
+
+---
+
+## Rate Limiting & Quota Management
+
+To prevent API errors and service bans (especially for providers like Gemini), the system implements a multi-tier rate limiting strategy:
+
+- **RPM (Requests Per Minute)**: Local in-memory throttling per worker.
+- **TPM (Tokens Per Minute)**: Local token estimation (1 token ≈ 4 characters) and throttling.
+- **RPD (Requests Per Day)**: Global usage tracking using shared storage (S3).
+- **Retry Mechanism**: Exponential backoff specifically for 429 status codes.

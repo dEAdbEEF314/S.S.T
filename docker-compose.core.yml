@@ -1,51 +1,21 @@
 services:
-  db:
-    image: postgres:16-alpine
-    container_name: sst-db
-    restart: always
-    environment:
-      - POSTGRES_USER=${POSTGRES_USER:-prefect}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-prefect}
-      - POSTGRES_DB=${POSTGRES_DB:-prefect}
-      - TZ=${TZ:-Asia/Tokyo}
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-prefect}"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    volumes:
-      - db_data:/var/lib/postgresql/data
-
-  prefect-server:
-    image: prefecthq/prefect:3.6.27-python3.12
-    container_name: sst-prefect-server
-    command: prefect server start
-    ports:
-      - "4200:4200"
-    depends_on:
-      db:
-        condition: service_healthy
-    environment:
-      - TZ=${TZ:-Asia/Tokyo}
-      - PREFECT_SERVER_API_HOST=0.0.0.0
-      - PREFECT_API_URL=${PREFECT_API_URL:-http://localhost:4200/api}
-      - PREFECT_API_DATABASE_CONNECTION_URL=postgresql+asyncpg://${POSTGRES_USER:-prefect}:${POSTGRES_PASSWORD:-prefect}@db:5432/${POSTGRES_DB:-prefect}
-
   core:
     build:
       context: ./core
       dockerfile: Dockerfile
     container_name: sst-core
-    depends_on:
-      prefect-server:
-        condition: service_started
     volumes:
       - ./.env.core:/app/.env:ro
       - ./core/src/core:/app/src/core:ro
     environment:
       - TZ=${TZ:-Asia/Tokyo}
-      - PREFECT_API_URL=http://sst-prefect-server:4200/api
       - PYTHONPATH=/app/src
+      - PREFECT_API_URL=http://prefect.outergods.lan/api
+    extra_hosts:
+      - "prefect.outergods.lan:192.168.11.205"
+      - "swfs-s3.outergods.lan:192.168.11.205"
 
-volumes:
-  db_data:
+networks:
+  default:
+    name: sst-network
+    external: true

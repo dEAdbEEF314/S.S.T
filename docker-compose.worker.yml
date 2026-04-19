@@ -10,13 +10,20 @@ services:
     environment:
       - PYTHONPATH=/app/src
       - TZ=${TZ:-Asia/Tokyo}
-      - PREFECT_API_URL=http://sst-prefect-server:4200/api
+      - PREFECT_API_URL=http://prefect.outergods.lan/api
       - PYTHONUNBUFFERED=1
+    extra_hosts:
+      - "prefect.outergods.lan:192.168.11.205"
+      - "swfs-s3.outergods.lan:192.168.11.205"
     deploy:
       resources:
         limits:
           cpus: '2.0'
           memory: 4G
-    # Worker runs as a flow server hosting the processing logic
     command: ["uv", "run", "-m", "worker.main"]
     restart: always
+
+networks:
+  default:
+    name: sst-network
+    external: true
