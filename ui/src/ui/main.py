@@ -1,10 +1,13 @@
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Body
 from fastapi.responses import StreamingResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import List, Optional
 from .s3_service import S3UIService
 import os
+import httpx
 from pathlib import Path
 
 class UIConfig(BaseSettings):
@@ -124,6 +127,18 @@ async def get_pipeline():
     except Exception as e:
         return {"error": str(e)}
 
+@app.get("/api/albums")
+async def list_albums(status: str):
+    """List albums in a specific status (archive or review)."""
+    if status not in ["archive", "review"]:
+        raise HTTPException(status_code=400, detail="Invalid status")
+    s3 = get_s3()
+    try:
+        return s3.list_albums(status)
+    except Exception as e:
+        logger.error(f"Failed to list albums: {e}")
+        return {"error": str(e)}
+
 @app.get("/api/llm-logs")
 async def list_llm_logs():
     """List LLM interaction log files from S3."""
@@ -159,6 +174,84 @@ async def get_llm_log_detail(key: str):
         return data
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+@app.get("/api/albums/{status}/{app_id}/metadata")
+async def get_album_metadata(status: str, app_id: str):
+    """Fetch raw metadata.json for an album."""
+    s3 = get_s3()
+    import json
+    try:
+        key = f"{status}/{app_id}/metadata.json"
+        obj = s3.s3.get_object(Bucket=s3.bucket, Key=key)
+        data = json.loads(obj["Body"].read().decode("utf-8"))
+        return data
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Metadata not found: {e}")
+
+class BulkActionRequest(BaseModel):
+    status: str
+    app_ids: List[str]
+
+@app.post("/api/albums/bulk-delete")
+async def bulk_delete_albums(req: BulkActionRequest):
+    """Delete multiple albums from S3."""
+    s3 = get_s3()
+    for app_id in req.app_ids:
+        s3.delete_album(req.status, app_id)
+    return {"message": f"Deleted {len(req.app_ids)} albums"}
+
+@app.post("/api/albums/approve")
+async def approve_album(status: str = Body(...), app_id: str = Body(...)):
+    """Move an album from review to archive."""
+    if status != "review":
+        raise HTTPException(status_code=400, detail="Only review albums can be approved")
+    s3 = get_s3()
+    s3.move_album(app_id, "review", "archive")
+    return {"message": f"Album {app_id} approved and moved to archive"}
+
+@app.post("/api/albums/reprocess")
+async def reprocess_album(status: str = Body(...), app_id: str = Body(...)):
+    """Move an album back to ingest and trigger Prefect flow."""
+    s3 = get_s3()
+    config = UIConfig()
+    
+    # 1. Move to ingest
+    s3.move_album(app_id, status, "ingest")
+    
+    # 2. Trigger Prefect
+    # Fetch Scout result format metadata for Prefect
+    try:
+        # We need the uploaded_at and files list. For simplicity, we just trigger the flow
+        # In a real scenario, we might want to re-read ingest/ folder
+        async with httpx.AsyncClient() as client:
+            # First, find the deployment ID
+            dep_resp = await client.get(f"{config.prefect_api_url}/deployments/name/{config.prefect_flow_name}/sst-decentralized-deployment")
+            if dep_resp.status_code != 200:
+                raise Exception(f"Deployment not found: {dep_resp.text}")
+            deployment_id = dep_resp.json()["id"]
+            
+            # Create flow run
+            # The flow expects a ScoutResult object, but we'll try to provide minimal needed
+            # Actually, the core flow just needs the app_id in the list
+            trigger_resp = await client.post(
+                f"{config.prefect_api_url}/deployments/{deployment_id}/create_flow_run",
+                json={
+                    "name": f"Reprocess-{app_id}",
+                    "parameters": {
+                        "scout_results": [{
+                            "app_id": int(app_id),
+                            "storage_location": "local" # S3 is assumed by core
+                        }]
+                    }
+                }
+            )
+            if trigger_resp.status_code not in [200, 201]:
+                raise Exception(f"Failed to trigger flow: {trigger_resp.text}")
+                
+        return {"message": f"Album {app_id} moved to ingest and reprocessing triggered"}
+    except Exception as e:
+        logger.error(f"Reprocess failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # --- Single Page Application (SPA) Support ---
 

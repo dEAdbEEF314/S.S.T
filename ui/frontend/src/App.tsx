@@ -14,6 +14,8 @@ import { cn } from '@/lib/utils';
 import DashboardPage from '@/pages/Dashboard';
 import PipelinePage from '@/pages/Pipeline';
 import LLMLogsPage from '@/pages/LLMLogs';
+import ArchivePage from '@/pages/Archive';
+import ReviewPage from '@/pages/Review';
 
 const queryClient = new QueryClient();
 
@@ -91,8 +93,8 @@ export default function App() {
             <Route path="/" element={<DashboardPage />} />
             <Route path="/pipeline" element={<PipelinePage />} />
             <Route path="/llm-logs" element={<LLMLogsPage />} />
-            <Route path="/archive" element={<div className="text-slate-500 italic text-sm">Archive list view pending (Phase 6)</div>} />
-            <Route path="/review" element={<div className="text-slate-500 italic text-sm">Review list view pending (Phase 6)</div>} />
+            <Route path="/archive" element={<ArchivePage />} />
+            <Route path="/review" element={<ReviewPage />} />
             <Route path="/settings" element={<div className="text-slate-500 italic text-sm">System configuration pending</div>} />
           </Routes>
         </Layout>

@@ -95,7 +95,7 @@ class WorkerService:
             mb_result = self.mbz.search_release(input_data.steam.name, len(track_groups))
             
             resolved = self._merge_metadata(input_data, validated_album, mb_result)
-            status = "success" if (resolved.resolved and resolved.album) else "review"
+            status = "archive" if (resolved.resolved and resolved.album) else "review"
 
             # 4. Processing & Tagging
             tagger = AudioTagger(temp_dir / "output")

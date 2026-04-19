@@ -32,10 +32,9 @@ class WorkerStorage:
     def upload_result(self, local_path: Path, status: str, app_id: int, rel_path: str) -> str:
         """
         Uploads the processed file to archive/ or review/.
-        :param status: 'success' (archive) or 'review'
+        :param status: 'archive' or 'review'
         """
-        prefix = "archive" if status == "success" else "review"
-        s3_key = f"{prefix}/{app_id}/{rel_path}"
+        s3_key = f"{status}/{app_id}/{rel_path}"
         
         try:
             self.s3_client.upload_file(str(local_path), self.bucket_name, s3_key)
