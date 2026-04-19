@@ -40,29 +40,30 @@ class AudioTagger:
     def convert_and_limit(self, source_path: Path, quality_tier: str) -> Path:
         """
         Converts audio based on quality tier and strict constraints.
-        :param quality_tier: 'lossless' -> AIFF, 'mp3' -> Pass, 'lossy' -> 320k MP3
+        :param quality_tier: 'lossless' -> AIFF (24-bit/48kHz), 'lossy' -> 320k MP3
         """
         target_ext = ".aiff" if quality_tier == "lossless" else ".mp3"
         target_path = self.output_dir / source_path.with_suffix(target_ext).name
         
-        if quality_tier == "mp3" and source_path.suffix.lower() == ".mp3":
-            logger.info(f"Passthrough MP3: {source_path.name}")
-            import shutil
-            shutil.copy2(source_path, target_path)
-            return target_path
-
         # FFmpeg command for strict limits
         cmd = ["ffmpeg", "-i", str(source_path), "-y", "-loglevel", "error"]
-        
-        # Limit sample rate
-        cmd += ["-ar", MAX_SAMPLE_RATE]
 
         if quality_tier == "lossless":
-            # Convert to AIFF 24-bit (pcm_s24be)
-            cmd += ["-c:a", "pcm_s24be", str(target_path)] 
+            # AIFF: 24-bit PCM Big Endian, 48kHz
+            cmd += [
+                "-ar", "48000",
+                "-c:a", "pcm_s24be", 
+                "-write_id3v2", "1",
+                str(target_path)
+            ]
         else:
-            # Convert other lossy to 320kbps CBR MP3
-            cmd += ["-codec:a", "libmp3lame", "-b:a", MP3_BITRATE, str(target_path)]
+            # MP3: Convert to 320kbps CBR, max 48kHz
+            cmd += [
+                "-ar", "48000",
+                "-codec:a", "libmp3lame", 
+                "-b:a", "320k", 
+                str(target_path)
+            ]
 
         try:
             subprocess.run(cmd, check=True)
@@ -72,11 +73,32 @@ class AudioTagger:
             raise
 
     def write_tags(self, file_path: Path, tags: dict, artwork_data: Optional[bytes] = None):
-        """Writes ID3v2.3 tags with strict field mapping."""
+        """Writes ID3v2.3 tags with strict field mapping. Supports MP3 and AIFF."""
+        from mutagen import File
+        from mutagen.id3 import ID3, TIT2, TPE1, TALB, TPE2, TCON, TIT1, COMM, TCOM, TDRC, TRCK, TPOS, TXXX, APIC
+
         try:
-            audio = ID3(file_path)
-        except:
-            audio = ID3()
+            # For AIFF, we need to ensure it's wrapped or handled by Mutagen correctly
+            audio_file = File(file_path)
+            if audio_file is None:
+                logger.error(f"Mutagen could not open {file_path}")
+                return
+
+            if file_path.suffix.lower() == ".aiff":
+                # AIFF might not have tags yet
+                if not audio_file.tags:
+                    audio_file.add_tags()
+                audio = audio_file.tags
+            else:
+                # Standard ID3 for MP3
+                try:
+                    audio = ID3(file_path)
+                except:
+                    audio = ID3()
+                    audio.save(file_path)
+        except Exception as e:
+            logger.error(f"Failed to initialize tags for {file_path}: {e}")
+            return
 
         def _safe_text(val):
             return [str(val)] if val is not None and str(val).strip() != "" else []
@@ -120,4 +142,7 @@ class AudioTagger:
                 encoding=3, mime="image/png", type=3, desc="Front Cover", data=artwork_data
             ))
 
-        audio.save(file_path, v2_version=3)
+        if file_path.suffix.lower() == ".aiff":
+            audio_file.save()
+        else:
+            audio.save(file_path, v2_version=3)

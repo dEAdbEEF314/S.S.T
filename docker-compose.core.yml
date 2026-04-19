@@ -4,6 +4,8 @@ services:
       context: ./core
       dockerfile: Dockerfile
     container_name: sst-core
+    env_file:
+      - .env.core
     volumes:
       - ./.env.core:/app/.env:ro
       - ./core/src/core:/app/src/core:ro

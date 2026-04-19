@@ -19,7 +19,11 @@ import ReviewPage from '@/pages/Review';
 
 const queryClient = new QueryClient();
 
-function SidebarItem({ to, icon: Icon, children }: { to: string, icon: any, children: React.ReactNode }) {
+import { LucideIcon } from 'lucide-react';
+
+// ... (other imports)
+
+function SidebarItem({ to, icon: Icon, children }: { to: string, icon: LucideIcon, children: React.ReactNode }) {
   const location = useLocation();
   const isActive = location.pathname === to;
   

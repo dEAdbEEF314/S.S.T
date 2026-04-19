@@ -20,4 +20,5 @@ class ScoutResult(BaseModel):
 
 class WorkerInput(BaseModel):
     app_id: int
-    files: List[str]  # List of S3 paths: ingest/{app_id}/...
+    files: List[str]
+    steam: ScoutResult
