@@ -16,7 +16,7 @@ class UIConfig(BaseSettings):
     s3_access_key: str
     s3_secret_key: str
     s3_bucket_name: str
-    prefect_api_url: str = "http://sst-prefect-server:4200/api"
+    prefect_api_url: str  # Must be provided via .env
     prefect_flow_name: str = "SST-Production-Pipeline"
 
 app = FastAPI(title="S.S.T Web Interface")
@@ -54,7 +54,10 @@ async def download_album(status: str, app_id: str):
         raise HTTPException(status_code=404, detail="Album not ready or not found")
 
     zip_stream = s3.create_zip_stream(status, app_id)
-    filename = f"{details['name'].replace(' ', '_')}_{status.capitalize()}.zip"
+    
+    # Sanitize filename: remove unsafe chars, replace spaces with underscores
+    safe_name = "".join([c if c.isalnum() or c in ".-_" else "_" for c in details['name']])
+    filename = f"{safe_name}_{status.capitalize()}.zip"
     
     return StreamingResponse(
         zip_stream,
@@ -214,25 +217,39 @@ async def reprocess_album(status: str = Body(...), app_id: str = Body(...)):
     """Move an album back to ingest and trigger Prefect flow."""
     s3 = get_s3()
     config = UIConfig()
+    import json
     
-    # 1. Move to ingest
-    s3.move_album(app_id, status, "ingest")
-    
-    # 2. Trigger Prefect
-    # Fetch Scout result format metadata for Prefect
     try:
-        # We need the uploaded_at and files list. For simplicity, we just trigger the flow
-        # In a real scenario, we might want to re-read ingest/ folder
+        # 1. Capture current metadata to restore steam info
+        steam_info = {}
+        try:
+            meta_obj = s3.s3.get_object(Bucket=s3.bucket, Key=f"{status}/{app_id}/metadata.json")
+            old_meta = json.loads(meta_obj["Body"].read().decode("utf-8"))
+            steam_info = old_meta.get("steam_info", {})
+            # Map back to ScoutResult format
+            steam_info["app_id"] = int(app_id)
+            steam_info["name"] = old_meta.get("album_name", f"Unknown ({app_id})")
+        except:
+            # Fallback if metadata missing
+            steam_info = {"app_id": int(app_id), "name": f"Unknown ({app_id})"}
+
+        # 2. Move to ingest
+        s3.move_album(app_id, status, "ingest")
+        
+        # 3. Scan ingest/ for the file list
+        files = []
+        resp = s3.s3.list_objects_v2(Bucket=s3.bucket, Prefix=f"ingest/{app_id}/")
+        if "Contents" in resp:
+            files = [obj["Key"] for obj in resp["Contents"] if not obj["Key"].endswith(".json")]
+
+        # 4. Trigger Prefect
         async with httpx.AsyncClient() as client:
-            # First, find the deployment ID
             dep_resp = await client.get(f"{config.prefect_api_url}/deployments/name/{config.prefect_flow_name}/sst-decentralized-deployment")
             if dep_resp.status_code != 200:
                 raise Exception(f"Deployment not found: {dep_resp.text}")
             deployment_id = dep_resp.json()["id"]
             
-            # Create flow run
-            # The flow expects a ScoutResult object, but we'll try to provide minimal needed
-            # Actually, the core flow just needs the app_id in the list
+            # Reconstruct the expected WorkerInput wrapper inside scout_results
             trigger_resp = await client.post(
                 f"{config.prefect_api_url}/deployments/{deployment_id}/create_flow_run",
                 json={
@@ -240,7 +257,8 @@ async def reprocess_album(status: str = Body(...), app_id: str = Body(...)):
                     "parameters": {
                         "scout_results": [{
                             "app_id": int(app_id),
-                            "storage_location": "local" # S3 is assumed by core
+                            "files": files,
+                            "steam": steam_info
                         }]
                     }
                 }
@@ -250,7 +268,8 @@ async def reprocess_album(status: str = Body(...), app_id: str = Body(...)):
                 
         return {"message": f"Album {app_id} moved to ingest and reprocessing triggered"}
     except Exception as e:
-        logger.error(f"Reprocess failed: {e}")
+        import logging
+        logging.getLogger("uvicorn").error(f"Reprocess failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- Single Page Application (SPA) Support ---

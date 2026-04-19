@@ -1,10 +1,10 @@
 import { useQuery } from '@tanstack/react-query';
 import { fetchStats } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Database, Activity, Archive, ClipboardCheck, Server } from 'lucide-react';
+import { LucideIcon, Database, Activity, Archive, ClipboardCheck, Server } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 
-function StatCard({ title, value, icon: Icon, description }: { title: string, value: number | string, icon: any, description: string }) {
+function StatCard({ title, value, icon: Icon, description }: { title: string, value: number | string, icon: LucideIcon, description: string }) {
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
