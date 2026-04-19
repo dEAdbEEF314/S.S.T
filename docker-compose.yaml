@@ -4,6 +4,8 @@ services:
       context: ./ui
       dockerfile: Dockerfile
     container_name: sst-ui
+    env_file:
+      - .env.ui
     ports:
       - "8000:8000"
     volumes:

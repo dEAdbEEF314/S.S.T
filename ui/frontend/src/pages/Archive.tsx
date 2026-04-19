@@ -3,16 +3,18 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchAlbums, bulkDeleteAlbums, reprocessAlbum } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { AlbumRow } from '@/components/dashboard/AlbumRow';
-import { Music, Trash2, Search, X, Code, Download } from 'lucide-react';
+import { Music, Trash2, Search, X, Code, Download, RefreshCcw } from 'lucide-react';
 import { Checkbox } from '@/components/ui/checkbox';
+import { cn } from '@/lib/utils';
+import { Album } from '@/lib/types';
 
 export default function ArchivePage() {
   const queryClient = useQueryClient();
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [inspectingAlbum, setInspectingAlbum] = useState<any | null>(null);
+  const [inspectingAlbum, setInspectingAlbum] = useState<Album | null>(null);
 
-  const { data: albums, isLoading, error } = useQuery({
+  const { data: albums, isLoading, error, refetch, isRefetching } = useQuery<Album[]>({
     queryKey: ['albums', 'archive'],
     queryFn: () => fetchAlbums('archive'),
     refetchInterval: 30000,
@@ -35,7 +37,7 @@ export default function ArchivePage() {
 
   const filteredAlbums = useMemo(() => {
     if (!albums) return [];
-    return albums.filter((a: any) => 
+    return albums.filter((a: Album) => 
       a.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
       a.app_id.toString().includes(searchTerm)
     );
@@ -52,7 +54,7 @@ export default function ArchivePage() {
     if (selectedIds.size === filteredAlbums.length) {
       setSelectedIds(new Set());
     } else {
-      setSelectedIds(new Set(filteredAlbums.map((a: any) => a.app_id)));
+      setSelectedIds(new Set(filteredAlbums.map((a: Album) => a.app_id)));
     }
   };
 
@@ -79,6 +81,17 @@ export default function ArchivePage() {
         </div>
         
         <div className="flex items-center gap-3">
+          <Button 
+            variant="outline" 
+            size="sm" 
+            onClick={() => refetch()} 
+            disabled={isLoading || isRefetching}
+            className="gap-2 border-slate-800 bg-slate-900/50 hover:bg-slate-800 text-slate-400 hover:text-slate-100 transition-all"
+          >
+            <RefreshCcw size={16} className={cn(isRefetching && "animate-spin")} />
+            Refresh
+          </Button>
+          
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={16} />
             <input 
@@ -130,7 +143,7 @@ export default function ArchivePage() {
                 </td>
               </tr>
             ) : (
-              filteredAlbums.map((album: any) => (
+              filteredAlbums.map((album) => (
                 <AlbumRow 
                   key={album.app_id} 
                   album={album}
@@ -160,10 +173,41 @@ export default function ArchivePage() {
                 <X size={20} />
               </button>
             </div>
-            <div className="flex-1 overflow-auto p-6 bg-slate-950 font-mono text-[13px]">
-              <pre className="text-emerald-400 whitespace-pre-wrap">
-                {JSON.stringify(inspectingAlbum.tracks || inspectingAlbum, null, 2)}
-              </pre>
+            <div className="flex-1 overflow-auto bg-slate-950 p-0 flex flex-col md:flex-row">
+              {/* Left Side: Summary & Image Placeholder */}
+              <div className="w-full md:w-1/3 border-b md:border-b-0 md:border-r border-slate-800 p-6 flex flex-col gap-6">
+                <div className="aspect-square w-full bg-slate-900 rounded-lg border border-slate-800 flex items-center justify-center text-slate-700 shadow-inner">
+                  <Music size={64} />
+                </div>
+                <div className="flex flex-col gap-4">
+                  <div>
+                    <span className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">Album Artist</span>
+                    <p className="text-sm font-medium text-slate-200">{inspectingAlbum.steam_info?.developer || 'Unknown'}</p>
+                  </div>
+                  <div>
+                    <span className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">Source</span>
+                    <p className="text-sm font-medium text-blue-400">{inspectingAlbum.external_info?.source || 'embedded'}</p>
+                  </div>
+                  {inspectingAlbum.external_info?.vgmdb_url && (
+                    <div>
+                      <span className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">VGMdb</span>
+                      <a href={inspectingAlbum.external_info.vgmdb_url} target="_blank" rel="noreferrer" className="text-sm font-medium text-emerald-400 hover:underline block truncate">
+                        {inspectingAlbum.external_info.vgmdb_url}
+                      </a>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Right Side: Track List / JSON */}
+              <div className="flex-1 flex flex-col overflow-hidden">
+                <div className="p-6 overflow-auto font-mono text-[13px]">
+                  <h4 className="text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-4">Resolved Metadata</h4>
+                  <pre className="text-emerald-400 whitespace-pre-wrap bg-slate-900/50 p-4 rounded-lg border border-slate-800/50">
+                    {JSON.stringify(inspectingAlbum.tracks || inspectingAlbum, null, 2)}
+                  </pre>
+                </div>
+              </div>
             </div>
             <div className="p-4 border-t border-slate-800 flex justify-end gap-3 bg-slate-900/50">
               <Button onClick={() => setInspectingAlbum(null)} variant="secondary">Close</Button>

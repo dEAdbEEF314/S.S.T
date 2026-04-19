@@ -46,6 +46,34 @@
 4. **処理**: Worker が `format_spec.md` に従ってファイルを処理 -> S3 の `archive/` (成功) または `review/` (要手動確認) にアップロード。
 5. **検証**: ユーザーが Web UI を通じて進捗を監視し、処理済みの ZIP をダウンロード。
 
-## 環境の永続性
-- **レート制限**: 日次の LLM 使用状況は `sst-data/system/llm_usage_YYYYMMDD.json` で追跡されます。
-- **キャッシュ**: Scout は、冗長なスキャンを防ぐためにローカルの `scout_cache.json` を使用します（設定されている場合）。
+## Act-7 本番テスト環境のセットアップ
+`act-7` ブランチ/リポジトリを使用して本番テストを実行するには、以下の手順に従ってください。
+
+### 1. 環境の準備
+`act-7` リポジトリをターゲットディレクトリにプルします。ディレクトリ構造が入れ子（例：`/home/sexyroot/src/S.S.T/S.S.T/`）にならないよう、実行ディレクトリに注意してください。
+
+```bash
+mkdir -p /home/sexyroot/src/S.S.T
+cd /home/sexyroot/src/S.S.T
+# ディレクトリがまだ git リポジトリでない場合:
+git clone <repository_url> .
+git checkout act-7
+# すでにリポジトリである場合:
+git pull origin act-7
+```
+
+### 2. 設定の同期
+ワークスペースから本番テスト環境へ環境設定ファイルをコピーします。
+
+```bash
+# ワークスペースのルートから実行:
+cp .env.core .env.scout .env.ui .env.worker /home/sexyroot/src/S.S.T/
+```
+
+### 3. テストの実行
+プロジェクトで定義されている本番テストを実行します。
+```bash
+cd /home/sexyroot/src/S.S.T
+python3 run_production_test.py
+```
+結果については `scout_error.txt` および `scout_debug.txt` を確認してください。

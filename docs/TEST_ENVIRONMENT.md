@@ -46,6 +46,34 @@ Testing is performed across multiple specialized nodes (containers), each with i
 4. **Processing**: Worker processes files according to `format_spec.md` -> Uploads to S3 `archive/` (success) or `review/` (manual check needed).
 5. **Verification**: User monitors progress and downloads processed ZIPs via the Web UI.
 
-## Environment Persistence
-- **Rate Limits**: Daily LLM usage is tracked in `sst-data/system/llm_usage_YYYYMMDD.json`.
-- **Cache**: Scout uses a local `scout_cache.json` to prevent redundant scanning (if configured).
+## Act-7 Production Test Environment Setup
+To perform production testing using the `act-7` branch/repository, follow these steps:
+
+### 1. Environment Preparation
+Pull the `act-7` repository into the target directory. Ensure you are in the correct directory to avoid nested structures (e.g., `/home/sexyroot/src/S.S.T/S.S.T/`).
+
+```bash
+mkdir -p /home/sexyroot/src/S.S.T
+cd /home/sexyroot/src/S.S.T
+# If the directory is not yet a git repository:
+git clone <repository_url> .
+git checkout act-7
+# If it is already a repository:
+git pull origin act-7
+```
+
+### 2. Configuration Sync
+Copy the environment configuration files from the workspace to the production test environment:
+
+```bash
+# From the workspace root:
+cp .env.core .env.scout .env.ui .env.worker /home/sexyroot/src/S.S.T/
+```
+
+### 3. Execution
+Run the production tests as defined in the project:
+```bash
+cd /home/sexyroot/src/S.S.T
+python3 run_production_test.py
+```
+Check `scout_error.txt` and `scout_debug.txt` for results.

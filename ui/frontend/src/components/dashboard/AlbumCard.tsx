@@ -6,12 +6,14 @@ import { Download, ExternalLink, Calendar, Hash, HardDrive, RefreshCcw, CheckCir
 import { format } from 'date-fns';
 import { cn } from '@/lib/utils';
 
+import { Album } from '@/lib/types';
+
 interface AlbumCardProps {
-  album: any;
+  album: Album;
   isSelected: boolean;
   onSelect: (appId: string, checked: boolean) => void;
   onDownload: (appId: string) => void;
-  onInspect: (album: any) => void;
+  onInspect: (album: Album) => void;
   onReprocess?: (appId: string) => void;
   onApprove?: (appId: string) => void;
   status: 'archive' | 'review';

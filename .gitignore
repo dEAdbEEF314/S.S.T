@@ -35,6 +35,7 @@ ENV/
 .env.scout
 .env.worker
 .env.core
+.env.old
 
 # IDEs
 .vscode/

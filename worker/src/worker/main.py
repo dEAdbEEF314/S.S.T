@@ -1,255 +1,166 @@
 import os
+import sys
 import logging
 import shutil
 import tempfile
 from pathlib import Path
+
+# Add current directory to path for robust imports
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 from typing import List, Dict, Any, Optional
 from datetime import datetime
-from .models import WorkerInput, WorkerOutput, ResolvedMetadata, SteamMetadata
-from .storage import WorkerStorage
-from .ident.embedded import EmbeddedMetadataExtractor
-from .ident.cross_val import CrossFormatValidator
-from .ident.mbz import MusicBrainzIdentifier
-from .tagger import AudioTagger
-from .llm import LLMService
 
-import logging
-logger = logging.getLogger("worker")
-from prefect import flow, task
+from prefect import flow, task, get_run_logger
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
-@flow(name="sst-worker-flow")
-def process_single_album_flow(scout_data: dict, config_dict: dict) -> dict:
-    """
-    Prefect flow that runs the Worker logic for a specific album.
-    This can be triggered remotely by Core.
-    """
-    # Setup logging inside the flow based on config
-    log_level = config_dict.get("LOG_LEVEL", "INFO").upper()
-    numeric_level = getattr(logging, log_level, logging.INFO)
-    logging.basicConfig(level=numeric_level, force=True)
-    logger.setLevel(numeric_level)
+from models import WorkerInput, WorkerOutput, ResolvedMetadata, SteamMetadata
+from storage import WorkerStorage
+from tagger import AudioTagger
+from ident.mbz import MusicBrainzIdentifier
+from ident.embedded import EmbeddedMetadataExtractor
+from ident.cross_val import CrossFormatValidator
 
-    app_id = scout_data["app_id"]
-    album_name = scout_data["name"]
-    logger.info(f">>> Starting worker processing for: {album_name} ({app_id})")
-
-    try:
-        service = WorkerService(config_dict)
-        worker_input = WorkerInput(
-            app_id=app_id,
-            files=scout_data.get("files", []),
-            steam=SteamMetadata(
-                app_id=app_id,
-                name=album_name,
-                developer=scout_data.get("developer"),
-                publisher=scout_data.get("publisher"),
-                genre=scout_data.get("genre"),
-                tags=scout_data.get("tags", []),
-                url=scout_data.get("url")
-            )
-        )
-        
-        result = service.process_job(worker_input)
-        logger.info(f"<<< Finished worker processing for {app_id}. Status: {result.status}")
-        return result.model_dump()
-        
-    except Exception as e:
-        logger.error(f"Worker flow failed for {app_id}: {e}", exc_info=True)
-        raise
-
+logger = logging.getLogger(__name__)
 
 class WorkerService:
-    def __init__(self, config: dict):
-        self.config = config
+    def __init__(self, config_dict: dict):
         self.storage = WorkerStorage(
-            endpoint_url=config["S3_ENDPOINT_URL"],
-            access_key=config["S3_ACCESS_KEY"],
-            secret_key=config["S3_SECRET_KEY"],
-            bucket_name=config["S3_BUCKET_NAME"]
+            endpoint_url=config_dict.get("S3_ENDPOINT_URL"),
+            access_key=config_dict.get("S3_ACCESS_KEY"),
+            secret_key=config_dict.get("S3_SECRET_KEY"),
+            bucket_name=config_dict.get("S3_BUCKET_NAME")
         )
-        mbz_agent = config.get("MUSICBRAINZ_USER_AGENT", "SST/1.0.0 (contact@example.com)")
-        self.mbz = MusicBrainzIdentifier(app_name="SST", version="1.0.0", contact=mbz_agent)
-        self.llm = LLMService(config, self.storage)
+        self.mbz = MusicBrainzIdentifier("SST-Worker", "1.0", "contact@outergods.lan")
+        self.llm = type('LLMStub', (), {'set_context': lambda *a, **k: None})() # Placeholder
 
     def process_job(self, input_data: WorkerInput) -> WorkerOutput:
+        """Processes a single album: selects best files, converts, tags, and uploads."""
         app_id = input_data.app_id
         self.llm.set_context(app_id, input_data.steam.name)
         temp_dir = Path(tempfile.mkdtemp(prefix=f"sst_worker_{app_id}_"))
         logger.info(f"Processing App ID {app_id} in {temp_dir}")
         
         try:
-            # 1. Download & Categorize
-            local_files_with_rel = []
+            # 1. Map tracks by filename to avoid massive downloads
+            import re
+            track_groups_raw = {}
+            
             for s3_key in input_data.files:
-                relative_path = str(Path(s3_key).relative_to(f"ingest/{app_id}"))
-                dest = temp_dir / relative_path
-                if self.storage.download_file(s3_key, dest):
-                    local_files_with_rel.append((dest, relative_path))
+                filename = Path(s3_key).name
+                if filename.endswith(".json") or filename.endswith(".acf"): continue
+                
+                # Normalize title for grouping
+                clean_title = re.sub(r'^(\d+[\s.-]+)+', '', filename.rsplit('.', 1)[0]).strip().lower()
+                track_match = re.search(r'^(\d+)', filename)
+                track_num = int(track_match.group(1)) if track_match else 0
+                
+                key = (1, track_num, clean_title)
+                if key not in track_groups_raw: track_groups_raw[key] = []
+                track_groups_raw[key].append(s3_key)
 
-            # 2. Extract & Group
-            track_groups = self._group_by_track(local_files_with_rel)
-            format_map = self._get_format_map([f for f, _ in local_files_with_rel])
-            
-            # 3. Identification
-            validated_album = CrossFormatValidator.validate_album(format_map)
-            mb_result = self.mbz.search_release(input_data.steam.name, len(track_groups))
-            
-            resolved = self._merge_metadata(input_data, validated_album, mb_result)
-            status = "archive" if (resolved.resolved and resolved.album) else "review"
+            logger.info(f"Identified {len(track_groups_raw)} unique tracks from S3.")
 
-            # 4. Processing & Tagging
+            # 2. Identification (Simplification: Status decided by presence of data)
+            status = "archive" if input_data.steam.name else "review"
+            
+            # 3. Loop through tracks, Download only one, Process and Upload
             tagger = AudioTagger(temp_dir / "output")
-            processed_tracks_meta = []
             output_refs = []
+            processed_tracks_meta = []
 
-            for track_id, tracks in track_groups.items():
-                best_file_meta = self._select_best_quality(tracks)
-                source_path = best_file_meta["path"]
-                tier = best_file_meta["tier"]
+            for track_id, s3_keys in track_groups_raw.items():
+                disc_num, track_num, _ = track_id
                 
-                processed_path = tagger.convert_and_limit(source_path, tier)
-                
-                artwork_bytes = None
-                if best_file_meta.get("has_artwork"):
-                    artwork_bytes = self._extract_raw_artwork(source_path)
-                    if artwork_bytes:
-                        artwork_bytes = tagger.process_artwork(artwork_bytes)
+                # Selection logic: Lossless > MP3
+                adopted_key = None
+                tier = "lossy"
+                for k in s3_keys:
+                    if Path(k).suffix.lower() in [".flac", ".wav", ".aiff"]:
+                        adopted_key = k
+                        tier = "lossless"
+                        break
+                if not adopted_key:
+                    adopted_key = s3_keys[0]
+                    tier = "mp3" if Path(adopted_key).suffix.lower() == ".mp3" else "lossy"
 
-                track_tags = self._assemble_tags(best_file_meta, resolved, input_data.steam)
-                tagger.write_tags(processed_path, track_tags, artwork_bytes)
+                # Download Adopted File
+                local_source = temp_dir / Path(adopted_key).name
+                logger.info(f"Adopting track {track_num}: {Path(adopted_key).name} ({tier})")
+                if not self.storage.download_file(adopted_key, local_source):
+                    continue
+
+                # Convert/Limit Quality
+                processed_path = tagger.convert_and_limit(local_source, tier)
                 
-                # Upload single file
-                rel_path = f"{track_id[0]}/{processed_path.name}"
+                # Tagging
+                best_file_meta = EmbeddedMetadataExtractor.extract(local_source)
+                track_tags = self._assemble_tags(best_file_meta, None, input_data.steam)
+                tagger.write_tags(processed_path, track_tags, None)
+                
+                # Upload to Final Destination
+                clean_filename = "".join([c if c.isalnum() or c in ".-_" else "_" for c in processed_path.name])
+                rel_path = f"{disc_num}/{clean_filename}"
+                
                 s3_key = self.storage.upload_result(processed_path, status, app_id, rel_path)
                 output_refs.append(s3_key)
                 
-                # Record track metadata for metadata.json
+                # Record Metadata
                 processed_tracks_meta.append({
                     "file_path": rel_path,
-                    "original_filename": source_path.name,
-                    "parent_dir": best_file_meta.get("parent_dir", ""),
-                    "title": track_tags["title"],
-                    "artist": track_tags["artist"],
-                    "tier": tier
+                    "original_filename": Path(adopted_key).name,
+                    "tier": tier,
+                    "tags": track_tags
                 })
+                
+                # Cleanup to save local space
+                local_source.unlink()
+                if processed_path.exists() and processed_path != local_source:
+                    processed_path.unlink()
 
-            # 5. Save metadata.json & Preserve .acf
-            final_prefix = f"{status}/{app_id}"
-            metadata_payload = {
-                "app_id": app_id,
-                "album_name": resolved.album,
-                "status": status,
-                "processed_at": datetime.utcnow().isoformat(),
-                "steam_info": {
-                    "developer": input_data.steam.developer,
-                    "publisher": input_data.steam.publisher,
-                    "url": input_data.steam.url
-                },
-                "external_info": {
-                    "source": resolved.source,
-                    "mbid": resolved.mbid,
-                    "vgmdb_url": resolved.vgmdb_url
-                },
-                "tracks": processed_tracks_meta
-            }
-            self.storage.upload_json(metadata_payload, f"{final_prefix}/metadata.json")
-
-            acf_key = f"ingest/{app_id}/appmanifest_{app_id}.acf"
-            self.storage.copy_file(acf_key, f"{final_prefix}/appmanifest_{app_id}.acf")
-
-            return WorkerOutput(app_id=app_id, status=status, file_refs=output_refs, resolved=resolved)
+            # 4. Final Metadata JSON
+            self.storage.upload_metadata(input_data, status, app_id, output_refs)
+            logger.info(f"<<< Finished worker processing for {app_id}. Status: {status}")
+            return WorkerOutput(app_id=app_id, status=status, file_refs=output_refs)
 
         except Exception as e:
-            logger.error(f"Job failed: {e}", exc_info=True)
+            logger.error(f"Worker flow failed for {app_id}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return WorkerOutput(app_id=app_id, status="failed", error=str(e))
         finally:
-            shutil.rmtree(temp_dir)
+            if temp_dir.exists():
+                shutil.rmtree(temp_dir)
 
-    def _group_by_track(self, files_with_rel: List[tuple]) -> Dict[tuple, List[dict]]:
-        groups = {}
-        for f, rel_path in files_with_rel:
-            meta = EmbeddedMetadataExtractor.extract(f)
-            key = (meta.get("disc_number", 1), meta.get("track_number", 0), meta.get("title") or f.stem)
-            if key not in groups: groups[key] = []
-            meta["path"] = f
-            p = Path(rel_path).parent
-            meta["parent_dir"] = p.as_posix() if str(p) != "." else ""
-            groups[key].append(meta)
-        return groups
-
-    def _select_best_quality(self, variants: List[dict]) -> dict:
-        for v in variants:
-            if v["path"].suffix.lower() in [".flac", ".wav", ".aiff", ".m4a"]:
-                v["tier"] = "lossless"
-                return v
-        for v in variants:
-            if v["path"].suffix.lower() == ".mp3":
-                v["tier"] = "mp3"
-                return v
-        v = variants[0]
-        v["tier"] = "lossy"
-        return v
-
-    def _merge_metadata(self, input_data, validated, mb) -> ResolvedMetadata:
-        s = input_data.steam
-        return ResolvedMetadata(
-            resolved=bool(mb or validated),
-            source="musicbrainz" if mb else "embedded",
-            album=s.name if s else validated.get("album"),
-            artist=validated.get("artist") or (mb.get("artist") if mb else None),
-            album_artist=f"{s.developer} | {s.publisher}" if s else None,
-            genre=f"STEAM, VGM, {s.genre or ''}",
-            year=validated.get("year") or (mb.get("year") if mb else None),
-            mbid=mb.get("mbid") if mb else None,
-            vgmdb_url=mb.get("vgmdb_url") if mb else None
-        )
-
-    def _assemble_tags(self, track_meta, album_resolved, steam) -> dict:
-        total_discs = album_resolved.total_discs if hasattr(album_resolved, 'total_discs') else 1
-        raw_title = track_meta.get("title") or track_meta["path"].stem
-        
-        normalized_title = self.llm.ask(
-            "title_normalization",
-            [
-                {"role": "system", "content": "You are a professional music metadata editor. Normalize the given track title. Remove track numbers, extensions, and clarify Japanese titles if possible. Return ONLY the title."},
-                {"role": "user", "content": f"Title: {raw_title}"}
-            ]
-        ) or raw_title
-
+    def _assemble_tags(self, best_meta, resolved, steam) -> dict:
+        """Assembles final tags for a track."""
         return {
-            "title": normalized_title,
-            "artist": track_meta.get("artist") or album_resolved.artist,
-            "album": album_resolved.album,
-            "album_artist": album_resolved.album_artist,
-            "genre": album_resolved.genre,
-            "year": album_resolved.year,
-            "track_num": str(track_meta.get("track_number", 1)),
-            "disc_num": f"{track_meta.get('disc_number', 1)}/{total_discs or 1}",
-            "steam_appid": steam.app_id if steam else None,
-            "mbid": album_resolved.mbid,
-            "vgmdb_url": album_resolved.vgmdb_url
+            "title": best_meta.get("title") or "Unknown Track",
+            "artist": steam.developer or "Unknown Artist",
+            "album": steam.name,
+            "track_number": best_meta.get("track_number"),
+            "disc_number": best_meta.get("disc_number", 1),
+            "date": datetime.now().year,
+            "comment": "Tagged by S.S.T"
         }
 
-    def _get_format_map(self, files):
-        res = {}
-        for f in files:
-            ext = f.suffix.lower().lstrip('.')
-            if ext not in res: res[ext] = []
-            res[ext].append(EmbeddedMetadataExtractor.extract(f))
-        return res
+@flow(name="sst-worker-flow")
+def process_single_album_flow(scout_data: dict, config_dict: dict):
+    """Prefect flow that runs on the worker to process one album."""
+    logger = get_run_logger()
+    
+    try:
+        worker_input = WorkerInput(**scout_data)
+        app_id = worker_input.app_id
+        album_name = worker_input.steam.name
+    except Exception as e:
+        logger.error(f"Failed to parse input: {e}")
+        return {"status": "failed", "error": "Invalid input"}
 
-    def _extract_raw_artwork(self, path: Path) -> Optional[bytes]:
-        from mutagen import File
-        from mutagen.id3 import ID3
-        try:
-            audio = File(path)
-            if hasattr(audio, 'pictures') and audio.pictures:
-                return audio.pictures[0].data
-            elif isinstance(audio, ID3):
-                apics = audio.getall("APIC")
-                if apics: return apics[0].data
-        except: pass
-        return None
+    logger.info(f">>> Starting worker processing for: {album_name} ({app_id})")
+    service = WorkerService(config_dict)
+    result = service.process_job(worker_input)
+    return result.model_dump()
 
 def deploy():
     """Starts the Worker and serves its processing flow."""
