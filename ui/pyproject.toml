@@ -17,6 +17,7 @@ dependencies = [
     "python-multipart>=0.0.26",
     "uvicorn>=0.44.0",
     "httpx>=0.28.0",
+    "requests>=2.33.1",
 ]
 
 [build-system]
