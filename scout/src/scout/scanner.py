@@ -47,6 +47,21 @@ class SteamScanner:
         except Exception as e:
             logger.error(f"Failed to save cache: {e}")
 
+    def _resolve_install_path(self, installdir_name: str) -> Path:
+        """Dynamically resolves the absolute path for an app's installation directory."""
+        # Candidate 1: Modern Soundtracks (music folder)
+        music_path = self.steamapps_path / "music" / installdir_name
+        if music_path.exists():
+            return music_path
+            
+        # Candidate 2: Legacy or Game-bundled Soundtracks (common folder)
+        common_path = self.steamapps_path / "common" / installdir_name
+        if common_path.exists():
+            return common_path
+            
+        # Fallback: Assume common but log warning if not exists
+        return common_path
+
     def find_soundtracks(self, force: bool = False, limit: Optional[int] = None) -> List[dict]:
         """Finds soundtrack app manifests and fetches metadata, using cache to skip repeats."""
         if not self.steamapps_path.exists():
@@ -93,6 +108,8 @@ class SteamScanner:
                 ost_data = cached_data.copy()
                 ost_data["app_id"] = app_id
                 ost_data["acf_path"] = str(acf_file)
+                # Resolve path dynamically
+                ost_data["install_dir"] = str(self._resolve_install_path(app_state.get("installdir", "")))
                 soundtracks.append(ost_data)
                 continue
 
@@ -102,11 +119,15 @@ class SteamScanner:
             ost_info = {
                 "app_id": app_id,
                 "name": app_state.get("name", ""),
-                "install_dir": app_state.get("installdir", ""),
+                "install_dir": str(self._resolve_install_path(app_state.get("installdir", ""))),
                 "developer": enriched.get("developer"),
                 "publisher": enriched.get("publisher"),
                 "genre": enriched.get("genre"),
                 "tags": enriched.get("tags", []),
+                "release_date": enriched.get("release_date"),
+                "parent_app_id": enriched.get("parent_app_id"),
+                "parent_tags": enriched.get("parent_tags", []),
+                "parent_genre": enriched.get("parent_genre"),
                 "url": f"https://store.steampowered.com/app/{app_id}",
                 "acf_path": str(acf_file)
             }
@@ -124,7 +145,7 @@ class SteamScanner:
         self._save_cache()
         return soundtracks
 
-    def fetch_steam_metadata(self, app_id: int, language: str = "japanese") -> dict:
+    def fetch_steam_metadata(self, app_id: int, language: str = "japanese", is_parent: bool = False) -> dict:
         """
         Fetches metadata with backoff strategy for 429 errors.
         Falls back from specified language to English if needed.
@@ -158,15 +179,25 @@ class SteamScanner:
                             "developer": ", ".join(info.get("developers", [])),
                             "publisher": ", ".join(info.get("publishers", [])),
                             "genre": info.get("genres", [{}])[0].get("description") if info.get("genres") else None,
-                            "tags": [g.get("description") for g in info.get("genres", [])]
+                            "tags": [g.get("description") for g in info.get("genres", [])],
+                            "release_date": info.get("release_date", {}).get("date"),
+                            "parent_app_id": info.get("fullgame", {}).get("appid")
                         }
 
-                        # If basic info is missing, try to fetch from parent game
-                        if not metadata["developer"] and "fullgame" in info:
-                            parent_id = info["fullgame"].get("appid")
-                            if parent_id:
-                                logger.info(f"Metadata missing for soundtrack {app_id}, falling back to parent {parent_id}")
-                                return self.fetch_steam_metadata(int(parent_id), lang)
+                        # If it's a soundtrack and we have a parent, fetch parent for more tags/genres
+                        if not is_parent and metadata.get("parent_app_id"):
+                            parent_id = int(metadata["parent_app_id"])
+                            logger.info(f"Fetching parent game metadata for soundtrack {app_id} (Parent: {parent_id})")
+                            parent_meta = self.fetch_steam_metadata(parent_id, lang, is_parent=True)
+                            
+                            if parent_meta:
+                                metadata["parent_tags"] = parent_meta.get("tags", [])
+                                metadata["parent_genre"] = parent_meta.get("genre")
+                                # Fallback developer/publisher if missing in soundtrack
+                                if not metadata["developer"]:
+                                    metadata["developer"] = parent_meta.get("developer")
+                                if not metadata["publisher"]:
+                                    metadata["publisher"] = parent_meta.get("publisher")
                         
                         logger.info(f"Successfully fetched Steam metadata for {app_id} in {lang}")
                         return metadata
