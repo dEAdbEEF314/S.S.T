@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import argparse
+from typing import Optional
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
@@ -31,11 +32,16 @@ class Config(BaseSettings):
     s3_secret_key: str
     s3_bucket_name: str
     s3_region: str = "us-east-1"
+    s3_filer_url: str
     steam_language: str = "japanese"
     env_mode: str = "production"
     log_level: str = "INFO"
+    llm_base_url: str
     llm_api_key: Optional[str] = None
     llm_model: str = "gemini-1.5-pro"
+    llm_limit_rpm: int = 30
+    llm_limit_tpm: int = 15000
+    llm_limit_rpd: int = 14400
 
 def main():
     # Argument Parsing
@@ -100,6 +106,7 @@ def main():
         )
 
         # Process locally (Select -> Convert -> Tag -> Upload)
+        logger.info(f"Target Directory: {install_dir}")
         result = processor.process_album(app_id, install_dir, steam_meta)
         
         if result.status == "archive":

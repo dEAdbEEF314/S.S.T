@@ -1,79 +1,61 @@
-# Test Environment Specification
+# Test Environment Specification (Local-only Architecture)
 
 ## Overview
-This document describes the environment and infrastructure used for testing the S.S.T (Steam Soundtrack Tagger) system. The environment is designed to simulate a distributed production setup using Docker and external services accessible via local domain names.
+This document describes the environment and infrastructure used for testing the S.S.T (Steam Soundtrack Tagger) system. The system now operates in a "Local-only (Edge Processing)" mode, where audio processing, tagging, and LLM consolidation happen directly on the machine with access to the Steam library.
 
 ## Infrastructure Dependencies
-The system relies on the following external services, managed via Nginx Proxy Manager (NPM) for port-less access:
+The system relies on the following external services:
 
 - **Storage (S3/SeaweedFS)**: `http://swfs-s3.outergods.lan`
   - Bucket: `sst-data`
-  - Used for raw file ingestion, processed archives (`archive/`), review queue (`review/`), and global rate limit tracking.
-- **Orchestration (Prefect Server)**: `http://prefect.outergods.lan/api`
-  - Manages the execution of Core and Worker flows.
-  - Core and Worker run as "served" deployments within Docker containers.
-- **AI / LLM**: `https://generativelanguage.googleapis.com/v1beta/openai` (Gemini) or local Ollama.
-  - Used for track title and artist normalization.
-  - Rate limits (RPM/TPM/RPD) are strictly enforced and tracked globally.
+  - Used for processed archives (`archive/`) and review queue (`review/`). The `ingest/` prefix is deprecated.
+- **AI / LLM**: `https://generativelanguage.googleapis.com/v1beta/openai` (Gemini API).
+  - Used for metadata consolidation and "The Organizer" logic.
+  - Requires `LLM_API_KEY` in the `.env` file.
 
 ## Component Configuration
-Testing is performed across multiple specialized nodes (containers), each with its own configuration file:
+The system is consolidated into two primary interfaces:
 
-### 1. Scout Node (Local CLI or Container)
-- **Role**: Scans local Steam library, uploads files to S3, and triggers the Prefect pipeline.
-- **Config**: `.env.scout`
-- **Primary Command**: `cd scout && uv run -m scout.main --limit 5`
+### 1. Scout (Local Processor)
+- **Role**: Scans Steam library, adopts optimal audio files, converts formats locally (WSL2), consolidates metadata via LLM, tags files, and uploads finalized results to S3.
+- **Config**: `.env` (Consolidated)
+- **Primary Execution**: `cd scout && uv run -m scout.main`
 
-### 2. Core Service (Docker)
-- **Role**: Receives triggers from Scout and delegates processing tasks to available Workers via Prefect deployments.
-- **Container**: `sst-core`
-- **Config**: `.env.core`
-
-### 3. Worker Node (Docker)
-- **Role**: Downloads audio from S3, extracts metadata, performs LLM normalization, converts formats (AIFF/MP3), tags files, and uploads results.
-- **Container**: `sst-worker`
-- **Config**: `.env.worker`
-
-### 4. UI Dashboard (Docker)
-- **Role**: Provides real-time monitoring of the pipeline, metadata inspection, bulk deletion, and ZIP downloads.
+### 2. UI Dashboard (Docker)
+- **Role**: Provides real-time monitoring of archived albums, metadata inspection, and ZIP downloads.
+- **Config**: `.env` (Consolidated)
 - **URL**: `http://localhost:8000`
-- **Config**: `.env.ui`
 
-## Data Flow for Testing
-1. **Ingest**: Scout scans `/mnt/d/SteamLibrary` -> Uploads to S3 `ingest/{appid}/`.
-2. **Trigger**: Scout calls Prefect API -> Starts `SST-Production-Pipeline`.
-3. **Delegation**: Core Flow calls `sst-worker-flow/sst-worker-deployment`.
-4. **Processing**: Worker processes files according to `format_spec.md` -> Uploads to S3 `archive/` (success) or `review/` (manual check needed).
-5. **Verification**: User monitors progress and downloads processed ZIPs via the Web UI.
+---
 
-## Act-7 Production Test Environment Setup
-To perform production testing using the `act-7` branch/repository, follow these steps:
+## Local Production Testing Procedure
+
+The production testing is performed directly in the workspace root.
 
 ### 1. Environment Preparation
-Pull the `act-7` repository into the target directory. Ensure you are in the correct directory to avoid nested structures (e.g., `/home/sexyroot/src/S.S.T/S.S.T/`).
+All commands should be executed from the workspace root: `/home/sexyroot/AI_Base/WorkSpace/S.S.T/`
 
+Ensure dependencies are up to date using `uv`:
 ```bash
-mkdir -p /home/sexyroot/src/S.S.T
-cd /home/sexyroot/src/S.S.T
-# If the directory is not yet a git repository:
-git clone <repository_url> .
-git checkout act-7
-# If it is already a repository:
-git pull origin act-7
+# From workspace root
+uv sync
 ```
 
-### 2. Configuration Sync
-Copy the environment configuration files from the workspace to the production test environment:
-
-```bash
-# From the workspace root:
-cp .env.core .env.scout .env.ui .env.worker /home/sexyroot/src/S.S.T/
-```
+### 2. Configuration
+Ensure the `.env` file is present in the workspace root and contains all necessary credentials for S3 and LLM. 
+The system will use `SST_WORKING_DIR` (e.g., `/home/sexyroot/sst-work`) to perform copy/conversion operations without touching the Steam library.
 
 ### 3. Execution
-Run the production tests as defined in the project:
+To process soundtracks and verify the tagging logic:
+
 ```bash
-cd /home/sexyroot/src/S.S.T
-python3 run_production_test.py
+# Run the local processor
+export $(grep -v '^#' .env | xargs)
+cd scout
+uv run -m scout.main --limit 5
 ```
-Check `scout_error.txt` and `scout_debug.txt` for results.
+
+### 4. Verification
+- **Web UI**: Access `http://localhost:8000` and check the "Archive" tab.
+- **S3 Filer**: Verify that `archive/{app_id}/` contains only one audio file per track (AIFF or MP3) and the `metadata.json`.
+- **ZIP Download**: Download the ZIP from the UI and verify tags using external tools like Mp3tag.

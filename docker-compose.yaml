@@ -5,16 +5,19 @@ services:
       dockerfile: Dockerfile
     container_name: sst-ui
     env_file:
-      - .env.ui
+      - .env
     ports:
       - "8000:8000"
     volumes:
-      - ./.env.ui:/app/.env:ro
+      - ./.env:/app/.env:ro
       - ./ui/src/ui:/app/src/ui:ro
-      - ./ui/frontend/dist:/app/frontend/dist:ro
+      - ./ui/frontend/dist:/app/frontend/dist
     environment:
       - PYTHONPATH=/app/src
       - TZ=${TZ:-Asia/Tokyo}
+    dns:
+      - 192.168.11.201
+      - 192.168.11.202
     networks:
       - sst-network
 

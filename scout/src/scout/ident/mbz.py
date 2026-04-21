@@ -1,6 +1,6 @@
 import musicbrainzngs
 import logging
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -9,18 +9,25 @@ class MusicBrainzIdentifier:
     def __init__(self, app_name: str, version: str, contact: str):
         musicbrainzngs.set_useragent(app_name, version, contact)
 
-    def search_release(self, album_name: str, expected_track_count: int, steam_release_date: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    def search_release(self, album_name: str, expected_track_count: int, steam_release_date: Optional[str] = None) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
         """
         Searches MusicBrainz for a release and applies tie-breaking rules.
+        Returns (formatted_result, log_data).
         """
+        log_data = {
+            "query": {"album_name": album_name, "expected_track_count": expected_track_count},
+            "raw_response": None,
+            "timestamp": datetime.utcnow().isoformat()
+        }
         try:
             # Search for releases matching the album name
             result = musicbrainzngs.search_releases(release=album_name, limit=10)
+            log_data["raw_response"] = result
             releases = result.get('release-list', [])
             
             if not releases:
                 logger.info(f"No MusicBrainz results for: {album_name}")
-                return None
+                return None, log_data
 
             # Filter and sort by score (MB provides a score attribute)
             # We take all with the highest score first, then apply our rules
@@ -36,12 +43,14 @@ class MusicBrainzIdentifier:
             # Fetch full details for the best match (including track list and relationships)
             release_id = best_match['id']
             full_release = musicbrainzngs.get_release_by_id(release_id, includes=["recordings", "url-rels", "artist-credits"])
+            log_data["full_release"] = full_release
             
-            return self._format_result(full_release.get('release', {}))
+            return self._format_result(full_release.get('release', {})), log_data
 
         except Exception as e:
             logger.error(f"MusicBrainz search error: {e}")
-            return None
+            log_data["error"] = str(e)
+            return None, log_data
 
     def _apply_tie_breakers(self, candidates: List[dict], expected_track_count: int, steam_date: Optional[str]) -> List[dict]:
         """

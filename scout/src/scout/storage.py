@@ -1,97 +1,111 @@
-import boto3
 import os
 import logging
+import json
+import requests
 from pathlib import Path
-from typing import List
-from botocore.exceptions import ClientError
+from typing import List, Optional, Any, Dict
+from datetime import datetime
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("scout.storage")
 
 class WorkerStorage:
-    def __init__(self, endpoint_url: str, access_key: str, secret_key: str, bucket_name: str, region: str = "us-east-1"):
-        self.s3_client = boto3.client(
-            "s3",
-            endpoint_url=endpoint_url,
-            aws_access_key_id=access_key,
-            aws_secret_access_key=secret_key,
-            region_name=region
-        )
+    """
+    Handles file operations with SeaweedFS via Factual Filer API (HTTP).
+    Bypasses S3 signature issues by using direct HTTP uploads/downloads.
+    """
+    def __init__(self, filer_url: str, bucket_name: str, access_key: Optional[str] = None, secret_key: Optional[str] = None):
+        self.filer_url = filer_url.rstrip('/')
         self.bucket_name = bucket_name
+        self.base_path = f"buckets/{bucket_name}"
+        # Filer might require basic auth if configured, but here we assume direct access or token
+        self.auth = None
+        if access_key and secret_key:
+            # SeaweedFS Filer usually doesn't use S3 keys for HTTP, 
+            # but we keep the structure for potential future auth.
+            pass
+
+    def _get_url(self, s3_key: str) -> str:
+        return f"{self.filer_url}/{self.base_path}/{s3_key}"
 
     def download_file(self, s3_key: str, local_dest: Path) -> bool:
-        """Downloads a file from S3 to a local temporary path."""
+        """Downloads a file from Filer to a local temporary path."""
         local_dest.parent.mkdir(parents=True, exist_ok=True)
+        url = self._get_url(s3_key)
         try:
-            logger.debug(f"Attempting download: s3://{self.bucket_name}/{s3_key}")
-            self.s3_client.download_file(self.bucket_name, s3_key, str(local_dest))
-            if local_dest.exists():
-                logger.info(f"Downloaded successfully: {s3_key} ({local_dest.stat().st_size} bytes)")
-                return True
-            else:
-                logger.error(f"Download call succeeded but file missing: {local_dest}")
-                return False
-        except ClientError as e:
-            logger.error(f"Failed to download {s3_key} from {self.bucket_name}: {e}")
-            return False
+            with requests.get(url, stream=True, timeout=60) as r:
+                r.raise_for_status()
+                with open(local_dest, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
+            logger.info(f"Downloaded via Filer: {s3_key}")
+            return True
         except Exception as e:
-            logger.error(f"Unexpected error during download of {s3_key}: {e}")
+            logger.error(f"Failed to download {s3_key} from Filer: {e}")
             return False
 
     def upload_result(self, local_path: Path, status: str, app_id: int, rel_path: str) -> str:
-        """
-        Uploads the processed file to archive/ or review/.
-        :param status: 'archive' or 'review'
-        """
+        """Uploads the processed file to archive/ or review/ using Filer POST."""
         s3_key = f"{status}/{app_id}/{rel_path}"
-        
+        url = self._get_url(s3_key)
         try:
-            self.s3_client.upload_file(str(local_path), self.bucket_name, s3_key)
-            logger.info(f"Uploaded result: {s3_key}")
+            with open(local_path, "rb") as f:
+                # SeaweedFS Filer handles nested directories automatically on PUT/POST
+                r = requests.put(url, data=f, timeout=300)
+                r.raise_for_status()
+            logger.info(f"Uploaded result via Filer: {s3_key}")
             return s3_key
-        except ClientError as e:
-            logger.error(f"Failed to upload result {local_path}: {e}")
+        except Exception as e:
+            logger.error(f"Failed to upload {local_path} to Filer: {e}")
             raise
 
-    def delete_ingest_file(self, s3_key: str):
-        """Cleanup: Deletes the original ingest file after successful processing."""
-        try:
-            self.s3_client.delete_object(Bucket=self.bucket_name, Key=s3_key)
-            logger.debug(f"Deleted ingest file: {s3_key}")
-        except ClientError as e:
-            logger.warning(f"Failed to delete ingest file {s3_key}: {e}")
-
-    def copy_file(self, src_key: str, dest_key: str):
-        """Copies a file within S3 (e.g., from ingest to archive)."""
-        copy_source = {'Bucket': self.bucket_name, 'Key': src_key}
-        try:
-            self.s3_client.copy(copy_source, self.bucket_name, dest_key)
-            logger.debug(f"Copied: {src_key} -> {dest_key}")
-        except ClientError as e:
-            logger.error(f"Failed to copy {src_key}: {e}")
-
     def upload_json(self, data: dict, s3_key: str):
-        """Uploads a dictionary as a JSON file to S3."""
-        import json
+        """Uploads a dictionary as a JSON file via Filer."""
+        url = self._get_url(s3_key)
         try:
-            self.s3_client.put_object(
-                Bucket=self.bucket_name,
-                Key=s3_key,
-                Body=json.dumps(data, indent=2, ensure_ascii=False),
-                ContentType="application/json"
-            )
-            logger.info(f"Uploaded JSON: {s3_key}")
-        except ClientError as e:
-            logger.error(f"Failed to upload JSON {s3_key}: {e}")
+            content = json.dumps(data, indent=2, ensure_ascii=False)
+            r = requests.put(url, data=content.encode("utf-8"), headers={"Content-Type": "application/json"}, timeout=60)
+            r.raise_for_status()
+            logger.info(f"Uploaded JSON via Filer: {s3_key}")
+        except Exception as e:
+            logger.error(f"Failed to upload JSON {s3_key} to Filer: {e}")
 
-    def upload_metadata(self, input_data: any, status: str, app_id: int, file_refs: List[str]):
-        """Finalizes the album by uploading the metadata.json file."""
+    def download_json(self, s3_key: str) -> Optional[Dict[str, Any]]:
+        """Downloads and parses a JSON file via Filer."""
+        url = self._get_url(s3_key)
+        try:
+            r = requests.get(url, timeout=30)
+            if r.status_code == 404: return None
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            return None
+
+    def upload_metadata(self, context: Any, status: str, app_id: int, file_refs: List[str], tracks_meta: List[Dict[str, Any]]):
+        """Finalizes the album by uploading metadata.json including full track details."""
         metadata = {
             "app_id": app_id,
-            "album_name": input_data.steam.name,
+            "album_name": context.steam.name,
             "status": status,
-            "processed_at": os.environ.get("SST_PROCESSED_AT", ""), # Simple timestamp or handled by caller
+            "processed_at": datetime.utcnow().isoformat(),
             "file_refs": file_refs,
-            "steam_info": input_data.steam.model_dump() if hasattr(input_data.steam, "model_dump") else input_data.steam
+            "tracks": tracks_meta,
+            "steam_info": context.steam.model_dump()
         }
         s3_key = f"{status}/{app_id}/metadata.json"
         self.upload_json(metadata, s3_key)
+        
+    def list_objects(self, prefix: str) -> List[str]:
+        """Lists objects under a prefix via Filer directory listing API."""
+        url = f"{self.filer_url}/{self.base_path}/{prefix}/"
+        try:
+            # Filer returns JSON listing when requested with Accept: application/json
+            r = requests.get(url, headers={"Accept": "application/json"}, timeout=30)
+            if r.status_code == 404: return []
+            r.raise_for_status()
+            data = r.json()
+            # SeaweedFS Filer JSON format has 'Entries' list
+            entries = data.get("Entries", [])
+            return [f"{prefix}/{e['FullName'].lstrip('/')}" for e in entries]
+        except Exception as e:
+            logger.error(f"Failed to list Filer objects for {prefix}: {e}")
+            return []

@@ -1,10 +1,13 @@
-# Python
+# ==============================================================================
+# S.S.T (Steam Soundtrack Tagger) — .gitignore
+# ==============================================================================
+
+# ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-env/
 build/
 develop-eggs/
 dist/
@@ -21,34 +24,75 @@ wheels/
 .installed.cfg
 *.egg
 
-# Virtual Environment (uv / venv)
+# ── Virtual Environment (uv / venv) ──────────────────────────────────────────
 .venv/
 venv/
 ENV/
 
-# Environment Variables (CRITICAL)
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-.env.scout
-.env.worker
-.env.core
-.env.old
+# ── Node.js ───────────────────────────────────────────────────────────────────
+node_modules/
 
-# IDEs
+# ── Environment Variables (CRITICAL — contains API keys & secrets) ────────────
+.env
+.env.*
+!.env.example
+
+# ── IDE / Editor ──────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
 
-# OS
+# ── OS Generated ──────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 
-# Project Specific
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+docs/scout_debug.txt
+docs/scout_error.txt
+
+# ── Runtime / Generated Data ──────────────────────────────────────────────────
+# SQLite databases
+*.db
+
+# Scout cache (contains local filesystem paths)
+scout_cache.json
+scout/scout_cache.json
+
+# LLM usage tracking files (runtime counters)
+llm_usage_*.json
+scout/llm_usage_*.json
+
+# ── Output & Verification ────────────────────────────────────────────────────
+output/
+upload/
+ui_verification/
+
+# ── AI Tooling (Gemini / Copilot skills) ──────────────────────────────────────
+.gemini/
+skills/
+
+# ── Local Utility Scripts (not part of the application) ───────────────────────
+capture_llm_detail.py
+run_production_test.py
+delete_list.txt
+
+# ── Root-level package files (not needed — UI deps live in ui/frontend) ───────
+/package.json
+/package-lock.json
+
+# ── Legacy / Obsolete (referenced in delete_list.txt) ─────────────────────────
+prefect.yaml
+.prefect/
+
+# ── Project Build Artifacts ───────────────────────────────────────────────────
 scout/dist/
 scout/build/
-*.log
-upload/
+
+docker-compose.core.yml
+docker-compose.scout.yml
+docker-compose.worker.yml
+HANDOVER.md
+.gitignore

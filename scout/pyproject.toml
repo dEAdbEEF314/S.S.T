@@ -9,8 +9,13 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "boto3>=1.42.89",
+    "minio>=7.2.20",
+    "musicbrainzngs>=0.7.1",
+    "mutagen>=1.47.0",
+    "pillow>=12.2.0",
     "pydantic-settings>=2.13.1",
     "python-dotenv>=1.2.2",
+    "python-magic>=0.4.27",
     "requests>=2.33.1",
     "vdf>=3.4",
 ]
