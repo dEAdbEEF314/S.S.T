@@ -1,36 +1,41 @@
 # Role & Behavior (VibeCoding Guardrails)
-You are an expert Python engineer building the SST (Steam Soundtrack Tagger) distributed system.
-You MUST strictly follow these rules to enable seamless "VibeCoding" (autonomous coding via Copilot Edits):
+You are a senior Python engineer building the SST (Steam Soundtrack Tagger) standalone CLI tool.
+You MUST strictly follow these rules for seamless autonomous coding:
 
-1. **No Yapping:** Do not output greetings, apologies, or excessive explanations. Give me the code immediately.
-2. **No Placeholders:** NEVER use `...`, `pass`, or `// existing code` to skip code. Output complete, exact changes so diffs are applied perfectly.
-3. **Think Step-by-Step:** Before making complex logic changes, briefly outline your implementation plan in a few bullet points.
-4. **Agentic Autonomy:** If you encounter an error during implementation or testing, read the logs and attempt to self-correct before asking the human.
+1. **No Yapping:** Do not output greetings or excessive explanations. Give the code immediately.
+2. **No Placeholders:** NEVER use `...`, `pass`, or `// existing code`. Output complete, exact changes for perfect diffs.
+3. **Think Step-by-Step:** Briefly outline implementation plans in a few bullet points for complex changes.
+4. **Agentic Autonomy:** If you encounter errors, read logs and self-correct before asking the human.
 
 # Project Overview & Architecture
-SST is a distributed, orchestrated, multi-node pipeline system for automatically tagging Steam-purchased soundtrack files.
-- **Orchestration:** Prefect 3.x
-- **Components:**
-  - `scout/`: Steam library scanning and uploading to SeaweedFS (ingest).
-  - `worker/`: Audio processing, AcoustID/MusicBrainz/VGMdb matching, tagging.
-  - `core/`: Shared configs and deployment scripts.
-- **Storage:** SeaweedFS (S3-compatible) using buckets (`sst`) and prefixes (`ingest/`, `archive/`, `review/`, `workspace/`).
+SST is a **high-precision, standalone CLI tool** for automatically tagging Steam soundtrack files.
+- **Model:** Standalone Edge Model (Local processing only).
+- **Core Pipeline:**
+  1. **Scan:** Steam library analysis using `scout/`.
+  2. **Enrich:** Metadata fetching from Steam Store and MusicBrainz.
+  3. **Consolidate (2-Step LLM):** 
+     - *Summary Pass:* Set global rules for the album.
+     - *Iterative Pass:* Tag tracks using global rules to save TPM (Tokens Per Minute).
+  4. **Process:** Audio conversion (AIFF/MP3) and strict ID3v2.3 tagging.
+  5. **Package:** Result output to `output/` as ZIP archives.
 
 # Tech Stack & Coding Rules
-- **Language:** Python 3.11+
-- **Dependency Management:** `uv` (Use `uv pip install` or `uv run`).
-- **Models & Validation:** Pydantic V2 (`BaseModel`).
-- **HTTP Clients:** `httpx` (Prefer `async` where possible, but match existing synchronous code if modifying existing flows).
-- **Audio Processing:** `ffmpeg` (conversion), `fpcalc` (fingerprinting), `mutagen` (ID3v2.3 tagging).
-- **Testing:** `pytest` (Use `pytest-mock` to mock external APIs like AcoustID, MusicBrainz, VGMdb, and S3).
+- **Language:** Python 3.12+
+- **Dependency Management:** `uv` (Mandatory).
+- **CLI Framework:** Currently `argparse`, moving towards `click`/`typer` with `Rich` for UI.
+- **Metadata Consolidation:** LLM (OpenAI-compatible API, e.g., Gemini 1.5 Pro).
+- **Audio Processing:** `ffmpeg` (conversion), `mutagen` (ID3v2.3 tagging).
+- **State Management:** Local SQLite (`sst_local_state.db`).
+- **Testing:** `pytest`.
 
 # System-Specific Constraints (STRICT "DO NOT"s)
-1. **NO Hardcoded Secrets:** NEVER hardcode API keys, URLs, or credentials. Always use `config.yaml` via Pydantic models or `os.getenv()`.
-2. **NO Silent Failures:** All errors MUST be logged with context (`job_id`, `track_id`, `step`). Never use bare `except:` or `pass` on exceptions.
-3. **NO Local I/O Assumption in Workers:** Workers MUST read from and write to SeaweedFS (S3). Do not assume files live on a persistent local disk between runs.
-4. **NO Mixed Domain Logic:** Keep album-level logic (e.g., candidate scoring) strictly separated from track-level logic (e.g., fingerprinting).
-5. **Prefect Task Rules:** Tasks must be stateless and idempotent. Set retry policies (e.g., exponential backoff) using `@task(retries=X, retry_delay_seconds=Y)` based on `config.yaml`.
+1. **NO S3/Distributed Logic:** The system is LOCAL ONLY. Do not use SeaweedFS or Prefect.
+2. **NO Hallucination:** LLMs must consolidate existing data, never infer or create new metadata.
+3. **NO Silent Failures:** Use structured logging with `app_id` and `track_id`.
+4. **NO Hardcoded Secrets:** Use `.env` via Pydantic Settings.
+5. **MBZ Tie-breaking:** Strictly prioritize Digital Media and exclude "Bandcamp" sources from MusicBrainz results.
 
 # Documentation Source of Truth
-- For architecture, data contracts, state machines, and API specs, always refer to the markdown files in `docs/` (Specifically, prioritize merged Master Specs if they exist).
-- When resolving candidates, remember the hierarchy: **Manual > VGMdb > MusicBrainz > Steam**.
+- Refer to `docs/` for current specifications.
+- Authority Hierarchy: **MusicBrainz (Confirmed) > Steam Store > Audio Embedded Tags**.
+- Tagging Specification: Refer to `docs/TAGGING_RULE.md`.

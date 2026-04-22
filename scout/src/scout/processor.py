@@ -11,7 +11,6 @@ from datetime import datetime
 
 from .models import SteamMetadata, TrackMetadata, AlbumMetadataSet, ProcessingContext, LocalProcessResult
 from .tagger import AudioTagger
-from .storage import WorkerStorage 
 from .llm import LLMOrganizer
 from .ident.mbz import MusicBrainzIdentifier
 from .ident.embedded import EmbeddedMetadataExtractor
@@ -21,17 +20,11 @@ logger = logging.getLogger("scout.processor")
 class LocalProcessor:
     def __init__(self, config: Any):
         self.config = config
-        self.storage = WorkerStorage(
-            filer_url=config.s3_filer_url,
-            bucket_name=config.s3_bucket_name,
-            access_key=config.s3_access_key,
-            secret_key=config.s3_secret_key
-        )
         self.mbz = MusicBrainzIdentifier("SST-Local", "2.0", "contact@outergods.lan")
         self.llm = LLMOrganizer(
             api_key=config.llm_api_key, 
             base_url=config.llm_base_url, 
-            storage=self.storage,
+            storage=None,
             model=config.llm_model,
             rpm=config.llm_limit_rpm,
             tpm=config.llm_limit_tpm,
@@ -96,32 +89,29 @@ class LocalProcessor:
         message = "Success"
 
         if not final_metadata:
-            # Save the failure log anyway
-            self.storage.upload_json(llm_log, f"review/{app_id}/llm_error_log.json")
-            self.storage.upload_json(raw_metadata, f"review/{app_id}/raw_metadata.json")
-            if mb_log: self.storage.upload_json(mb_log, f"review/{app_id}/mbz_log.json")
-            return LocalProcessResult(app_id=app_id, status="review", message="LLM failed to consolidate")
+            status = "review"
+            message = "LLM failed to consolidate"
+            # Proceed to save logs in review ZIP
 
-        # 5. Conversion, Tagging and Upload
+        # 5. Conversion, Tagging and Local Packaging
         temp_output = self.working_dir / f"final_{app_id}_{datetime.now().strftime('%H%M%S')}"
         temp_output.mkdir(parents=True, exist_ok=True)
         processed_tracks_meta = [] 
         
         try:
             tagger = AudioTagger(temp_output)
-            output_refs = []
             
-            # First pass: validate mandatory fields
-            for track_key in adopted_files.keys():
-                disc, clean_title = track_key
-                track_id_str = f"{disc}_{clean_title}"
-                tags = final_metadata.get(track_id_str) or {}
-                
-                # TIT2 (Title) or TRCK (Track Number) missing -> Review
-                if not tags.get("TIT2") or tags.get("TIT2") == "Unknown" or not tags.get("TRCK") or tags.get("TRCK") == "0":
-                    logger.warning(f"Mandatory metadata missing for track {track_id_str}. Moving album to review.")
-                    status = "review"
-                    message = "Mandatory metadata (TIT2/TRCK) missing"
+            if final_metadata:
+                # First pass: validate mandatory fields
+                for track_key in adopted_files.keys():
+                    disc, clean_title = track_key
+                    track_id_str = f"{disc}_{clean_title}"
+                    tags = final_metadata.get(track_id_str) or {}
+                    
+                    if not tags.get("TIT2") or tags.get("TIT2") == "Unknown" or not tags.get("TRCK") or tags.get("TRCK") == "0":
+                        logger.warning(f"Mandatory metadata missing for track {track_id_str}. Moving album to review.")
+                        status = "review"
+                        message = "Mandatory metadata (TIT2/TRCK) missing"
 
             for track_key, adopted_info in adopted_files.items():
                 disc, clean_title = track_key
@@ -132,7 +122,7 @@ class LocalProcessor:
                 processed_path = tagger.convert_and_limit(source_path, tier)
                 
                 track_id_str = f"{disc}_{clean_title}"
-                tags = final_metadata.get(track_id_str) or {}
+                tags = (final_metadata or {}).get(track_id_str) or {}
                 
                 def _get_val(tag_key, fallback):
                     val = tags.get(tag_key)
@@ -140,7 +130,6 @@ class LocalProcessor:
                         return fallback
                     return str(val).strip()
 
-                # Use Parent info for COMM if available, else fallback to soundtrack
                 if steam_meta.parent_app_id:
                     comm_title = steam_meta.parent_name or steam_meta.name
                     comm_tags = steam_meta.parent_tags or steam_meta.tags
@@ -172,11 +161,6 @@ class LocalProcessor:
                 
                 tagger.write_tags(processed_path, tag_map, artwork)
                 
-                # Upload
-                upload_status = status if status != "archive" else "archive"
-                s3_key = self.storage.upload_result(processed_path, upload_status, app_id, f"{disc}/{processed_path.name}")
-                output_refs.append(s3_key)
-
                 processed_tracks_meta.append({
                     "file_path": f"{disc}/{processed_path.name}",
                     "original_filename": source_path.name,
@@ -186,21 +170,11 @@ class LocalProcessor:
                     "source": tags.get("source", "Unknown Fallback")
                 })
 
-            # Final Metadata and Logs Upload
-            dest_dir = "archive" if status == "archive" else f"review/{app_id}"
-            prefix = "" if status == "archive" else "" # Path already contains review/app_id
-            
-            self.storage.upload_json(llm_log, f"{dest_dir}/{app_id}/llm_log.json" if status == "archive" else f"{dest_dir}/llm_log.json")
-            self.storage.upload_json(raw_metadata, f"{dest_dir}/{app_id}/raw_metadata.json" if status == "archive" else f"{dest_dir}/raw_metadata.json")
-            if mb_log:
-                self.storage.upload_json(mb_log, f"{dest_dir}/{app_id}/mbz_log.json" if status == "archive" else f"{dest_dir}/mbz_log.json")
-            
             summary_meta = {
                 "app_id": app_id,
                 "album_name": steam_meta.name,
                 "status": status,
                 "processed_at": self._get_localized_now().isoformat(),
-                "file_refs": output_refs,
                 "tracks": processed_tracks_meta,
                 "steam_info": steam_meta.model_dump(),
                 "external_info": {
@@ -208,9 +182,8 @@ class LocalProcessor:
                     "vgmdb_url": vgmdb_url
                 }
             }
-            self.storage.upload_json(summary_meta, f"{dest_dir}/{app_id}/metadata.json" if status == "archive" else f"{dest_dir}/metadata.json")
             
-            # 6. Save local ZIP package
+            # Final Logs Bundle
             log_bundle = {
                 "llm_log.json": llm_log,
                 "raw_metadata.json": raw_metadata,
@@ -219,7 +192,7 @@ class LocalProcessor:
             }
             self._save_local_package(app_id, status, steam_meta.name, temp_output, log_bundle)
 
-            self._record_processed(app_id, status, steam_meta.name, final_metadata)
+            self._record_processed(app_id, status, steam_meta.name, summary_meta)
             return LocalProcessResult(app_id=app_id, status=status, message=message, processed_at=self._get_localized_now())
 
         except Exception as e:
@@ -275,10 +248,13 @@ class LocalProcessor:
                         ))
             if source.tracks: sources.append(source)
             
-        mb_data, mb_log = self.mbz.search_release(steam.name, len(track_groups), steam.release_date)
+        # Passing app_id to MBZ for Ultra Confirmation
+        mb_data, mb_log = self.mbz.search_release(steam.name, len(track_groups), app_id=steam.app_id, steam_release_date=steam.release_date)
         if mb_data:
             vgmdb_url = mb_data.get("vgmdb_url")
-            mb_source = AlbumMetadataSet(source_name="MusicBrainz")
+            # Include confidence level in source name for LLM awareness
+            conf = mb_data.get("confidence", "unknown")
+            mb_source = AlbumMetadataSet(source_name=f"MusicBrainz ({conf})")
             for t in mb_data.get("tracks", []):
                 mb_source.tracks.append(TrackMetadata(
                     title=t.get("title", ""),
@@ -287,7 +263,7 @@ class LocalProcessor:
                     disc_number=self._safe_int_track(t.get("disc_num", 1)),
                     duration_sec=t.get("duration_msec", 0) / 1000.0 if t.get("duration_msec") else None,
                     file_format="N/A",
-                    source="musicbrainz"
+                    source=f"musicbrainz_{conf}"
                 ))
             sources.append(mb_source)
         return sources, mb_log, vgmdb_url
@@ -360,10 +336,11 @@ class LocalProcessor:
             adopted[key] = chosen
         return adopted
 
-    def _record_processed(self, app_id: int, status: str, name: str, metadata: Dict):
+    def _record_processed(self, app_id: int, status: str, name: str, summary_meta: Dict):
+        """Saves the processing result to SQLite. For 'archive', saves full consolidated metadata."""
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute("INSERT OR REPLACE INTO processed_albums VALUES (?, ?, ?, ?, ?)",
-                        (app_id, status, name, self._get_localized_now().isoformat(), json.dumps(metadata)))
+            conn.execute("INSERT OR REPLACE INTO processed_albums (app_id, status, album_name, processed_at, metadata_json) VALUES (?, ?, ?, ?, ?)",
+                        (app_id, status, name, self._get_localized_now().isoformat(), json.dumps(summary_meta, ensure_ascii=False)))
 
     def _save_local_package(self, app_id: int, status: str, album_name: str, source_dir: Path, logs: Dict[str, Any]):
         """Creates a ZIP package of the processed album and saves it to the output directory."""
