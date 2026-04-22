@@ -140,12 +140,18 @@ class LocalProcessor:
                         return fallback
                     return str(val).strip()
 
-                # STRICT FALLBACK LOGIC
-                # Use Parent tags if available for comment enrichment
-                steam_tags = steam_meta.tags
-                if steam_meta.parent_tags:
-                    steam_tags = list(set(steam_tags + steam_meta.parent_tags))
-                
+                # Use Parent info for COMM if available, else fallback to soundtrack
+                if steam_meta.parent_app_id:
+                    comm_title = steam_meta.parent_name or steam_meta.name
+                    comm_tags = steam_meta.parent_tags or steam_meta.tags
+                    comm_appid = steam_meta.parent_app_id
+                    comm_url = f"https://store.steampowered.com/app/{comm_appid}"
+                else:
+                    comm_title = steam_meta.name
+                    comm_tags = steam_meta.tags
+                    comm_appid = app_id
+                    comm_url = steam_meta.url
+
                 tag_map = {
                     "title": _get_val("TIT2", clean_title),
                     "artist": _get_val("TPE1", steam_meta.developer or "Unknown Artist"),
@@ -153,7 +159,7 @@ class LocalProcessor:
                     "album_artist": f"{steam_meta.developer} | {steam_meta.publisher}" if steam_meta.developer and steam_meta.publisher else _get_val("TPE2", "Unknown Artist"),
                     "genre": _get_val("TCON", f"STEAM VGM, {steam_meta.genre or steam_meta.parent_genre or 'Soundtrack'}"),
                     "grouping": _get_val("TIT1", f"{steam_meta.name} | Steam"),
-                    "comment": f"{steam_meta.name} | {', '.join(steam_tags[:10])} | {app_id} | {steam_meta.url}",
+                    "comment": f"{comm_title} | {', '.join(comm_tags[:10])} | {comm_appid} | {comm_url}",
                     "composer": _get_val("TCOM", steam_meta.developer or "Unknown"),
                     "year": _get_val("TDRC", steam_meta.release_date[:4] if steam_meta.release_date else str(datetime.now().year)),
                     "track_number": str(tags.get("TRCK") or 0),

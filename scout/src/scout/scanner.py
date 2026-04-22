@@ -126,6 +126,7 @@ class SteamScanner:
                 "tags": enriched.get("tags", []),
                 "release_date": enriched.get("release_date"),
                 "parent_app_id": enriched.get("parent_app_id"),
+                "parent_name": enriched.get("parent_name"),
                 "parent_tags": enriched.get("parent_tags", []),
                 "parent_genre": enriched.get("parent_genre"),
                 "url": f"https://store.steampowered.com/app/{app_id}",
@@ -176,6 +177,7 @@ class SteamScanner:
                         info = data[str(app_id)]["data"]
                         
                         metadata = {
+                            "name": info.get("name"),
                             "developer": ", ".join(info.get("developers", [])),
                             "publisher": ", ".join(info.get("publishers", [])),
                             "genre": info.get("genres", [{}])[0].get("description") if info.get("genres") else None,
@@ -184,13 +186,14 @@ class SteamScanner:
                             "parent_app_id": info.get("fullgame", {}).get("appid")
                         }
 
-                        # If it's a soundtrack and we have a parent, fetch parent for more tags/genres
+                        # If it's a soundtrack and we have a parent, fetch parent for more tags/genres/name
                         if not is_parent and metadata.get("parent_app_id"):
                             parent_id = int(metadata["parent_app_id"])
                             logger.info(f"Fetching parent game metadata for soundtrack {app_id} (Parent: {parent_id})")
                             parent_meta = self.fetch_steam_metadata(parent_id, lang, is_parent=True)
                             
                             if parent_meta:
+                                metadata["parent_name"] = parent_meta.get("name")
                                 metadata["parent_tags"] = parent_meta.get("tags", [])
                                 metadata["parent_genre"] = parent_meta.get("genre")
                                 # Fallback developer/publisher if missing in soundtrack

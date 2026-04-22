@@ -1,238 +1,87 @@
-# SST Implementation Plan
+# SST Implementation Plan (CLI Focus)
 
-This document defines a **step-by-step implementation roadmap** for SST.
+This document defines the roadmap for SST as a **high-precision, standalone CLI tool**.
 
-It is designed for **AI-driven execution**.
-
----
-
-# 🧭 Execution Principles
-
-- Follow `CONTRIBUTING.md`
-- Follow `AGENT_GUIDE.md`
-- Respect all specs in `docs/`
-- Never skip validation
-- Always produce testable outputs
+The goal has shifted from a distributed microservice architecture to a robust, local-first edge processing tool that prioritizes metadata accuracy via LLM-assisted "Factual Metadata Organization."
 
 ---
 
-# 🏗️ Phase Overview
+# 🎯 Project Goal
 
-| Phase | Goal |
-|------|------|
-| Phase 0 | Project setup |
-| Phase 1 | Core I/O + data model |
-| Phase 2 | Identification pipeline |
-| Phase 3 | External integrations |
-| Phase 4 | Tagging + format conversion |
-| Phase 5 | LLM integration |
-| Phase 6 | Orchestration (Prefect) |
-| Phase 7 | Reliability + retry |
-| Phase 8 | Validation + QA |
+To provide a single-binary/script experience that:
+1.  **Identifies**: Scans local Steam libraries.
+2.  **Enriches**: Fetches metadata from Steam Store and MusicBrainz.
+3.  **Consolidates**: Uses LLMs to resolve metadata conflicts with zero hallucination.
+4.  **Transforms**: Converts audio to high-quality formats (AIFF/MP3) and applies strict tagging.
+5.  **Packages**: Delivers a ready-to-use ZIP bundle with full processing logs.
 
 ---
 
-# 🧩 Phase 0: Project Setup
+# 🏗️ Execution Phases (Revised)
 
-## Tasks
-
-- Create project structure
-- Setup Python 3.11+
-- Setup dependency manager (uv)
-- Setup Docker environment
-- Prepare config loader
-
-## Output
-
-- runnable dev environment
+| Phase | Goal | Status |
+|------|------|--------|
+| Phase 1 | Core I/O & Local Scanning | **Done** |
+| Phase 2 | External API Integration (Steam/MBZ) | **Done** |
+| Phase 3 | LLM Consolidation (Iterative Chat) | **Done** |
+| Phase 4 | Audio Transformation & Tagging | **Done** |
+| Phase 5 | CLI UX Enhancement (Rich UI) | **Pending** |
+| Phase 6 | Advanced LLM Strategies (Summary-first) | **Planned** |
+| Phase 7 | Reliability & Error Recovery | **Ongoing** |
 
 ---
 
-# 🧩 Phase 1: Core I/O Layer
+# 🧩 Phase 1-4: Core Engine (Current State)
 
-## Tasks
+The core logic is implemented in the `scout` package. It performs the full pipeline synchronously.
 
-- Implement worker input parser
-- Implement worker output builder
-- Implement JSON schema validation
-
-## Requirements
-
-- Must match:
-  - `worker_input.schema.json`
-  - `worker_output.schema.json`
-
-## Output
-
-- Validated input/output module
+### Key Components:
+- `SteamScanner`: Locates soundtracks and parses manifest files.
+- `LocalProcessor`: The main orchestrator of the local pipeline.
+- `LLMOrganizer`: Handles iterative chat sessions with rate limiting.
+- `AudioTagger`: FFmpeg-based conversion and ID3v2.3 tagging.
 
 ---
 
-# 🧩 Phase 2: Identification Pipeline (Core)
+# 🧩 Phase 5: CLI UX Enhancement
 
-## Tasks
+**Objective**: Replace the deprecated Web UI with a powerful, interactive CLI.
 
-- Implement pipeline controller
-- Implement step execution order
-- Implement state transitions
-
-## Must Follow
-
-- `docs/02_execution/pipeline.md`
-- `docs/02_execution/state_machine.md`
-
-## Output
-
-- Deterministic pipeline executor
+### Tasks:
+- [ ] **Interactive Progress**: Implement `rich` or `tqdm` for beautiful multi-bar progress tracking.
+- [ ] **Review Interface**: Allow users to approve or edit metadata suggestions directly in the terminal before tagging.
+- [ ] **Result Summaries**: Display a clear table of processed vs. review-queued albums at the end of the run.
+- [ ] **Log Browser**: A simple CLI command to view LLM chat histories or MBZ responses.
 
 ---
 
-# 🧩 Phase 3: External Integrations
+# 🧩 Phase 6: Advanced LLM Strategies
 
-## Tasks
+**Objective**: Improve the quality of consolidation.
 
-### VGMdb Client
-- Use hufman/vgmdb as base implementation
-- Wrap with retry + normalization layer
-- Retry logic
-- Response normalization
-
-### MusicBrainz Client
-- Search + lookup
-- Rate limit handling
-
-### Steam Metadata
-- Fetch title / release date
-
-## Output
-
-- Unified metadata interface
+### Tasks:
+- [ ] **Summary-First Pass**: Send the entire album tracklist to the LLM first to establish global context (Artist consistency, Disc count).
+- [ ] **Multi-Model Voting**: (Optional) Compare results from two different models to minimize outliers.
+- [ ] **Parent Game Logic**: Fully automate the fetching of tags from the parent game when the soundtrack app is sparse.
 
 ---
 
-# 🧩 Phase 4: Tagging + Format Conversion
+# 🧩 Phase 7: Reliability & Packaging
 
-## Tasks
+**Objective**: Ensure the tool is "production-ready" for the user.
 
-- Implement format conversion
-- Implement tagging writer (ID3v2.3)
-- Implement artwork embedding
-
-## Must Follow
-
-- `docs/01_spec/tagging_spec.md`
-- `docs/01_spec/format_spec.md`
-
-## Output
-
-- Tagged audio output
+### Tasks:
+- [ ] **Dependency Bundling**: Ensure `ffmpeg` and `uv` requirements are clearly documented or bundled.
+- [ ] **State Management**: Robust SQLite tracking to prevent redundant runs.
+- [ ] **ZIP Packaging**: Refine the `output/` structure:
+    - `output/archive/[AppID]_[Name].zip`
+    - `output/review/[AppID]_[Name].zip`
 
 ---
 
-# 🧩 Phase 5: LLM Integration
+# 🚫 Discontinued / Outdated Goals
 
-## Tasks
-
-- Implement LLM client abstraction
-- Implement dual-provider comparison
-- Implement similarity scoring
-
-## Must Follow
-
-- `docs/03_ai/llm_strategy.md`
-
-## Output
-
-- Reliable normalization module
-
----
-
-# 🧩 Phase 6: Orchestration (Prefect)
-
-## Tasks
-
-- Define Prefect flow
-- Define task boundaries
-- Implement retries
-
-## Output
-
-- End-to-end automated flow
-
----
-
-# 🧩 Phase 7: Reliability Layer
-
-## Tasks
-
-- Implement retry strategy
-- Implement error classification
-- Implement fallback logic
-
-## Must Follow
-
-- `docs/02_execution/retry_strategy.md`
-
----
-
-# 🧩 Phase 8: Validation & QA
-
-## Tasks
-
-- JSON schema validation
-- End-to-end test cases
-- Failure scenario tests
-
-## Required Tests
-
-- success case
-- fallback case
-- review case
-- API failure case
-
----
-
-# 🧪 Deliverable Requirements
-
-Each phase must produce:
-
-- working code
-- test cases
-- logs
-- schema-compliant output
-
----
-
-# 🧠 Task Execution Rule (IMPORTANT)
-
-Each task must be:
-
-- small (1 responsibility)
-- testable
-- reversible
-
----
-
-# 🔁 Iteration Strategy
-
-- Implement minimal → validate → extend
-- Never implement everything at once
-
----
-
-# 🚫 Anti-Patterns
-
-- Big-bang implementation
-- Skipping schema validation
-- Ignoring confidence thresholds
-- Mixing responsibilities
-
----
-
-# 🔚 Final Goal
-
-A system that:
-
-- correctly identifies ≥90%
-- never silently fails
-- isolates uncertainty into review
+- **SeaweedFS / S3 Integration**: Removed. The system now uses the local filesystem and ZIP archives.
+- **Web UI (FastAPI/React)**: Deprecated. The UI will be rebuilt as part of the CLI.
+- **Prefect Orchestration**: Removed. The system is a standalone tool, not a distributed workflow.
+- **AcoustID**: Deprecated due to low performance for VGM.
