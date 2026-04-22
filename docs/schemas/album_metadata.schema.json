@@ -1,0 +1,50 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SST Album Metadata Schema",
+  "description": "Schema for metadata.json generated for each processed album.",
+  "type": "object",
+  "required": [
+    "app_id",
+    "album_name",
+    "status",
+    "processed_at",
+    "tracks",
+    "steam_info"
+  ],
+  "properties": {
+    "app_id": { "type": "integer" },
+    "album_name": { "type": "string" },
+    "status": {
+      "type": "string",
+      "enum": ["archive", "review", "error", "skip"]
+    },
+    "processed_at": { "type": "string", "format": "date-time" },
+    "file_refs": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "tracks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["file_path", "original_filename", "tier", "tags", "title", "source"],
+        "properties": {
+          "file_path": { "type": "string" },
+          "original_filename": { "type": "string" },
+          "tier": { "type": "string", "enum": ["lossless", "lossy", "mp3"] },
+          "tags": { "type": "object" },
+          "title": { "type": "string" },
+          "source": { "type": "string" }
+        }
+      }
+    },
+    "steam_info": { "type": "object" },
+    "external_info": {
+      "type": "object",
+      "properties": {
+        "source": { "type": "string" },
+        "vgmdb_url": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

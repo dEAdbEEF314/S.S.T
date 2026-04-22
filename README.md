@@ -1,52 +1,47 @@
 # S.S.T (Steam Soundtrack Tagger)
 
-S.S.T is a high-precision, local-first edge processing system that automatically identifies, enriches, and tags soundtracks purchased on Steam. It consolidates metadata from the Steam API, MusicBrainz, and local embedded tags using LLM-assisted "Factual Metadata Organization."
+S.S.T is a high-precision, standalone CLI tool that automatically identifies, enriches, and tags soundtracks purchased on Steam. It consolidates metadata from the Steam API, MusicBrainz, and local embedded tags using LLM-assisted "Factual Metadata Organization."
 
 ## 🚀 System Architecture: Standalone Edge Processing
 
-S.S.T has transitioned from a distributed architecture to a **Standalone Edge Model**. All heavy lifting—including audio conversion, LLM consolidation, and tagging—is performed locally on the machine where the Steam library resides (e.g., WSL2/Windows). This minimizes network I/O and maximizes privacy and control.
+S.S.T is a **Local-only Edge Processor**. All heavy lifting—including audio conversion, LLM consolidation, and tagging—is performed locally on the machine where the Steam library resides (e.g., WSL2/Windows). This minimizes network I/O and ensures maximum privacy and control.
 
 ### Core Pipeline
-1.  **Scan**: Steam library scan with local caching (`scout_cache.json`).
-2.  **Enrich**: Fetches metadata from Steam API (including Parent Game info) and MusicBrainz.
-3.  **Consolidate**: Iterative LLM Chat Session (1 track at a time) to normalize metadata without hallucinations.
-4.  **Process**: Converts audio (Lossless -> AIFF, Lossy -> MP3) and writes strict ID3v2 tags.
-5.  **Archive**: Uploads results to SeaweedFS (S3) and creates a local ZIP package in `output/`.
+1.  **Scan**: Scans the Steam library and checks the local SQLite database for processed albums.
+2.  **Enrich**: Fetches metadata from Steam API (including Parent Game integration) and MusicBrainz.
+3.  **Consolidate (2-Step LLM)**: 
+    - **Summary Pass**: Establishes global album rules (Artist, Genre, Discs) to ensure consistency.
+    - **Iterative Pass**: Consolidates track-level metadata using global rules without exceeding TPM limits.
+4.  **Process**: Converts audio (Lossless -> AIFF, Lossy -> MP3) and writes strict ID3v2.3 tags.
+5.  **Package**: Bundles audio files and full processing logs into a ZIP archive in `output/`.
 
 ## ✨ Key Features (Act-10 Update)
 
--   **Iterative LLM Chat**: Processes large albums reliably by handling tracks one-by-one with a sliding window context (Smart TPM management).
--   **Parent Game Integration**: Automatically fetches tags and genres from the main game if soundtrack data is sparse.
--   **Strict Metadata Fallback**: Ensures "Truth" by prioritizing Steam/MBZ data and tracking metadata origins in the `source` field.
--   **Automatic ZIP Packaging**: Saves processed albums as ready-to-use ZIP files in `output/archive/` or `output/review/`.
--   **Comprehensive Logging**: Bundle includes `llm_log.json` (full chat history), `mbz_log.json` (raw API responses), and `raw_metadata.json`.
--   **Web UI Dashboard**: Browse processed albums, inspect detailed metadata, and review LLM interaction logs.
+-   **High-Precision CLI**: Built for power users. Provides detailed progress and terminal-based inspection.
+-   **TPM-Optimized LLM**: Uses a global decision pass to maintain consistency while keeping per-track token usage low and linear.
+-   **Smart Tie-breaking**: Strictly prioritizes Digital Media and non-Bandcamp sources from MusicBrainz to ensure "Gold Standard" metadata.
+-   **Local State Management**: Uses a local SQLite database to track every processed album, preventing redundant API calls.
+-   **Parent Game Integration**: Automatically fetches tags and genres from the main game if soundtrack metadata is sparse.
+-   **Comprehensive Logging**: Every ZIP bundle includes `llm_log.json` (full chat history), `mbz_log.json` (raw API responses), and `metadata.json`.
 
 ## 🛠️ Tech Stack
 
 -   **Language**: Python 3.12+
 -   **Package Manager**: [uv](https://github.com/astral-sh/uv) (Mandatory)
--   **Storage**: [SeaweedFS](https://github.com/seaweedfs/seaweedfs) (S3 + Filer API)
--   **AI**: OpenAI-compatible LLM APIs (Gemini, etc.)
+-   **AI**: OpenAI-compatible LLM APIs (Gemini 1.5 Pro recommended)
 -   **Audio**: FFmpeg, Mutagen
--   **Frontend**: React (Vite), Tailwind CSS, FastAPI (Backend proxy)
--   **Environment**: Docker Compose (for UI and Storage)
+-   **Database**: SQLite (Local state tracking)
 
 ## 🏗️ Getting Started
 
 ### 1. Prerequisites
 -   Ensure `.env` is configured (see `.env.example`).
--   Install dependencies using uv:
+-   Install dependencies using `uv`:
     ```bash
     cd scout && uv sync
     ```
 
-### 2. Launch Infrastructure (Storage & UI)
-```bash
-docker compose up -d
-```
-
-### 3. Run Processor
+### 2. Run Processor
 ```bash
 # Run from the root directory using the scout venv
 PYTHONPATH=scout/src ./scout/.venv/bin/python -m scout.main --limit 10
@@ -54,9 +49,9 @@ PYTHONPATH=scout/src ./scout/.venv/bin/python -m scout.main --limit 10
 
 ## ⚠️ Integrity & Review Rules
 
--   **Failure Isolation**: Any album missing mandatory tags (`Title` or `Track Number`) is automatically routed to `review/`.
+-   **Failure Isolation**: Any album missing mandatory tags (`Title` or `Track Number`) or having metadata conflicts is automatically routed to `output/review/`.
 -   **Zero Hallucination**: LLM prompts are strictly designed to prevent inference. Missing data remains "Unknown" for manual review.
--   **Timezone Support**: Timestamps respect the `TZ` environment variable for local logging accuracy.
+-   **Local Database**: Archived metadata is stored in `sst_local_state.db`. Any `app_id` present in this DB is skipped by default.
 
 ## 📄 License
 TBD
