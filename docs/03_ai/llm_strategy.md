@@ -1,54 +1,33 @@
-# LLM Strategy
+# LLM Strategy: Factual Metadata Organization
 
-## Primary Role
+SST uses Large Language Models (LLMs) to consolidate and normalize metadata gathered from fragmented sources.
 
-- Formatting and normalization ONLY (e.g., standardizing language, removing "- OST" suffixes, correcting casing).
-- **CRITICAL: LLM MUST NOT GUESS or invent missing metadata (artists, years, titles). If data is missing, the LLM must flag it for `review/`.**
+## 1. Core Principles
 
----
+- **Zero Hallucination**: No inference allowed. Use "Unknown" for missing data.
+- **Iterative Consolidation**: Processed track-by-track for scalability.
+- **Summary-First Pass (Proposed)**: Before the iterative loop, send a global tracklist summary to the LLM to establish consistency for Artists and Disc counts.
+- **Conflict Reporting**: If high-conflict metadata is detected, the LLM must summarize the conflicting information (URLs, mismatched fields) and route the album to the `review/` queue for the user.
 
-## Dual Provider
+## 2. Implementation: Multi-Model Compatibility
 
-- Primary
-- Secondary
+SST is designed to be model-agnostic. While Gemini 1.5 Pro is the recommended model due to its context window, any provider supporting the **OpenAI Chat Completions API** can be used, including:
+- Google Gemini (via OpenAI proxy/compatibility layer)
+- OpenAI GPT-4o
+- DeepSeek / Groq / Local LLMs (if they expose an OpenAI-compatible endpoint)
 
----
+## 3. Conflict Resolution & Review
 
-## Comparison
+When the LLM encounters a conflict it cannot resolve with high confidence:
+1.  It generates a `conflict_report.json`.
+2.  The report includes specific details: "MBZ Title: A vs. Steam Title: B", "Mismatched Artist URLs", etc.
+3.  The album is moved to `review/` with this report attached, assisting the user's manual correction.
 
-- similarity ≥ 0.8 → accept
-- confidence ≥ 0.65 → accept
-- < 0.6 → review
+## 4. Priority & Weighting
 
----
+Users can configure the weighting of metadata sources in the configuration:
+`METADATA_SOURCE_PRIORITY=MBZ,STEAM,EMBEDDED` (Default)
 
-## Failure Handling
-
-- One fails → fallback to other (penalty)
-- Both fail → rule-based fallback
-- Missing required data → route to review (No hallucination allowed)
-
----
-
-## Targets
-
-- Title normalization
-- Artist normalization
-- Album normalization
-
----
-
-## Context Utilization
-
-- **Directory Names**: LLM should use the `parent_dir` field as a secondary source of truth. Folder names like "CD1", "Disc 2", or "Bonus" provide high-confidence context for disc numbering and track categorization when embedded tags are missing.
-
----
-
-## Rate Limiting & Quota Management
-
-To prevent API errors and service bans (especially for providers like Gemini), the system implements a multi-tier rate limiting strategy:
-
-- **RPM (Requests Per Minute)**: Local in-memory throttling per worker.
-- **TPM (Tokens Per Minute)**: Local token estimation (1 token ≈ 4 characters) and throttling.
-- **RPD (Requests Per Day)**: Global usage tracking using shared storage (S3).
-- **Retry Mechanism**: Exponential backoff specifically for 429 status codes.
+The system treats matches differently based on their origin:
+- **Confirmed**: Matches based on specific Digital Media formats and non-Bandcamp sources.
+- **Weak**: Matches based on track count or date proximity only.

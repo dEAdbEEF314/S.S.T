@@ -39,7 +39,7 @@ class EmbeddedMetadataExtractor:
                 elif isinstance(full_audio, ID3):
                     if full_audio.getall("APIC"):
                         metadata["has_artwork"] = True
-                elif hasattr(full_audio, 'tags'):
+                elif getattr(full_audio, 'tags', None) is not None:
                     # Check for common artwork tags in different formats
                     for key in full_audio.tags.keys():
                         if "covr" in key or "METADATA_BLOCK_PICTURE" in key:

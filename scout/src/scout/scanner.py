@@ -62,8 +62,11 @@ class SteamScanner:
         # Fallback: Assume common but log warning if not exists
         return common_path
 
-    def find_soundtracks(self, force: bool = False, limit: Optional[int] = None) -> List[dict]:
-        """Finds soundtrack app manifests and fetches metadata, using cache to skip repeats."""
+    def find_soundtracks(self, force: bool = False, limit: Optional[int] = None, is_processed_callback: Optional[callable] = None) -> List[dict]:
+        """
+        Finds soundtrack app manifests and fetches metadata.
+        Skips already processed albums using the provided callback and only counts 'active' ones against the limit.
+        """
         if not self.steamapps_path.exists():
             logger.error(f"Steamapps directory not found: {self.steamapps_path}")
             return []
@@ -73,9 +76,11 @@ class SteamScanner:
         logger.info(f"Found {len(acf_files)} ACF files. Scanning for soundtracks...")
 
         for acf_file in acf_files:
+            # Check limit based on ACTIVE soundtracks (found and not processed)
             if limit and len(soundtracks) >= limit:
-                logger.info(f"Reached limit of {limit} soundtracks. Stopping scan.")
+                logger.info(f"Reached limit of {limit} active soundtracks. Stopping scan.")
                 break
+
             # Extract AppID from filename (appmanifest_XXXX.acf)
             try:
                 app_id_str = acf_file.stem.split("_")[1]
@@ -83,14 +88,15 @@ class SteamScanner:
             except:
                 continue
 
-            # 1. Skip if known ignored
+            # 1. Skip if known ignored in local scanner cache
             if not force and app_id in self.cache["ignored"]:
                 continue
 
-            # 2. Check if already processed (exists in cache and S3 check will happen later)
-            # However, to avoid Steam API, we check if we have the metadata in cache
-            cached_data = self.cache["processed"].get(str(app_id))
-            
+            # 2. Check if already processed (DB check)
+            if not force and is_processed_callback and is_processed_callback(app_id):
+                logger.debug(f"Skipping already processed album: AppID {app_id}")
+                continue
+
             manifest = self._parse_acf(acf_file)
             if not manifest:
                 continue
@@ -100,15 +106,15 @@ class SteamScanner:
                     self.cache["ignored"].append(app_id)
                 continue
 
-            # It's a soundtrack!
+            # It's a valid, UNPROCESSED soundtrack!
             app_state = manifest.get("AppState", {})
+            cached_data = self.cache["processed"].get(str(app_id))
             
             if not force and cached_data:
                 logger.info(f"Using cached metadata for {app_state.get('name')} ({app_id})")
                 ost_data = cached_data.copy()
                 ost_data["app_id"] = app_id
                 ost_data["acf_path"] = str(acf_file)
-                # Resolve path dynamically
                 ost_data["install_dir"] = str(self._resolve_install_path(app_state.get("installdir", "")))
                 soundtracks.append(ost_data)
                 continue
@@ -133,16 +139,14 @@ class SteamScanner:
                 "acf_path": str(acf_file)
             }
             
-            # Update cache
+            # Update local scanner cache
             self.cache["processed"][str(app_id)] = ost_info.copy()
-            # Remove app_id and acf_path from persistent cache to keep it clean if needed, 
-            # but here we keep them for simplicity.
-            
             soundtracks.append(ost_info)
             
             # Base delay to be kind to the API
             time.sleep(2.0)
         
+        logger.info(f"Scan complete. Found {len(soundtracks)} active soundtrack(s) to process.")
         self._save_cache()
         return soundtracks
 

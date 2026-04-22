@@ -1,4 +1,0 @@
-# Inherit from root and add scout specific ignores
-**/__pycache__
-.venv
-.env

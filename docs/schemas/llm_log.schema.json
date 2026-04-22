@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SST LLM Log Schema",
+  "description": "Schema for llm_log.json generated during metadata consolidation.",
+  "type": "object",
+  "required": [
+    "timestamp",
+    "model",
+    "app_id",
+    "album_name",
+    "session"
+  ],
+  "properties": {
+    "timestamp": { "type": "string", "format": "date-time" },
+    "model": { "type": "string" },
+    "app_id": { "type": "integer" },
+    "album_name": { "type": "string" },
+    "session": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["track_id"],
+        "properties": {
+          "track_id": { "type": "string" },
+          "prompt": { "type": "string" },
+          "response": { "type": "string" },
+          "error": { "type": "string" },
+          "exception": { "type": "string" }
+        }
+      }
+    }
+  }
+}

@@ -91,8 +91,5 @@ prefect.yaml
 scout/dist/
 scout/build/
 
-docker-compose.core.yml
-docker-compose.scout.yml
-docker-compose.worker.yml
-HANDOVER.md
 .gitignore
+.github/
