@@ -12,6 +12,7 @@ class SteamMetadata(BaseModel):
     url: Optional[str] = None
     release_date: Optional[str] = None
     parent_app_id: Optional[int] = None
+    parent_name: Optional[str] = None
     parent_tags: List[str] = []
     parent_genre: Optional[str] = None
 

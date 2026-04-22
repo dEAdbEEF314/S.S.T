@@ -1,31 +1,44 @@
-# SST Pipeline Execution Strategy
+# SST Pipeline (Standalone CLI)
 
-## Overview
-The SST pipeline follows a decentralized "Flow-of-Flows" architecture. This ensures that the orchestration logic (Core) is separated from the heavy-lifting processing logic (Worker), allowing for independent scaling and remote execution.
+The SST pipeline is a single-threaded, synchronous local process. It eliminates all network-based intermediate storage (S3) and distributed orchestration (Prefect) to provide a predictable and high-performance edge processing experience.
 
-## Pipeline Flow
+## Pipeline Steps
 
-1.  **Phase 1: Scouting (Scout Node)**
-    - Scans the local Steam library for soundtracks.
-    - Uploads raw files and `.acf` manifests to S3 (`ingest/` bucket).
-    - Triggers the Prefect **Main Flow** via a REST API POST request.
+### 1. Discovery (Scanner)
+- Scans the configured `STEAM_LIBRARY_PATH`.
+- Parses `.acf` files to identify soundtrack manifests.
+- Checks the local SQLite database to skip already processed `app_id`s.
 
-2.  **Phase 2: Orchestration (Core Node)**
-    - Receives the scout result.
-    - Iterates over the list of albums.
-    - For each album, it calls `run_deployment("sst-worker-flow/sst-worker-deployment")`.
-    - This creates a sub-flow run that is picked up by a Worker.
+### 2. Data Gathering (Enrichment)
+- **Steam API**: Fetches detailed metadata (Developer, Publisher, Release Date, Tags, Genre). If the soundtrack is a DLC, it automatically follows the parent game relationship.
+- **Local Audio Analysis**: Scans all subdirectories of the album.
+    - Extracts embedded tags from all formats (FLAC, MP3, etc.).
+    - Calculates audio duration for WAV matching.
+- **MusicBrainz**: Performs a fuzzy search using the album title and track count.
 
-3.  **Phase 3: Processing (Worker Node)**
-    - The Worker Flow Server picks up the assigned `sst-worker-flow`.
-    - **Logic**:
-        - Downloads files from S3 to temporary storage.
-        - Identifies the album using MusicBrainz and embedded metadata.
-        - **AI Interaction**: Calls the LLM for title normalization and metadata verification.
-        - **Tagging**: Normalizes audio formats (if needed) and applies ID3/FLAC tags + Artwork.
-        - **Upload**: Pushes the tagged files to `archive/` or `review/` and logs LLM interactions to `logs/llm/`.
+### 3. Consolidation (LLM)
+- Sends the gathered data to the LLM (e.g., Gemini 1.5 Pro).
+- The LLM processes tracks **iteratively** (one-by-one) with a sliding window context to ensure consistency and stay within token limits.
+- **Output**: A strict JSON object mapping track IDs to ID3v2.3 fields.
 
-## Reliability & Monitoring
-- **Error Handling**: Failures in a Worker flow do not crash the Main Flow. The Dashboard displays individual album statuses.
-- **Observability**: All interactions are logged to S3 and can be viewed via the S.S.T Dashboard UI.
-- **Concurrency**: Multiple Workers can be deployed to process different albums in parallel.
+### 4. Transformation (Tagger)
+- **Conversion**:
+    - Lossless (FLAC/WAV) → **AIFF** (24-bit/48kHz).
+    - High-quality Lossy (AAC/OGG) → **MP3** (320kbps).
+    - Standard MP3 → **Passthrough** (No re-encoding).
+- **Tagging**: Applies the consolidated metadata and embedded artwork (resized/padded to 500x500).
+
+### 5. Packaging (Finalization)
+- Creates a temporary working directory for the album.
+- Bundles the processed audio files and the following logs:
+    - `metadata.json`: The final consolidated data.
+    - `llm_log.json`: The full chat history for transparency.
+    - `raw_metadata.json`: All inputs provided to the LLM.
+- Creates a ZIP archive in:
+    - `output/archive/[AppID]_[Name].zip` (Success)
+    - `output/review/[AppID]_[Name].zip` (Needs attention)
+- Records the completion in the local SQLite database.
+
+## Error Handling
+- **Non-Fatal**: If a track lacks mandatory tags (Title/Track Number), the entire album is routed to `review/` rather than failing.
+- **Fatal**: If the LLM fails to respond or produces invalid JSON, the album is skipped or marked as an error in the database for later retries.
