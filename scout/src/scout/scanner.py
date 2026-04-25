@@ -62,7 +62,7 @@ class SteamScanner:
         # Fallback: Assume common but log warning if not exists
         return common_path
 
-    def find_soundtracks(self, force: bool = False, limit: Optional[int] = None, is_processed_callback: Optional[callable] = None) -> List[dict]:
+    def find_soundtracks(self, force: bool = False, limit: Optional[int] = None, is_processed_callback: Optional[callable] = None, target_appid: Optional[int] = None) -> List[dict]:
         """
         Finds soundtrack app manifests and fetches metadata.
         Skips already processed albums using the provided callback and only counts 'active' ones against the limit.
@@ -86,6 +86,10 @@ class SteamScanner:
                 app_id_str = acf_file.stem.split("_")[1]
                 app_id = int(app_id_str)
             except:
+                continue
+                
+            # Filter by specific AppID if requested
+            if target_appid and app_id != target_appid:
                 continue
 
             # 1. Skip if known ignored in local scanner cache
@@ -135,6 +139,7 @@ class SteamScanner:
                 "parent_name": enriched.get("parent_name"),
                 "parent_tags": enriched.get("parent_tags", []),
                 "parent_genre": enriched.get("parent_genre"),
+                "parent_release_date": enriched.get("parent_release_date"),
                 "url": f"https://store.steampowered.com/app/{app_id}",
                 "acf_path": str(acf_file)
             }
@@ -187,6 +192,7 @@ class SteamScanner:
                             "genre": info.get("genres", [{}])[0].get("description") if info.get("genres") else None,
                             "tags": [g.get("description") for g in info.get("genres", [])],
                             "release_date": info.get("release_date", {}).get("date"),
+                            "header_image_url": info.get("header_image"),
                             "parent_app_id": info.get("fullgame", {}).get("appid")
                         }
 
@@ -200,6 +206,7 @@ class SteamScanner:
                                 metadata["parent_name"] = parent_meta.get("name")
                                 metadata["parent_tags"] = parent_meta.get("tags", [])
                                 metadata["parent_genre"] = parent_meta.get("genre")
+                                metadata["parent_release_date"] = parent_meta.get("release_date")
                                 # Fallback developer/publisher if missing in soundtrack
                                 if not metadata["developer"]:
                                     metadata["developer"] = parent_meta.get("developer")

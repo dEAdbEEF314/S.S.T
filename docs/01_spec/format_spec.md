@@ -4,7 +4,7 @@
 
 | Input Format | Target Format | Bitrate / Quality Settings |
 | :--- | :--- | :--- |
-| **Lossless** (.flac, .wav, .aiff, .m4a-alac) | **.aiff** | 48kHz Max, 24bit Max |
+| **Lossless** (.flac, .wav, .aiff, .m4a-alac) | **.aiff** | 48kHz Max, 24-bit PCM (High-quality Resampling) |
 | **MP3** (.mp3) | **.mp3** | Passthrough (Keep as-is) |
 | **Other Lossy** (.ogg, .m4a-aac, etc.) | **.mp3** | CBR 320kbps, 48kHz Max |
 
@@ -22,8 +22,10 @@ To ensure the highest quality library and avoid duplicates, the system MUST only
 
 ## Audio Constraints
 
-- **Sample Rate**: Hard limit of **48,000 Hz**. Downsample if the source is higher (e.g., 96kHz -> 48kHz).
-- **Bit Depth**: Hard limit of **24-bit** for AIFF.
+- **Sample Rate**: Hard limit of **48,000 Hz**.
+    - All conversions use the **`soxr`** resampler (equivalent to SoX quality) for maximum fidelity during downsampling.
+- **Bit Depth**: 
+    - For AIFF: **24-bit PCM** (`pcm_s24be`).
 - **MP3 Encoding**: Must use **CBR (Constant Bit Rate)** at **320kbps** for conversions.
 
 ---
