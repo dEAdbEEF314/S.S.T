@@ -19,17 +19,30 @@ class AudioTagger:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def process_artwork(self, source_img_data: bytes) -> bytes:
-        """Resizes and pads raw image data to 500x500 PNG with black bars."""
+        """Resizes to 500x500. If square, stretches to fill. If not, pads with black."""
         import io
         try:
             with Image.open(io.BytesIO(source_img_data)) as img:
-                img = img.convert("RGBA")
-                img.thumbnail(TARGET_IMAGE_SIZE, Image.Resampling.LANCZOS)
-                new_img = Image.new("RGBA", TARGET_IMAGE_SIZE, (0, 0, 0, 255))
-                x = (TARGET_IMAGE_SIZE[0] - img.width) // 2
-                y = (TARGET_IMAGE_SIZE[1] - img.height) // 2
-                new_img.paste(img, (x, y))
-                
+                # Convert to RGB to ensure black background consistency
+                img = img.convert("RGB")
+
+                width, height = img.size
+                aspect_ratio = width / height
+
+                # If nearly square (within 1% tolerance), force resize to fill 500x500
+                if 0.99 <= aspect_ratio <= 1.01:
+                    img = img.resize(TARGET_IMAGE_SIZE, Image.Resampling.LANCZOS)
+                    new_img = img
+                else:
+                    # Maintain aspect ratio, scaling longest side to 500
+                    img.thumbnail(TARGET_IMAGE_SIZE, Image.Resampling.LANCZOS)
+                    # Create black background
+                    new_img = Image.new("RGB", TARGET_IMAGE_SIZE, (0, 0, 0))
+                    # Center the image
+                    x = (TARGET_IMAGE_SIZE[0] - img.width) // 2
+                    y = (TARGET_IMAGE_SIZE[1] - img.height) // 2
+                    new_img.paste(img, (x, y))
+
                 output = io.BytesIO()
                 new_img.save(output, format="PNG")
                 return output.getvalue()
@@ -37,29 +50,48 @@ class AudioTagger:
             logger.error(f"Artwork processing failed: {e}")
             return source_img_data
 
-    def convert_and_limit(self, source_path: Path, quality_tier: str) -> Path:
+
+    def convert_and_limit(self, source_path: Path, quality_tier: str, subdir: str = "") -> Path:
         """
         Converts audio based on quality tier and strict constraints.
         :param quality_tier: 'lossless' -> AIFF (24-bit/48kHz), 'lossy' -> 320k MP3
+        :param subdir: Optional subdirectory (e.g. disc number)
         """
         target_ext = ".aiff" if quality_tier == "lossless" else ".mp3"
-        target_path = self.output_dir / source_path.with_suffix(target_ext).name
+        
+        dest_dir = self.output_dir / subdir if subdir else self.output_dir
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        
+        target_path = dest_dir / source_path.with_suffix(target_ext).name
+        
+        # Avoid upscanning/re-encoding if source is already MP3 and tier is lossy/mp3
+        if source_path.suffix.lower() == ".mp3" and target_ext == ".mp3":
+            import shutil
+            try:
+                shutil.copy2(source_path, target_path)
+                return target_path
+            except Exception as e:
+                logger.error(f"Failed to copy MP3: {e}")
+                # Fallback to ffmpeg if copy fails
         
         # FFmpeg command for strict limits
         cmd = ["ffmpeg", "-i", str(source_path), "-y", "-loglevel", "error"]
 
         if quality_tier == "lossless":
-            # AIFF: 24-bit PCM Big Endian, 48kHz
+            # AIFF: 24-bit PCM Big Endian, 48kHz (Highest Compatibility)
+            # Using 'soxr' resampler for professional-grade sample rate conversion
             cmd += [
                 "-ar", "48000",
+                "-resampler", "soxr",
                 "-c:a", "pcm_s24be", 
                 "-write_id3v2", "1",
                 str(target_path)
             ]
         else:
-            # MP3: Convert to 320kbps CBR, max 48kHz
+            # MP3: Convert to 320kbps CBR, max 48kHz with high-quality resampling
             cmd += [
                 "-ar", "48000",
+                "-resampler", "soxr",
                 "-codec:a", "libmp3lame", 
                 "-b:a", "320k", 
                 str(target_path)
@@ -114,32 +146,32 @@ class AudioTagger:
             "TIT1": (TIT1, tags.get("grouping")),
             "TCOM": (TCOM, tags.get("composer")),
             "TDRC": (TDRC, tags.get("year")),
-            "TRCK": (TRCK, tags.get("track_num")),
-            "TPOS": (TPOS, tags.get("disc_num")),
+            "TRCK": (TRCK, tags.get("track_number")),
+            "TPOS": (TPOS, tags.get("disc_number")),
         }
 
         for frame_class, value in mapping.values():
             text_list = _safe_text(value)
             if text_list:
-                audio.add(frame_class(encoding=3, text=text_list))
+                audio.add(frame_class(encoding=1, text=text_list))
 
         # Comment frame is special (needs lang and desc)
         comment_text = tags.get("comment")
         if comment_text:
-            audio.add(COMM(encoding=3, lang="eng", desc="", text=[str(comment_text)]))
+            audio.add(COMM(encoding=1, lang="jpn", desc="", text=[str(comment_text)]))
 
         # Custom TXXX fields
         if tags.get("mbid"):
-            audio.add(TXXX(encoding=3, desc="MusicBrainz Album Id", text=tags["mbid"]))
+            audio.add(TXXX(encoding=1, desc="MusicBrainz Album Id", text=tags["mbid"]))
         if tags.get("steam_appid"):
-            audio.add(TXXX(encoding=3, desc="Steam App Id", text=str(tags["steam_appid"])))
+            audio.add(TXXX(encoding=1, desc="Steam App Id", text=str(tags["steam_appid"])))
         if tags.get("vgmdb_url"):
-            audio.add(TXXX(encoding=3, desc="VGMdb URL", text=tags["vgmdb_url"]))
+            audio.add(TXXX(encoding=1, desc="VGMdb URL", text=tags["vgmdb_url"]))
 
         # Artwork
         if artwork_data:
             audio.add(APIC(
-                encoding=3, mime="image/png", type=3, desc="Front Cover", data=artwork_data
+                encoding=1, mime="image/png", type=3, desc="Front Cover", data=artwork_data
             ))
 
         if file_path.suffix.lower() == ".aiff":

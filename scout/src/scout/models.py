@@ -15,6 +15,8 @@ class SteamMetadata(BaseModel):
     parent_name: Optional[str] = None
     parent_tags: List[str] = []
     parent_genre: Optional[str] = None
+    parent_release_date: Optional[str] = None
+    header_image_url: Optional[str] = None
 
 class TrackMetadata(BaseModel):
     title: str
