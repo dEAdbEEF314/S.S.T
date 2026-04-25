@@ -21,40 +21,57 @@ class Config(BaseSettings):
         env_file=".env", 
         extra="ignore",
         env_ignore_empty=True,
-        case_sensitive=False
+        case_sensitive=False,
+        env_prefix="" # Ensure no prefix issues
     )
 
     steam_library_path: str
     sst_working_dir: str = "/tmp/sst-work"
     sst_db_path: str = "sst_local_state.db"
-    s3_endpoint_url: str
-    s3_access_key: str
-    s3_secret_key: str
-    s3_bucket_name: str
-    s3_region: str = "us-east-1"
-    s3_filer_url: str
-    steam_language: str = "japanese"
+    user_language: str = "ja"
+    steam_language_full: str = "japanese"
+    user_language_639_2: str = "jpn"
     env_mode: str = "production"
     log_level: str = "INFO"
     llm_base_url: str
     llm_api_key: Optional[str] = None
-    llm_model: str = "gemini-1.5-pro"
-    llm_limit_rpm: int = 30
-    llm_limit_tpm: int = 15000
-    llm_limit_rpd: int = 14400
+    llm_model: str = "gemma-4-31b-it"
+    llm_limit_rpm: int = 15
+    llm_limit_tpm: int = 10000000
+    llm_limit_rpd: int = 1500
+    max_encoding_tasks: int = 4
     metadata_source_priority: str = "MBZ,STEAM,EMBEDDED"
+    mbz_app_name: str = "SST-Scout"
+    mbz_app_version: str = "1.0.0"
+    mbz_contact: str = "contact@example.lan"
 
 def main():
     # Argument Parsing
     parser = argparse.ArgumentParser(description="SST Scout - Local Processor for Steam Soundtracks.")
-    parser.add_argument("--limit", "-n", type=int, default=None, help="Limit the number of soundtracks to process.")
+    parser.add_argument("--limit", "-n", type=int, help="Limit the number of soundtracks to process.")
     parser.add_argument("--force", "-f", action="store_true", help="Force re-processing of already completed albums.")
+    parser.add_argument("--appid", type=int, help="Target a specific AppID for processing.")
     parser.add_argument("--reset-db", action="store_true", help="Reset the local processed database (requires 3 confirmations).")
+
     args = parser.parse_args()
+
+    # Act-11: Forcefully prioritize .env by cleaning OS environment variables first
+    for key in ["LLM_MODEL", "LLM_BASE_URL", "LLM_API_KEY"]:
+        if key in os.environ:
+            del os.environ[key]
 
     load_dotenv()
     try:
         config = Config()
+        
+        # ISO 639-1 to Steam Full Name Mapping
+        steam_lang_map = {"ja": "japanese", "en": "english", "zh": "chinese", "ko": "korean"}
+        config.steam_language_full = steam_lang_map.get(config.user_language, "english")
+        
+        # ISO 639-1 to ISO 639-2 Mapping for ID3 TLAN
+        iso639_2_map = {"ja": "jpn", "en": "eng", "zh": "zho", "ko": "kor"}
+        config.user_language_639_2 = iso639_2_map.get(config.user_language, "eng")
+        
     except Exception as e:
         print(f"Configuration error: {e}")
         return
@@ -98,10 +115,19 @@ def main():
     
     logger.info(f"SST Local Processor starting in {config.env_mode} mode")
 
+    # Act-12: Dynamic Album Workers Calculation
+    import multiprocessing
+    cpu_count = multiprocessing.cpu_count()
+    calculated_workers = min(int(config.llm_limit_rpm * 0.7), cpu_count * 2, 10)
+    max_album_workers = max(1, calculated_workers)
+    
+    logger.info(f"Dynamic Limit: LLM_RPM={config.llm_limit_rpm} -> Max Album Workers={max_album_workers}")
+    logger.info(f"Parallel Encoding: {config.max_encoding_tasks} tasks per album")
+
     scanner = SteamScanner(
         config.steam_library_path,
         cache_path="scout_cache.json",
-        language=config.steam_language
+        language=config.steam_language_full
     )
 
     processor = LocalProcessor(config)
@@ -111,14 +137,17 @@ def main():
     soundtracks = scanner.find_soundtracks(
         force=args.force, 
         limit=args.limit,
-        is_processed_callback=processor.is_processed
+        is_processed_callback=processor.is_processed,
+        target_appid=args.appid
     )
     
     active_list = soundtracks # Scanner already filtered them
 
     logger.info(f"Queueing {len(active_list)} soundtracks for local processing.")
 
-    for ost in active_list:
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _process_single_album(ost):
         app_id = ost["app_id"]
         install_dir = Path(ost["install_dir"])
         
@@ -134,7 +163,9 @@ def main():
             parent_app_id=ost.get("parent_app_id"),
             parent_name=ost.get("parent_name"),
             parent_tags=ost.get("parent_tags", []),
-            parent_genre=ost.get("parent_genre")
+            parent_genre=ost.get("parent_genre"),
+            parent_release_date=ost.get("parent_release_date"),
+            header_image_url=ost.get("header_image_url")
         )
 
         # Process locally (Select -> Convert -> Tag -> Upload)
@@ -147,6 +178,10 @@ def main():
             logger.warning(f"Sent App ID {app_id} to review: {result.message}")
         else:
             logger.error(f"Failed to process App ID {app_id}: {result.message}")
+
+    # Act-12: Enabled parallel album processing with dynamic worker limit
+    with ThreadPoolExecutor(max_workers=max_album_workers) as executor:
+        list(executor.map(_process_single_album, active_list))
 
 if __name__ == "__main__":
     main()
