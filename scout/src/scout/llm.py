@@ -94,7 +94,8 @@ class LLMOrganizer:
     def __init__(self, api_key: str, base_url: str, storage: Any = None, 
                  model: str = "gemma-4-31b-it", 
                  rpm: int = 15, tpm: int = 10000000, rpd: int = 1500,
-                 user_language: str = "ja"):
+                 user_language: str = "ja",
+                 force_local: bool = False):
         if not base_url.endswith("/chat/completions"):
             self.api_url = f"{base_url.rstrip('/')}/chat/completions"
         else:
@@ -103,6 +104,7 @@ class LLMOrganizer:
         self.api_key = api_key
         self.model = model
         self.user_language = user_language
+        self.force_local = force_local
         self.app_id = None
         self.album_name = None
         self.limiter = DistributedRateLimiter(rpm, tpm, rpd)
@@ -113,168 +115,188 @@ class LLMOrganizer:
 
     def consolidate_metadata(self, steam_info: Dict[str, Any], track_sources: Dict[str, List[Dict[str, Any]]], mbz_candidates: List[Dict[str, Any]]) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
         """
-        Act-12: Uses Differential Mapping to minimize token usage and resolve truncation issues.
+        Act-11 Hotfix: Stateful Sequential Processing.
+        1. Determine Global Identity (Artist, Album, MBID).
+        2. Map tracks in chunks using Global Identity as a constraint.
         """
-        full_log = {
-          "timestamp": datetime.utcnow().isoformat(),
-          "model": self.model,
-          "app_id": self.app_id,
-          "album_name": self.album_name,
-          "input_summary": {
-            "track_count": len(track_sources),
-            "mbz_candidate_count": len(mbz_candidates)
-          },
-          "response": None
-        }
-
-        # Build Differential Mapping Prompt
-        prompt = f"""
-You are an expert Music Metadata Librarian. Your task is to analyze multiple metadata sources and provide a "Canonical Mapping Instruction" for a game soundtrack album.
+        full_logs = []
+        
+        # --- Phase 1: Determine Global Identity (The "Soul") ---
+        global_id_prompt = f"""
+You are an expert Music Metadata Librarian.
+Your task: Analyze the sources and determine the Canonical Album Identity.
 
 ### ALBUM CONTEXT (Locked Truth):
-- Steam Album Name: {steam_info.get('name')}
+- Fixed Album Title: {steam_info.get('name')}
 - Developers: {steam_info.get('developer')}
 - Publishers: {steam_info.get('publisher')}
 - Release Year: {steam_info.get('release_date', '')[:4]}
 
-### INFORMATION SOURCES & WEIGHTS:
-1. [Embedded Tags]: Metadata (Title/Track) found inside files. (HIGH PRIORITY/RELIABILITY)
-2. [MusicBrainz]: External database candidates. (MODERATE RELIABILITY)
-3. [Filenames]: Inferred names/numbers from files. (LOW PRIORITY/FALLBACK)
+### INFORMATION SOURCES:
+1. [Embedded Tags]: Found inside files. High priority.
+2. [MusicBrainz]: External database candidates.
+3. [Filenames]: Low priority fallback.
 
 ### MUSICBRAINZ CANDIDATES:
 {json.dumps(mbz_candidates, indent=2, ensure_ascii=False)}
 
-### LOCAL TRACK DATA:
-{json.dumps(track_sources, indent=2, ensure_ascii=False)}
+### LOCAL TRACK LIST SUMMARY:
+{json.dumps([{"id": tid, "duration": s[0].get("duration"), "has_tags": any(x.get("type").startswith("embedded") for x in s)} for tid, s in track_sources.items()], indent=2)}
 
 ### MANDATORY OUTPUT FORMAT:
 Return ONLY a valid JSON object:
 {{
   "confidence_score": 0-100,
-  "confidence_reason": "Explain your score. Write this in language: {self.user_language}",
+  "confidence_reason": "Write this in language: {self.user_language}",
   "strategy": "MBZ_BASED" | "LOCAL_BASED" | "HYBRID" | "REVIEW_REQUIRED",
   "global_tags": {{
-    "canonical_album_artist": "Chosen artist for the whole album.",
-    "canonical_album_title": "Chosen album title.",
-    "canonical_genre": "Main genre.",
-    "canonical_year": "YYYY"
-  }},
-  "track_instructions": {{
-     "TRACK_ID": {{
-        "action": "use_mbz" | "use_local_tag" | "use_filename" | "needs_review",
-        "mbz_index": 0, // Only if action is use_mbz. Index in the candidate list.
-        "mbz_track_index": 0, // Only if action is use_mbz. Index in the chosen MBZ candidate's tracklist.
-        "override_title": null, // Use ONLY if all sources have typos.
-        "override_track": null, // Use ONLY if track order is missing or clearly wrong.
-        "reason": "Why this action was chosen. Write this in language: {self.user_language}"
-     }},
-     ...
+    "canonical_album_artist": "...",
+    "canonical_genre": "...",
+    "canonical_year": "YYYY",
+    "chosen_mbz_index": 0 // Index of best MBZ candidate. -1 if none.
   }}
 }}
 
 ### STRICT RULES:
-1. DURATION CHECK: If a local track's duration differs from a MusicBrainz track by >5s, DO NOT use 'use_mbz' for that track unless it is a clear match.
-2. INDIE PRIORITIZATION: For indie games, prefer [Embedded Tags] over MusicBrainz if MBZ data seems sparse or incorrect.
-3. TRACK ID MATCHING: Use the exact "TRACK_ID" strings provided in Local Track Data.
-4. ZERO HALLUCINATION: If no reliable source exists, use "needs_review".
+1. BANDCAMP ALLOWANCE: If no direct Steam AppID link is found in MBZ, Bandcamp links (context) are VALID and reliable sources for Indie games.
+2. ZERO HALLUCINATION: If sources are empty/conflicting, use "REVIEW_REQUIRED".
+3. LANGUAGE CONSISTENCY: Write reasoning ONLY in {self.user_language}.
 """
-        messages = [{"role": "user", "content": prompt}]
-        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-
-        logger.info(f"Consolidating metadata for {self.album_name} in one pass...")
+        global_res, global_log = self._call_llm(global_id_prompt)
+        full_logs.append(global_log)
         
-        if not self.limiter.acquire(messages):
-            return None, {"error": "Rate limit reached", "log": full_log}
+        if not global_res or global_res.get("strategy") == "REVIEW_REQUIRED":
+            return None, {"phase1_log": global_log}
 
-        max_retries = 5
+        # --- Phase 2: Sequential Track Mapping (The "Body") ---
+        global_identity = global_res.get("global_tags", {})
+        strategy = global_res.get("strategy")
+        all_instructions = {}
+        
+        track_ids = list(track_sources.keys())
+        # Act-12: Use smaller chunk size for local LLMs to save memory, larger for remote
+        chunk_size = 20 if self.force_local else 40
+
+        for i in range(0, len(track_ids), chunk_size):
+            chunk_ids = track_ids[i:i + chunk_size]
+            chunk_sources = {tid: track_sources[tid] for tid in chunk_ids}
+            
+            mapping_prompt = f"""
+Now map the following tracks using the FIXED ALBUM IDENTITY.
+
+### FIXED ALBUM IDENTITY:
+{json.dumps(global_identity, indent=2)}
+- Strategy: {strategy}
+
+### TRACKS TO MAP:
+{json.dumps(chunk_sources, indent=2, ensure_ascii=False)}
+
+### MANDATORY OUTPUT FORMAT:
+Return ONLY a valid JSON object:
+{{
+  "track_instructions": {{
+     "TRACK_ID": {{
+        "action": "use_mbz" | "use_local_tag" | "use_filename" | "needs_review",
+        "mbz_track_index": 0, // Only if action is use_mbz. Index in the tracks list of chosen MBZ candidate.
+        "override_title": null, 
+        "override_track": null,
+        "reason": "Write this in language: {self.user_language}"
+     }},
+     ...
+  }}
+}}
+"""
+            chunk_res, chunk_log = self._call_llm(mapping_prompt)
+            full_logs.append(chunk_log)
+            
+            if chunk_res and "track_instructions" in chunk_res:
+                instructions = chunk_res["track_instructions"]
+                for tid in instructions:
+                    instructions[tid]["TPE2"] = global_identity.get("canonical_album_artist")
+                    instructions[tid]["TCON"] = global_identity.get("canonical_genre")
+                    instructions[tid]["TDRC"] = global_identity.get("canonical_year")
+                    instructions[tid]["confidence_score"] = global_res.get("confidence_score")
+                    instructions[tid]["confidence_reason"] = global_res.get("confidence_reason")
+                    instructions[tid]["strategy"] = strategy
+                all_instructions.update(instructions)
+            else:
+                logger.error(f"Failed to get instructions for chunk {i//chunk_size + 1}")
+
+        return all_instructions, {"chunks": full_logs}
+
+    def _call_llm(self, prompt: str) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+        """Helper to call LLM and handle JSON parsing/repair."""
+        messages = [{"role": "user", "content": prompt}]
+        log_entry = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "response": None,
+            "error": None
+        }
+        
+        # Act-12: Bypassing limiter if force_local is set
+        if not self.force_local and not self.limiter.acquire(messages):
+            log_entry["error"] = "Rate limit reached"
+            return None, log_entry
+
+        max_retries = 3
         retry_delay = 5
-        last_response_text = ""
         
         for attempt in range(max_retries + 1):
             try:
-                # Build standard OpenAI-compatible payload
+                headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
                 payload = {
-                    "model": self.model, 
-                    "messages": messages, 
+                    "model": self.model,
+                    "messages": messages,
                     "temperature": 0.0
                 }
-                
-                # Add Ollama-specific options ONLY if using local Ollama (Undertale fix)
                 if "localhost" in self.api_url or "127.0.0.1" in self.api_url:
-                    payload["options"] = {
-                        "num_ctx": 32768,  # Expand context window to 32k
-                        "num_predict": 4096 # Allow long JSON responses
-                    }
-                
-                response = requests.post(self.api_url, 
-                                      json=payload, 
-                                      headers=headers, 
-                                      timeout=300) # Extend to 5 mins
+                    payload["options"] = {"num_ctx": 32768, "num_predict": 4096}
+
+                response = requests.post(self.api_url, headers=headers, json=payload, timeout=120)
                 
                 if response.status_code == 200:
-                    last_response_text = response.text.strip()
-                    if last_response_text:
-                        break # Real success
-                    else:
-                        logger.warning(f"LLM attempt {attempt+1} returned empty 200 OK. Retrying...")
+                    content = response.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+                    
+                    if not content or not content.strip():
+                        raise ValueError("Received empty content from LLM.")
+                        
+                    log_entry["response"] = content
+                    
+                    # Extract and Repair JSON
+                    json_str = content
+                    if "```json" in content:
+                        json_str = content.split("```json")[1].split("```")[0].strip()
+                    elif "```" in content:
+                        json_str = content.split("```")[1].split("```")[0].strip()
+                    
+                    json_str = re.sub(r',\s*([\]}])', r'\1', json_str)
+                    open_braces = json_str.count('{')
+                    close_braces = json_str.count('}')
+                    if open_braces > close_braces:
+                        json_str += '}' * (open_braces - close_braces)
+
+                    try:
+                        return json.loads(json_str), log_entry
+                    except json.JSONDecodeError as e:
+                        raise ValueError(f"JSON parsing failed: {e}. Raw content snippet: {content[:200]}...")
                 
                 if response.status_code in [500, 503, 504, 429] and attempt < max_retries:
-                    logger.warning(f"LLM attempt {attempt+1} failed with {response.status_code}. Retrying in {retry_delay}s...")
+                    logger.warning(f"LLM attempt {attempt+1} failed with HTTP {response.status_code}. Retrying in {retry_delay}s...")
                     time.sleep(retry_delay)
                     retry_delay *= 1.5
                     continue
                 
-                logger.error(f"LLM Error {response.status_code}: {response.text}")
-                return None, full_log
+                log_entry["error"] = f"HTTP {response.status_code}: {response.text}"
+                return None, log_entry
 
-            except (requests.exceptions.RequestException, Exception) as e:
+            except Exception as e:
+                logger.warning(f"LLM attempt {attempt+1} encountered error: {e}")
                 if attempt < max_retries:
-                    logger.warning(f"LLM attempt {attempt+1} exception: {e}. Retrying in {retry_delay}s...")
+                    logger.warning(f"Retrying in {retry_delay}s...")
                     time.sleep(retry_delay)
                     retry_delay *= 1.5
                     continue
-                logger.error(f"LLM Batch Consolidation failed after retries: {e}")
-                return None, full_log
-
-        try:
-            content = response.json()["choices"][0]["message"]["content"]
-            
-            # Extract JSON
-            json_str = content
-            if "```json" in content:
-                json_str = content.split("```json")[1].split("```")[0].strip()
-            elif "```" in content:
-                json_str = content.split("```")[1].split("```")[0].strip()
-            
-            # Act-12: Robust JSON Repair
-            # 1. Remove trailing commas in objects/arrays
-            json_str = re.sub(r',\s*([\]}])', r'\1', json_str)
-            # 2. Basic brace matching check (optional, but helps with truncation)
-            open_braces = json_str.count('{')
-            close_braces = json_str.count('}')
-            if open_braces > close_braces:
-                json_str += '}' * (open_braces - close_braces)
-
-            result = json.loads(json_str)
-            full_log["response"] = result
-            
-            # Map back to the expected internal format for processor.py
-            instructions = result.get("track_instructions", {})
-            global_tags = result.get("global_tags", {})
-            
-            # Inject global fields and scores into each track entry for compatibility with processor.py's expectation
-            for tid in instructions:
-                instructions[tid]["TALB"] = global_tags.get("canonical_album_title")
-                instructions[tid]["TPE2"] = global_tags.get("canonical_album_artist")
-                instructions[tid]["TCON"] = global_tags.get("canonical_genre")
-                instructions[tid]["TDRC"] = global_tags.get("canonical_year")
-                instructions[tid]["confidence_score"] = result.get("confidence_score")
-                instructions[tid]["confidence_reason"] = result.get("confidence_reason")
-                instructions[tid]["strategy"] = result.get("strategy")
-
-            return instructions, full_log
-
-        except Exception as e:
-            logger.error(f"LLM Batch Consolidation failed: {e}")
-            return None, full_log
+                log_entry["error"] = str(e)
+                logger.error(f"LLM Call completely failed after {max_retries} retries: {e}")
+                return None, log_entry
+        return None, log_entry

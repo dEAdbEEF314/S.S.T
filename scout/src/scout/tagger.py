@@ -155,10 +155,30 @@ class AudioTagger:
             if text_list:
                 audio.add(frame_class(encoding=1, text=text_list))
 
-        # Comment frame is special (needs lang and desc)
-        comment_text = tags.get("comment")
-        if comment_text:
-            audio.add(COMM(encoding=1, lang="jpn", desc="", text=[str(comment_text)]))
+        # --- Act-11: Smarter Comment Merging ---
+        new_comment = tags.get("comment")
+        if new_comment:
+            existing_comms = audio.getall("COMM")
+            combined_text = str(new_comment)
+            
+            if existing_comms:
+                # Extract text from existing COMM frames
+                existing_texts = []
+                for comm in existing_comms:
+                    if comm.text: existing_texts.append(str(comm.text[0]))
+                
+                # If existing text is already there and not identical, append with "; "
+                if existing_texts:
+                    prefix = " / ".join(existing_texts) # Merge multiple existing ones if any
+                    if str(new_comment) not in prefix:
+                        combined_text = f"{prefix}; {new_comment}"
+                    else:
+                        combined_text = prefix # Already contains the info
+
+            # Remove ALL old COMM frames to prevent "\\" multi-value representation
+            audio.delall("COMM")
+            # Add unified COMM frame
+            audio.add(COMM(encoding=1, lang="jpn", desc="", text=[combined_text]))
 
         # Custom TXXX fields
         if tags.get("mbid"):

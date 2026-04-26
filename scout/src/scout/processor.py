@@ -36,7 +36,8 @@ class LocalProcessor:
             rpm=config.llm_limit_rpm,
             tpm=config.llm_limit_tpm,
             rpd=config.llm_limit_rpd,
-            user_language=config.user_language
+            user_language=config.user_language,
+            force_local=config.llm_force_local
         )
         self.working_dir = Path(config.sst_working_dir)
         self.working_dir.mkdir(parents=True, exist_ok=True)
@@ -97,39 +98,17 @@ class LocalProcessor:
         # 2. Prepare weighted context for LLM
         track_sources = self._prepare_llm_track_context(track_groups)
         
-        # 3. LLM Consolidation (Batched Pass for large albums)
-        all_tracks_sources = list(track_sources.items())
-        chunk_size = 20
-        final_metadata = {}
-        llm_logs = []
-        
-        # Determine global context first with the first chunk
-        logger.info(f"Consolidating metadata in chunks (Total tracks: {len(all_tracks_sources)})")
-        
-        for i in range(0, len(all_tracks_sources), chunk_size):
-            chunk = dict(all_tracks_sources[i:i + chunk_size])
-            logger.info(f"Processing LLM chunk {i//chunk_size + 1} ({len(chunk)} tracks)...")
-            
-            # For subsequent chunks, we could pass the global_tags from the first chunk to maintain consistency
-            # but for now, the differential mapping handles this well enough by being deterministic
-            chunk_metadata, chunk_log = self.llm.consolidate_metadata(steam_meta.model_dump(), chunk, mbz_candidates)
-            llm_logs.append(chunk_log)
-            
-            if chunk_metadata:
-                final_metadata.update(chunk_metadata)
-            else:
-                logger.warning(f"LLM chunk {i//chunk_size + 1} failed.")
-
-        llm_log = {"chunks": llm_logs}
+        # 3. LLM Consolidation (Stateful Sequential Pass)
+        final_metadata, llm_log = self.llm.consolidate_metadata(steam_meta.model_dump(), track_sources, mbz_candidates)
         
         status = "archive"
         message = "Success"
 
         if not final_metadata:
             status = "review"
-            message = "LLM failed to return valid data for any chunk"
+            message = "LLM failed to return valid data or requested review"
             final_metadata = {}
-
+        
         # 4. Conversion, Tagging and Local Packaging
         temp_output = self.working_dir / f"final_{app_id}_{datetime.now().strftime('%H%M%S')}"
         temp_output.mkdir(parents=True, exist_ok=True)
@@ -139,10 +118,9 @@ class LocalProcessor:
         try:
             tagger = AudioTagger(temp_output)
             
-            # --- Act-11 Optimization: Fetch Album-Level Artwork ONCE ---
+            # --- Album-Level Artwork ---
             album_artwork = None
             if mbz_candidates:
-                # Try the top candidate
                 art_url = self.mbz.get_release_artwork_url(mbz_candidates[0]["mbid"])
                 if art_url:
                     try:
@@ -162,12 +140,10 @@ class LocalProcessor:
                 except Exception as e:
                     logger.warning(f"Failed to download Steam fallback artwork: {e}")
 
-            # Process common artwork once
             if album_artwork:
                 album_artwork = tagger.process_artwork(album_artwork)
-            # -----------------------------------------------------------
 
-            # Extract common confidence for summary
+            # Extract common confidence
             first_tid = next(iter(final_metadata)) if final_metadata else None
             conf_score = final_metadata.get(first_tid, {}).get("confidence_score", 0) if first_tid else 0
             conf_reason = final_metadata.get(first_tid, {}).get("confidence_reason", "No data") if first_tid else "N/A"
@@ -176,7 +152,6 @@ class LocalProcessor:
                 status = "review"
                 message = f"Low confidence ({conf_score}): {conf_reason}"
 
-            # --- Act-11 Parallel Track Processing ---
             from concurrent.futures import ThreadPoolExecutor
 
             def _process_single_track(track_data):
@@ -187,11 +162,12 @@ class LocalProcessor:
                 
                 # Conversion (FFmpeg or Copy)
                 processed_path = tagger.convert_and_limit(source_path, tier, subdir=str(disc))
-                
+                if not processed_path: return None
+
                 track_id_str = f"{disc}_{clean_title}"
-                instr = final_metadata.get(track_id_str) or {"action": "use_local_tag"} # Default fallback
+                instr = final_metadata.get(track_id_str) or {"action": "use_local_tag"}
                 
-                # --- Tag Resolution Logic (Differential Mapping) ---
+                # Tag Resolution Logic
                 res_title = clean_title
                 res_artist = steam_meta.developer or "Unknown Artist"
                 res_track = str(adopted_info.get("filename_track") or 0)
@@ -201,22 +177,20 @@ class LocalProcessor:
                 
                 if action == "use_mbz" and mbz_candidates:
                     try:
-                        c_idx = instr.get("mbz_index", 0)
+                        # In the new strategy, track_mapping chunks always use the fixed global candidate
+                        mbz_album = mbz_candidates[0]
                         t_idx = instr.get("mbz_track_index", 0)
-                        mbz_album = mbz_candidates[c_idx]
                         mbz_track = mbz_album["tracks"][t_idx]
                         res_title = mbz_track.get("title", res_title)
                         res_artist = mbz_track.get("artist", res_artist)
                         res_track = str(mbz_track.get("position", res_track))
                         res_disc = f"{mbz_album.get('disc_number', disc)}/{mbz_album.get('total_discs', 1)}"
-                    except:
-                        pass # Fallback to local if MBZ mapping fails
+                    except: pass
                 
                 elif action == "use_local_tag":
-                    # Find the validated tags if available
                     local_tags = {}
                     for s in track_sources.get(track_id_str, []):
-                        if s["type"] == "embedded_validated" or s["type"].startswith("embedded_variant"):
+                        if s["type"] == "embedded_merged":
                             local_tags = s.get("tags", {})
                             break
                     res_title = local_tags.get("title", res_title)
@@ -224,26 +198,23 @@ class LocalProcessor:
                     res_track = str(local_tags.get("track_number", res_track))
                     res_disc = str(local_tags.get("disc_number", res_disc))
 
-                # Overrides
                 if instr.get("override_title"): res_title = instr["override_title"]
                 if instr.get("override_track"): res_track = str(instr["override_track"])
 
-                # Genre Prefix Guard
                 raw_genre = instr.get("TCON", steam_meta.genre or steam_meta.parent_genre or 'Soundtrack')
                 final_genre = raw_genre if raw_genre.startswith("STEAM VGM") else f"STEAM VGM, {raw_genre}"
 
-                # --- Act-11: Comment tag construction using Parent Game info ---
                 target_comment_appid = steam_meta.parent_app_id or app_id
                 target_comment_url = f"https://store.steampowered.com/app/{target_comment_appid}"
                 
                 tag_map = {
                     "title": res_title.strip(),
                     "artist": res_artist.strip(),
-                    "album": instr.get("TALB", steam_meta.name),
-                    "album_artist": f"{steam_meta.developer} | {steam_meta.publisher}" if steam_meta.developer and steam_meta.publisher else instr.get("TPE2", "Unknown Artist"),
+                    "album": steam_meta.name,
+                    "album_artist": f"{steam_meta.developer}; {steam_meta.publisher}" if steam_meta.developer and steam_meta.publisher else instr.get("TPE2", "Unknown Artist"),
                     "genre": final_genre,
-                    "grouping": f"{steam_meta.parent_name or steam_meta.name} | Steam",
-                    "comment": f"{steam_meta.parent_name or steam_meta.name} | {', '.join(steam_meta.tags[:10])} | {target_comment_appid} | {target_comment_url}",
+                    "grouping": f"{steam_meta.parent_name or steam_meta.name}; Steam",
+                    "comment": f"{steam_meta.parent_name or steam_meta.name}; {', '.join(steam_meta.tags[:10])}; {target_comment_appid}; {target_comment_url}",
                     "composer": instr.get("TCOM", steam_meta.developer or "Unknown"),
                     "year": instr.get("TDRC", steam_meta.release_date[:4] if steam_meta.release_date else str(datetime.now().year)),
                     "track_number": res_track.split('/')[0].strip(),
@@ -251,11 +222,9 @@ class LocalProcessor:
                     "language": self.config.user_language_639_2
                 }
                 
-                # Artwork
                 track_artwork = self._get_best_artwork(track_groups[track_key])
                 final_art = tagger.process_artwork(track_artwork) if track_artwork else album_artwork
 
-                # Write Tags
                 tagger.write_tags(processed_path, tag_map, final_art)
                 
                 return {
@@ -265,10 +234,8 @@ class LocalProcessor:
                     "source": instr.get("reason", "System Fallback")
                 }
 
-            # Run track processing in parallel to avoid IO/CPU bottleneck
             with ThreadPoolExecutor(max_workers=self.config.max_encoding_tasks) as executor:
-                processed_tracks_meta = list(executor.map(_process_single_track, adopted_files.items()))
-            # ----------------------------------------
+                processed_tracks_meta = [t for t in executor.map(_process_single_track, adopted_files.items()) if t]
 
             # Validation Loop
             for t in processed_tracks_meta:
@@ -284,9 +251,7 @@ class LocalProcessor:
                 "steam_info": steam_meta.model_dump()
             }
             
-            # --- Act-11 Basis for Classification Generation ---
             from textwrap import dedent
-            safe_album = steam_meta.name.replace(" ", "+")
             basis_content = dedent(f"""\
                 # Basis for Classification: {steam_meta.name}
 
@@ -297,8 +262,8 @@ class LocalProcessor:
                 - **LLM Reasoning**: {conf_reason}
 
                 ## Investigation Links
-                - [Search VGMdb](https://vgmdb.net/search?q={safe_album})
-                - [Search MusicBrainz](https://musicbrainz.org/search?type=release&query={safe_album})
+                - [Search VGMdb](https://vgmdb.net/search?q={steam_meta.name.replace(" ", "+")})
+                - [Search MusicBrainz](https://musicbrainz.org/search?type=release&query={steam_meta.name.replace(" ", "+")})
                 - [Steam Store Page]({steam_meta.url})
 
                 ## Album Context
@@ -327,13 +292,21 @@ class LocalProcessor:
             if temp_output.exists(): shutil.rmtree(temp_output)
 
     def _prepare_llm_track_context(self, track_groups: Dict) -> Dict[str, List[Dict[str, Any]]]:
-        """Merges redundant tags and prepares a lean context for LLM with durations."""
+        """Merges redundant tags across formats and prepares lean context."""
         context = {}
         for (disc, clean_title), variants in track_groups.items():
             tid = f"{disc}_{clean_title}"
             sources = []
             avg_duration = sum(v["duration"] for v in variants) / len(variants)
             
+            # --- Act-11 Hotfix: Tag Merging across formats (Narita Boy Fix) ---
+            merged_tags = {}
+            for v in variants:
+                if v["meta"]:
+                    for key, val in v["meta"].items():
+                        if val and str(val).lower() not in ["", "none", "unknown", "0"]:
+                            if key not in merged_tags: merged_tags[key] = val
+
             # Source A: Filename (Weak)
             sources.append({
                 "type": "filename",
@@ -343,30 +316,21 @@ class LocalProcessor:
                 "weight": "weak"
             })
             
-            # Source B: Cross-validated Tags (Strong)
-            all_tags = [v["meta"] for v in variants if v["meta"]]
-            if all_tags:
-                unique_tags = []
-                for t in all_tags:
-                    if t not in unique_tags: unique_tags.append(t)
-                
-                if len(unique_tags) == 1 and len(variants) > 1:
-                    # Multiple files share identical tags -> Strong Evidence
-                    sources.append({
-                        "type": "embedded_validated",
-                        "tags": unique_tags[0],
-                        "duration": round(avg_duration, 2),
-                        "weight": "strong"
-                    })
-                else:
-                    # Divergent or single tags -> Moderate
-                    for i, t in enumerate(unique_tags):
-                        sources.append({
-                            "type": f"embedded_variant_{i+1}",
-                            "tags": t,
-                            "duration": round(variants[i]["duration"], 2),
-                            "weight": "moderate"
-                        })
+            # Source B: Merged Tags (Strong/Moderate)
+            if merged_tags:
+                sources.append({
+                    "type": "embedded_merged",
+                    "tags": merged_tags,
+                    "duration": round(avg_duration, 2),
+                    "weight": "strong" if len(variants) > 1 else "moderate"
+                })
+            else:
+                # Act-11 Hotfix: Tag Nullification Guard
+                sources.append({
+                    "type": "no_tags_found",
+                    "content": "No embedded metadata found in any format for this track.",
+                    "weight": "critical_missing"
+                })
             
             context[tid] = sources
         return context
@@ -405,7 +369,11 @@ class LocalProcessor:
         for f in files:
             meta = EmbeddedMetadataExtractor.extract(f)
             fn_track = re.match(r'^(\d+)', f.stem)
-            key = (self._safe_int_track(meta.get("disc_number", 1)) or 1, re.sub(r'^(\d+[\s.-]+)+', '', f.stem).strip().lower())
+            
+            disc_num = self._safe_int_track(meta.get("disc_number", 1)) or 1
+            clean_stem = re.sub(r'^(\d+[\s.-]+)+', '', f.stem).strip().lower()
+            key = (disc_num, clean_stem)
+            
             if key not in groups: groups[key] = []
             groups[key].append({
                 "path": f, "meta": meta, "duration": self._get_duration(f), 
@@ -457,7 +425,6 @@ class LocalProcessor:
                         with open(log_file, "w", encoding="utf-8") as f:
                             json.dump(log_content, f, indent=2, ensure_ascii=False)
                     else:
-                        # For .md or other text files
                         log_file.write_text(str(log_content), encoding="utf-8")
             shutil.make_archive(str(zip_path), 'zip', source_dir)
             logger.info(f"Local package saved: {zip_path}.zip")
