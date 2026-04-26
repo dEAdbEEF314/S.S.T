@@ -39,6 +39,7 @@ class Config(BaseSettings):
     llm_limit_rpm: int = 15
     llm_limit_tpm: int = 10000000
     llm_limit_rpd: int = 1500
+    llm_force_local: bool = False
     max_encoding_tasks: int = 4
     metadata_source_priority: str = "MBZ,STEAM,EMBEDDED"
     mbz_app_name: str = "SST-Scout"
@@ -118,11 +119,18 @@ def main():
     # Act-12: Dynamic Album Workers Calculation
     import multiprocessing
     cpu_count = multiprocessing.cpu_count()
-    calculated_workers = min(int(config.llm_limit_rpm * 0.7), cpu_count * 2, 10)
+    
+    if config.llm_force_local:
+        # For local LLMs, we don't care about RPM. Limit by CPU only.
+        calculated_workers = cpu_count * 2
+        logger.info(f"Force Local Mode: Bypassing RPM limits. Using CPU-based limit: {calculated_workers}")
+    else:
+        # For remote LLMs, respect the 70% RPM rule
+        calculated_workers = min(int(config.llm_limit_rpm * 0.7), cpu_count * 2, 10)
+    
     max_album_workers = max(1, calculated_workers)
     
-    logger.info(f"Dynamic Limit: LLM_RPM={config.llm_limit_rpm} -> Max Album Workers={max_album_workers}")
-    logger.info(f"Parallel Encoding: {config.max_encoding_tasks} tasks per album")
+    logger.info(f"Execution Profile: Max Album Workers={max_album_workers}, Parallel Encoding={config.max_encoding_tasks}")
 
     scanner = SteamScanner(
         config.steam_library_path,

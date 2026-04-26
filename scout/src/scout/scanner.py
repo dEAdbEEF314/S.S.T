@@ -64,8 +64,7 @@ class SteamScanner:
 
     def find_soundtracks(self, force: bool = False, limit: Optional[int] = None, is_processed_callback: Optional[callable] = None, target_appid: Optional[int] = None) -> List[dict]:
         """
-        Finds soundtrack app manifests and fetches metadata.
-        Skips already processed albums using the provided callback and only counts 'active' ones against the limit.
+        Finds soundtrack app manifests (including DLCs) and fetches metadata.
         """
         if not self.steamapps_path.exists():
             logger.error(f"Steamapps directory not found: {self.steamapps_path}")
@@ -73,85 +72,79 @@ class SteamScanner:
 
         soundtracks = []
         acf_files = list(self.steamapps_path.glob("*.acf"))
-        logger.info(f"Found {len(acf_files)} ACF files. Scanning for soundtracks...")
+        logger.info(f"Found {len(acf_files)} ACF files. Scanning for soundtracks (including DLCs)...")
 
         for acf_file in acf_files:
-            # Check limit based on ACTIVE soundtracks (found and not processed)
             if limit and len(soundtracks) >= limit:
                 logger.info(f"Reached limit of {limit} active soundtracks. Stopping scan.")
                 break
 
-            # Extract AppID from filename (appmanifest_XXXX.acf)
-            try:
-                app_id_str = acf_file.stem.split("_")[1]
-                app_id = int(app_id_str)
-            except:
-                continue
-                
-            # Filter by specific AppID if requested
-            if target_appid and app_id != target_appid:
-                continue
-
-            # 1. Skip if known ignored in local scanner cache
-            if not force and app_id in self.cache["ignored"]:
-                continue
-
-            # 2. Check if already processed (DB check)
-            if not force and is_processed_callback and is_processed_callback(app_id):
-                logger.debug(f"Skipping already processed album: AppID {app_id}")
-                continue
-
             manifest = self._parse_acf(acf_file)
-            if not manifest:
-                continue
-
-            if not self._is_soundtrack(manifest):
-                if app_id not in self.cache["ignored"]:
-                    self.cache["ignored"].append(app_id)
-                continue
-
-            # It's a valid, UNPROCESSED soundtrack!
+            if not manifest: continue
+            
             app_state = manifest.get("AppState", {})
-            cached_data = self.cache["processed"].get(str(app_id))
+            parent_appid = int(app_state.get("appid", 0))
             
-            if not force and cached_data:
-                logger.info(f"Using cached metadata for {app_state.get('name')} ({app_id})")
-                ost_data = cached_data.copy()
-                ost_data["app_id"] = app_id
-                ost_data["acf_path"] = str(acf_file)
-                ost_data["install_dir"] = str(self._resolve_install_path(app_state.get("installdir", "")))
-                soundtracks.append(ost_data)
-                continue
+            # --- Check 1: Is this ACF itself the target (or a soundtrack)? ---
+            potential_ids = [parent_appid]
+            
+            # --- Check 2: Does this ACF contain the target as a DLC? ---
+            depots = app_state.get("InstalledDepots", {})
+            for d_id, d_data in depots.items():
+                dlc_id = d_data.get("dlcappid")
+                if dlc_id: potential_ids.append(int(dlc_id))
 
-            # Fetch fresh metadata (Heavy)
-            enriched = self.fetch_steam_metadata(app_id, self.language)
-            
-            ost_info = {
-                "app_id": app_id,
-                "name": app_state.get("name", ""),
-                "install_dir": str(self._resolve_install_path(app_state.get("installdir", ""))),
-                "developer": enriched.get("developer"),
-                "publisher": enriched.get("publisher"),
-                "genre": enriched.get("genre"),
-                "tags": enriched.get("tags", []),
-                "release_date": enriched.get("release_date"),
-                "parent_app_id": enriched.get("parent_app_id"),
-                "parent_name": enriched.get("parent_name"),
-                "parent_tags": enriched.get("parent_tags", []),
-                "parent_genre": enriched.get("parent_genre"),
-                "parent_release_date": enriched.get("parent_release_date"),
-                "url": f"https://store.steampowered.com/app/{app_id}",
-                "acf_path": str(acf_file)
-            }
-            
-            # Update local scanner cache
-            self.cache["processed"][str(app_id)] = ost_info.copy()
-            soundtracks.append(ost_info)
-            
-            # Base delay to be kind to the API
-            time.sleep(2.0)
+            for current_id in potential_ids:
+                # Filter by specific AppID if requested
+                if target_appid and current_id != target_appid:
+                    continue
+                
+                # If target_appid is NOT set, only process if it's a known soundtrack type
+                if not target_appid and not self._is_soundtrack(manifest) and current_id == parent_appid:
+                    continue
+
+                if not force and is_processed_callback and is_processed_callback(current_id):
+                    logger.debug(f"Skipping already processed app: {current_id}")
+                    continue
+
+                # It's a valid candidate!
+                cached_data = self.cache["processed"].get(str(current_id))
+                if not force and cached_data:
+                    logger.info(f"Using cached metadata for AppID {current_id}")
+                    ost_data = cached_data.copy()
+                    ost_data["app_id"] = current_id
+                    ost_data["install_dir"] = str(self._resolve_install_path(app_state.get("installdir", "")))
+                    soundtracks.append(ost_data)
+                    continue
+
+                # Fetch fresh metadata
+                enriched = self.fetch_steam_metadata(current_id, self.language)
+                if not enriched: continue
+
+                ost_info = {
+                    "app_id": current_id,
+                    "name": enriched.get("name", app_state.get("name", "Unknown")),
+                    "install_dir": str(self._resolve_install_path(app_state.get("installdir", ""))),
+                    "developer": enriched.get("developer"),
+                    "publisher": enriched.get("publisher"),
+                    "genre": enriched.get("genre"),
+                    "tags": enriched.get("tags", []),
+                    "release_date": enriched.get("release_date"),
+                    "parent_app_id": enriched.get("parent_app_id") or (parent_appid if current_id != parent_appid else None),
+                    "parent_name": enriched.get("parent_name") or (app_state.get("name") if current_id != parent_appid else None),
+                    "parent_tags": enriched.get("parent_tags", []),
+                    "parent_genre": enriched.get("parent_genre"),
+                    "parent_release_date": enriched.get("parent_release_date"),
+                    "url": f"https://store.steampowered.com/app/{current_id}",
+                    "acf_path": str(acf_file)
+                }
+                
+                self.cache["processed"][str(current_id)] = ost_info.copy()
+                soundtracks.append(ost_info)
+                time.sleep(2.0)
+                if limit and len(soundtracks) >= limit: break
         
-        logger.info(f"Scan complete. Found {len(soundtracks)} active soundtrack(s) to process.")
+        logger.info(f"Scan complete. Found {len(soundtracks)} active apps to process.")
         self._save_cache()
         return soundtracks
 
