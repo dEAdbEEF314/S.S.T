@@ -75,12 +75,12 @@ class LocalProcessor:
 
     def process_album(self, app_id: int, install_dir: Path, steam_meta: SteamMetadata, on_track_complete: Optional[callable] = None) -> LocalProcessResult:
         if not install_dir.exists():
-            return LocalProcessResult(app_id=app_id, status="error", message="Dir not found")
+            return LocalProcessResult(app_id=app_id, status="error", message="Dir not found", confidence_score=0, confidence_reason="FS Error")
 
         logger.info(f"--- Processing {steam_meta.name} ({app_id}) ---")
         
         all_files = self._list_audio_files(install_dir)
-        if not all_files: return LocalProcessResult(app_id=app_id, status="skip", message="No audio")
+        if not all_files: return LocalProcessResult(app_id=app_id, status="skip", message="No audio", confidence_score=0, confidence_reason="No files")
 
         track_groups = self._group_by_logical_track(all_files)
         
@@ -152,7 +152,7 @@ class LocalProcessor:
             first_tid = next(iter(final_metadata)) if final_metadata else None
             conf_score = final_metadata.get(first_tid, {}).get("confidence_score", 0) if first_tid else 0
             
-            # Act-12: More detailed reasoning for failures
+            # More detailed reasoning for failures
             if final_metadata:
                 conf_reason = final_metadata.get(first_tid, {}).get("confidence_reason", "No data")
             else:
@@ -160,23 +160,40 @@ class LocalProcessor:
                 c1_err = llm_log.get("chunks", [{}])[0].get("error")
                 conf_reason = p1_err or c1_err or "LLM provided no metadata"
 
-            # Track audio warnings per album
+            # Track audio warnings or critical failures per album
             any_audio_warnings = False
+            any_audio_failures = False
 
             from concurrent.futures import ThreadPoolExecutor
 
             def _process_single_track(track_data):
-                nonlocal any_audio_warnings
+                nonlocal any_audio_warnings, any_audio_failures
                 track_key, adopted_info = track_data
                 disc, clean_title = track_key
                 source_path = adopted_info["path"]
                 tier = adopted_info["tier"]
                 
-                # Conversion (FFmpeg or Copy)
-                processed_path, has_warnings = tagger.convert_and_limit(source_path, tier, subdir=str(disc))
-                if not processed_path: return None
-
-                if has_warnings: any_audio_warnings = True
+                # --- Act-13 Hotfix: Local Buffering (Native WSL2 Copy) ---
+                try:
+                    local_raw_dir = temp_output / "raw_src" / str(disc)
+                    local_raw_dir.mkdir(parents=True, exist_ok=True)
+                    local_source_path = local_raw_dir / source_path.name
+                    
+                    if not local_source_path.exists():
+                        shutil.copy2(source_path, local_source_path)
+                    
+                    # Convert from LOCAL native path
+                    processed_path, has_warnings = tagger.convert_and_limit(local_source_path, tier, subdir=str(disc))
+                    
+                    if has_warnings: any_audio_warnings = True
+                    
+                    # Cleanup local copy immediately
+                    if local_source_path.exists(): local_source_path.unlink()
+                    
+                except Exception as e:
+                    logger.error(f"Audio processing failed for {source_path.name}: {e}")
+                    any_audio_failures = True
+                    return None
 
                 track_id_str = f"{disc}_{clean_title}"
                 instr = final_metadata.get(track_id_str) or {"action": "use_local_tag"}
@@ -272,16 +289,20 @@ class LocalProcessor:
                 base_msg = f"[{', '.join(issue_details)}]"
                 message = f"{semantic_label} {base_msg}" if semantic_label else f"Missing mandatory metadata {base_msg}"
             
-            # Act-13: Append audio warning notice
-            if any_audio_warnings:
-                message = f"{message} [Audio Warnings detected]" if message != "Success" else "Success [Audio Warnings detected]"
-            
-            # Final confidence check
+            # Act-13 Hotfix: Append audio warning notice or CRITICAL failure
+            if any_audio_failures:
+                status = "review"
+                message = f"{message} [CRITICAL: Audio Source Error - Re-download recommended]" if message != "Success" else "[CRITICAL: Audio Source Error - Re-download recommended]"
+            elif any_audio_warnings:
+                status = "review"
+                message = f"{message} [Audio Warnings detected]" if message != "Success" else "Audio quality warning detected"
+
+            # Final confidence check (if not already review)
             if status != "review" and conf_score < 80:
                 status = "review"
                 message = f"Low confidence ({conf_score}): {conf_reason}"
-            elif status == "review" and conf_score == 0:
-                # Keep physical failure reason if available
+            elif status == "review" and conf_score == 0 and not any_audio_warnings and not any_audio_failures:
+                # Preservation of physical failure reasons
                 message = f"Incomplete result: {conf_reason}"
 
             summary_meta = {
@@ -481,10 +502,15 @@ class LocalProcessor:
 
     def _save_local_package(self, app_id: int, status: str, album_name: str, source_dir: Path, logs: Dict[str, Any]):
         try:
+            # 1. Prepare final destination
             output_base = Path("output") / status
             output_base.mkdir(parents=True, exist_ok=True)
             safe_name = "".join([c if c.isalnum() or c in ".-_" else "_" for c in album_name])
-            zip_path = output_base / f"{app_id}_{safe_name}"
+            final_zip_path = output_base / f"{app_id}_{safe_name}.zip"
+
+            # 2. Create ZIP in NATIVE temp directory first (Faster and safer)
+            temp_zip_base = source_dir.parent / f"bundle_{app_id}"
+            
             for log_name, log_content in logs.items():
                 if log_content:
                     log_file = source_dir / log_name
@@ -493,7 +519,14 @@ class LocalProcessor:
                             json.dump(log_content, f, indent=2, ensure_ascii=False)
                     else:
                         log_file.write_text(str(log_content), encoding="utf-8")
-            shutil.make_archive(str(zip_path), 'zip', source_dir)
-            logger.info(f"Local package saved: {zip_path}.zip")
+
+            # Perform compression on native FS
+            archive_result = shutil.make_archive(str(temp_zip_base), 'zip', source_dir)
+            temp_zip_file = Path(archive_result)
+
+            # 3. Move the completed ZIP to the final destination (Atomic)
+            shutil.move(str(temp_zip_file), str(final_zip_path))
+            
+            logger.info(f"Local package saved: {final_zip_path}")
         except Exception as e:
             logger.error(f"Failed to save local package for {app_id}: {e}")

@@ -41,3 +41,21 @@ The system filters and ranks MusicBrainz (MBZ) candidates before presenting them
     - **100**: Strong Evidence and Top MBZ Candidate match perfectly.
     - **80-90**: Minor title variations (e.g. suffix "Remix") or date discrepancies resolved.
     - **< 80**: Severe mismatches in track counts, artists, or missing data. (Triggers `review/` routing).
+
+## 4. Audio Quality Enforcement
+
+SST prioritizes audio bitstream integrity. The following rules are applied during the transformation phase:
+
+1.  **Native Buffering**: To eliminate I/O jitter from Windows mounts (/mnt/d), files are copied to the WSL2 native filesystem before conversion.
+2.  **Zero-Tolerance for Corruption**: Any FFmpeg warning (e.g., `invalid rice order`, `decode_frame() failed`) detected during native conversion will **force the album status to REVIEW**, regardless of metadata accuracy.
+3.  **Critical Failure**: If conversion fails entirely, the album is marked as `[CRITICAL: Audio Source Error]`, and the user is advised to re-download the source via Steam.
+
+---
+
+## 5. Result Routing Summary
+
+| Final Status | Criteria |
+| :--- | :--- |
+| **ARCHIVE** | Confidence >= 80, Metadata complete, **No Audio Warnings**. |
+| **REVIEW** | Confidence < 80 OR Metadata missing OR **Audio Warnings detected**. |
+| **ERROR** | Physical conversion failure OR unrecoverable API error. |

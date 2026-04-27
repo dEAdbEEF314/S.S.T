@@ -72,11 +72,12 @@ The core logic is implemented in the `scout` package. It performs the full pipel
 **Objective**: Ensure the tool is reliable for bulk processing and provides real-time feedback via external services.
 
 ### Tasks:
-- [ ] **Discord Integration**: Implement a robust notification system with per-level Webhook support (Critical, Warning, Info, Completion).
-- [ ] **Notification Throttling**: Implement cooldown logic to prevent spamming Discord during high-intensity error bursts.
-- [ ] **Rich Error Reporting**: Send beautiful Discord Embeds including Album name, AppID, processing time, and failure reasons.
-- [ ] **System Hardening**: Implement global fail-safes to ensure the processor can recover from network interruptions or database locking issues.
-- [ ] **Performance Audit**: Fine-tune parallel worker counts for local vs. remote LLM modes based on real-world test data.
+- [x] **Discord Integration**: Implement a robust notification system with per-level Webhook support.
+- [x] **Notification Throttling**: Cooldown logic implemented.
+- [x] **Native I/O Buffering**: All audio conversion and ZIP compression are performed in the WSL2 native filesystem (ext4) first, then moved to Windows mount (Atomic Move). This eliminates I/O jitter errors like "invalid rice order".
+- [ ] **System Hardening**: Implement global fail-safes and circuit breakers.
+- [x] **Smart Steam Cache**: Auto-invalidation based on ACF `LastUpdated` timestamp.
+- [ ] **Performance Audit**: Fine-tune worker counts.
 ---
 
 # 🚫 Discontinued / Outdated Goals
