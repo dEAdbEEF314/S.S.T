@@ -84,6 +84,7 @@ class SteamScanner:
             
             app_state = manifest.get("AppState", {})
             parent_appid = int(app_state.get("appid", 0))
+            last_updated = app_state.get("LastUpdated", "0")
             
             # --- Check 1: Is this ACF itself the target (or a soundtrack)? ---
             potential_ids = [parent_appid]
@@ -110,12 +111,16 @@ class SteamScanner:
                 # It's a valid candidate!
                 cached_data = self.cache["processed"].get(str(current_id))
                 if not force and cached_data:
-                    logger.info(f"Using cached metadata for AppID {current_id}")
-                    ost_data = cached_data.copy()
-                    ost_data["app_id"] = current_id
-                    ost_data["install_dir"] = str(self._resolve_install_path(app_state.get("installdir", "")))
-                    soundtracks.append(ost_data)
-                    continue
+                    cached_last_updated = cached_data.get("last_updated_acf", "0")
+                    if int(last_updated) > int(cached_last_updated):
+                        logger.info(f"Steam update detected for AppID {current_id}. Invalidating cache.")
+                    else:
+                        logger.info(f"Using cached metadata for AppID {current_id}")
+                        ost_data = cached_data.copy()
+                        ost_data["app_id"] = current_id
+                        ost_data["install_dir"] = str(self._resolve_install_path(app_state.get("installdir", "")))
+                        soundtracks.append(ost_data)
+                        continue
 
                 # Fetch fresh metadata
                 enriched = self.fetch_steam_metadata(current_id, self.language)
@@ -136,7 +141,8 @@ class SteamScanner:
                     "parent_genre": enriched.get("parent_genre"),
                     "parent_release_date": enriched.get("parent_release_date"),
                     "url": f"https://store.steampowered.com/app/{current_id}",
-                    "acf_path": str(acf_file)
+                    "acf_path": str(acf_file),
+                    "last_updated_acf": last_updated
                 }
                 
                 self.cache["processed"][str(current_id)] = ost_info.copy()
