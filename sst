@@ -29,6 +29,7 @@ show_help() {
     echo "Maintenance & Stats (Exclusive):"
     echo "      --delete-db    Reset the local database (Requires 3 confirmations)."
     echo "      --stats        Show processing statistics from the database."
+    echo "      --logs [AppID] Browse processing history or show album details."
     echo "      --audit        Run consistency check on generated ZIP files."
     echo ""
     echo "Debugging & Monitoring:"
@@ -41,6 +42,8 @@ show_help() {
 CMD_ARGS=()
 TAIL_MODE=false
 STATS_MODE=false
+LOGS_MODE=false
+LOGS_APPID=""
 AUDIT_MODE=false
 
 while [[ $# -gt 0 ]]; do
@@ -64,6 +67,15 @@ while [[ $# -gt 0 ]]; do
         --stats)
             STATS_MODE=true
             shift
+            ;;
+        --logs)
+            LOGS_MODE=true
+            if [[ $2 =~ ^[0-9]+$ ]]; then
+                LOGS_APPID="$2"
+                shift 2
+            else
+                shift
+            fi
             ;;
         --audit)
             AUDIT_MODE=true
@@ -104,7 +116,7 @@ if [ -f ".env" ]; then
 fi
 
 # --- Exclusive Maintenance Modes ---
-# 1. Stats Mode
+
 if [ "$STATS_MODE" = true ]; then
     echo -e "${BLUE}📊 S.S.T Processing Statistics${NC}"
     if [ -f "data/sst_local_state.db" ] && command -v sqlite3 &> /dev/null; then
@@ -114,6 +126,11 @@ if [ "$STATS_MODE" = true ]; then
     else
         echo "No database or sqlite3 not found."
     fi
+    exit 0
+fi
+
+if [ "$LOGS_MODE" = true ]; then
+    $VENV_PYTHON -u -m scout.log_browser $LOGS_APPID
     exit 0
 fi
 
@@ -127,7 +144,7 @@ if [ "$TAIL_MODE" = true ]; then
     fi
     exit 0
 fi
-# 3. Audit Mode
+
 if [ "$AUDIT_MODE" = true ]; then
     echo -e "${YELLOW}🔍 Running Metadata Audit...${NC}"
     $VENV_PYTHON -u -m scout.audit

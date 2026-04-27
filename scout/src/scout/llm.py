@@ -32,7 +32,7 @@ class DistributedRateLimiter:
 
     def _get_usage(self) -> int:
         try:
-            path = Path(self._get_daily_key())
+            path = self._get_usage_file()
             if not path.exists(): return 0
             with open(path, "r") as f:
                 data = json.load(f)
@@ -41,9 +41,9 @@ class DistributedRateLimiter:
 
     def _increment_usage(self, current: int):
         try:
-            path = Path(self._get_daily_key())
+            path = self._get_usage_file()
             with open(path, "w") as f:
-                json.dump({"requests": current + 1, "last_update": datetime.utcnow().isoformat()}, f)
+                json.dump({"requests": current + 1, "last_update": datetime.now().isoformat()}, f)
         except Exception as e:
             logger.warning(f"Failed to save LLM usage: {e}")
 
@@ -128,8 +128,11 @@ class LLMOrganizer:
 You are an expert Music Metadata Librarian.
 Your task: Analyze the sources and determine the Canonical Album Identity.
 
-### LANGUAGE RULE:
-**IMPORTANT: You MUST write all "confidence_reason" and "reason" fields in language: {self.user_language}. This is non-negotiable.**
+### ABSOLUTE LANGUAGE RULE:
+**1. You MUST write all human-readable fields ("confidence_reason", "reason", "semantic_label") ONLY in language: {self.user_language.upper()}.**
+**2. THOUGHT PROCESS: Think and reason only in {self.user_language.upper()}. Do NOT use Chinese, English, or any other language for descriptions.**
+**3. NO PREAMBLE: Do NOT output <thought> blocks, introductory text, or explanations outside the JSON object.**
+**4. This rule is non-negotiable. Failure to use {self.user_language.upper()} will result in an invalid response.**
 
 ### ALBUM CONTEXT (Locked Truth):
 - Fixed Album Title: {steam_info.get('name')}
@@ -190,8 +193,8 @@ Return ONLY a valid JSON object:
             mapping_prompt = f"""
 Now map the following tracks using the FIXED ALBUM IDENTITY.
 
-### LANGUAGE RULE:
-**IMPORTANT: You MUST write all "reason" fields in language: {self.user_language}.**
+### ABSOLUTE LANGUAGE RULE:
+**IMPORTANT: You MUST write all "reason" fields ONLY in language: {self.user_language.upper()}.**
 
 ### FIXED ALBUM IDENTITY:
 {json.dumps(global_identity, indent=2)}
@@ -257,7 +260,8 @@ Return ONLY a valid JSON object:
                 payload = {
                     "model": self.model,
                     "messages": messages,
-                    "temperature": 0.0
+                    "temperature": 0.0,
+                    "response_format": {"type": "json_object"}
                 }
                 if "localhost" in self.api_url or "127.0.0.1" in self.api_url:
                     payload["options"] = {"num_ctx": 32768, "num_predict": 4096}
@@ -272,13 +276,19 @@ Return ONLY a valid JSON object:
                         
                     log_entry["response"] = content
                     
-                    # Extract and Repair JSON
-                    json_str = content
-                    if "```json" in content:
-                        json_str = content.split("```json")[1].split("```")[0].strip()
-                    elif "```" in content:
-                        json_str = content.split("```")[1].split("```")[0].strip()
+                    # Act-13 Hotfix: Aggressive cleaning of <thought> tags and preambles
+                    # 1. Remove anything inside <thought> or <reasoning> tags
+                    clean_content = re.sub(r'<(thought|reasoning)>.*?</\1>', '', content, flags=re.DOTALL | re.IGNORECASE)
                     
+                    # 2. Extract the first valid-looking JSON object
+                    json_str = clean_content
+                    start_idx = clean_content.find('{')
+                    end_idx = clean_content.rfind('}')
+                    
+                    if start_idx != -1 and end_idx != -1 and start_idx < end_idx:
+                        json_str = clean_content[start_idx:end_idx + 1]
+                    
+                    # Act-12: Robust JSON Repair
                     json_str = re.sub(r',\s*([\]}])', r'\1', json_str)
                     open_braces = json_str.count('{')
                     close_braces = json_str.count('}')
@@ -288,7 +298,8 @@ Return ONLY a valid JSON object:
                     try:
                         return json.loads(json_str), log_entry
                     except json.JSONDecodeError as e:
-                        raise ValueError(f"JSON parsing failed: {e}. Raw content snippet: {content[:200]}...")
+                        # Final attempt: try to find the smallest valid JSON if 'extra data' occurs
+                        raise ValueError(f"JSON parsing failed: {e}. Snippet: {json_str[:100]}...")
                 
                 if response.status_code in [500, 503, 504, 429] and attempt < max_retries:
                     logger.warning(f"LLM attempt {attempt+1} failed with HTTP {response.status_code}. Retrying in {retry_delay}s...")
