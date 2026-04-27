@@ -21,8 +21,10 @@ class DistributedRateLimiter:
         self.request_times = collections.deque()
         self.token_times = collections.deque() 
         
-    def _get_daily_key(self):
-        return f"llm_usage_{datetime.utcnow().strftime('%Y%m%d')}.json"
+    def _get_usage_file(self):
+        log_dir = Path("logs")
+        log_dir.mkdir(exist_ok=True)
+        return log_dir / f"llm_usage_{datetime.now().strftime('%Y%m%d')}.json"
 
     def _estimate_tokens(self, messages: List[Dict[str, str]]) -> int:
         total_chars = sum(len(m.get("content", "")) for m in messages)
@@ -126,6 +128,9 @@ class LLMOrganizer:
 You are an expert Music Metadata Librarian.
 Your task: Analyze the sources and determine the Canonical Album Identity.
 
+### LANGUAGE RULE:
+**IMPORTANT: You MUST write all "confidence_reason" and "reason" fields in language: {self.user_language}. This is non-negotiable.**
+
 ### ALBUM CONTEXT (Locked Truth):
 - Fixed Album Title: {steam_info.get('name')}
 - Developers: {steam_info.get('developer')}
@@ -147,8 +152,9 @@ Your task: Analyze the sources and determine the Canonical Album Identity.
 Return ONLY a valid JSON object:
 {{
   "confidence_score": 0-100,
-  "confidence_reason": "Write this in language: {self.user_language}",
+  "confidence_reason": "Detailed reasoning in language: {self.user_language}",
   "strategy": "MBZ_BASED" | "LOCAL_BASED" | "HYBRID" | "REVIEW_REQUIRED",
+  "semantic_label": "Short descriptive label (max 40 chars) summarizing data anomalies (e.g., 'BGM/SFX混在の疑い', 'ボーナストラック追加', 'タイトル汚染'). Write in language: {self.user_language}",
   "global_tags": {{
     "canonical_album_artist": "...",
     "canonical_genre": "...",
@@ -184,6 +190,9 @@ Return ONLY a valid JSON object:
             mapping_prompt = f"""
 Now map the following tracks using the FIXED ALBUM IDENTITY.
 
+### LANGUAGE RULE:
+**IMPORTANT: You MUST write all "reason" fields in language: {self.user_language}.**
+
 ### FIXED ALBUM IDENTITY:
 {json.dumps(global_identity, indent=2)}
 - Strategy: {strategy}
@@ -200,7 +209,7 @@ Return ONLY a valid JSON object:
         "mbz_track_index": 0, // Only if action is use_mbz. Index in the tracks list of chosen MBZ candidate.
         "override_title": null, 
         "override_track": null,
-        "reason": "Write this in language: {self.user_language}"
+        "reason": "Explain your decision in language: {self.user_language}"
      }},
      ...
   }}
@@ -218,6 +227,7 @@ Return ONLY a valid JSON object:
                     instructions[tid]["confidence_score"] = global_res.get("confidence_score")
                     instructions[tid]["confidence_reason"] = global_res.get("confidence_reason")
                     instructions[tid]["strategy"] = strategy
+                    instructions[tid]["semantic_label"] = global_res.get("semantic_label")
                 all_instructions.update(instructions)
             else:
                 logger.error(f"Failed to get instructions for chunk {i//chunk_size + 1}")

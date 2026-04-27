@@ -104,12 +104,12 @@ if [ -f ".env" ]; then
 fi
 
 # --- Exclusive Maintenance Modes ---
-
+# 1. Stats Mode
 if [ "$STATS_MODE" = true ]; then
     echo -e "${BLUE}📊 S.S.T Processing Statistics${NC}"
-    if [ -f "sst_local_state.db" ] && command -v sqlite3 &> /dev/null; then
+    if [ -f "data/sst_local_state.db" ] && command -v sqlite3 &> /dev/null; then
         echo "--------------------------------"
-        sqlite3 sst_local_state.db "SELECT status, count(*) FROM processed_albums GROUP BY status;"
+        sqlite3 data/sst_local_state.db "SELECT status, count(*) FROM processed_albums GROUP BY status;"
         echo "--------------------------------"
     else
         echo "No database or sqlite3 not found."
@@ -127,10 +127,10 @@ if [ "$TAIL_MODE" = true ]; then
     fi
     exit 0
 fi
-
+# 3. Audit Mode
 if [ "$AUDIT_MODE" = true ]; then
     echo -e "${YELLOW}🔍 Running Metadata Audit...${NC}"
-    $VENV_PYTHON audit_archives.py
+    $VENV_PYTHON -u -m scout.audit
     exit 0
 fi
 

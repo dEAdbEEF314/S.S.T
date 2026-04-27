@@ -3,7 +3,7 @@ import zipfile
 import re
 from pathlib import Path
 
-archive_dir = Path("output/archive")
+archive_dir = Path("output/archive") # Works when called from root via ./sst
 suspicious_albums = []
 
 if not archive_dir.exists():
