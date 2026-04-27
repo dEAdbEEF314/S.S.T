@@ -25,9 +25,9 @@ To provide a single-binary/script experience that:
 | Phase 2 | External API Integration (Steam/MBZ) | **Done** |
 | Phase 3 | LLM Consolidation (Iterative Chat) | **Done** |
 | Phase 4 | Audio Transformation & Tagging | **Done** |
-| Phase 5 | CLI UX Enhancement (Rich UI) | **Pending** |
-| Phase 6 | Advanced LLM Strategies (Summary-first) | **Planned** |
-| Phase 7 | Reliability & Error Recovery | **Ongoing** |
+| Phase 5 | CLI UX Enhancement (Rich UI) | **Done** |
+| Phase 6 | Advanced LLM Strategies | **Done** |
+| Phase 7 | Reliability & Notifications | **Ongoing** |
 
 ---
 

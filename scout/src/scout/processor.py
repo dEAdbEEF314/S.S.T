@@ -73,7 +73,7 @@ class LocalProcessor:
             return datetime.now(timezone(timedelta(hours=9)))
         return datetime.now(timezone.utc)
 
-    def process_album(self, app_id: int, install_dir: Path, steam_meta: SteamMetadata) -> LocalProcessResult:
+    def process_album(self, app_id: int, install_dir: Path, steam_meta: SteamMetadata, on_track_complete: Optional[callable] = None) -> LocalProcessResult:
         if not install_dir.exists():
             return LocalProcessResult(app_id=app_id, status="error", message="Dir not found")
 
@@ -160,17 +160,23 @@ class LocalProcessor:
                 c1_err = llm_log.get("chunks", [{}])[0].get("error")
                 conf_reason = p1_err or c1_err or "LLM provided no metadata"
 
+            # Track audio warnings per album
+            any_audio_warnings = False
+
             from concurrent.futures import ThreadPoolExecutor
 
             def _process_single_track(track_data):
+                nonlocal any_audio_warnings
                 track_key, adopted_info = track_data
                 disc, clean_title = track_key
                 source_path = adopted_info["path"]
                 tier = adopted_info["tier"]
                 
                 # Conversion (FFmpeg or Copy)
-                processed_path = tagger.convert_and_limit(source_path, tier, subdir=str(disc))
+                processed_path, has_warnings = tagger.convert_and_limit(source_path, tier, subdir=str(disc))
                 if not processed_path: return None
+
+                if has_warnings: any_audio_warnings = True
 
                 track_id_str = f"{disc}_{clean_title}"
                 instr = final_metadata.get(track_id_str) or {"action": "use_local_tag"}
@@ -234,6 +240,9 @@ class LocalProcessor:
 
                 tagger.write_tags(processed_path, tag_map, final_art)
                 
+                if on_track_complete:
+                    on_track_complete()
+                
                 return {
                     "file_path": f"{disc}/{processed_path.name}",
                     "original_filename": source_path.name,
@@ -262,6 +271,10 @@ class LocalProcessor:
                 
                 base_msg = f"[{', '.join(issue_details)}]"
                 message = f"{semantic_label} {base_msg}" if semantic_label else f"Missing mandatory metadata {base_msg}"
+            
+            # Act-13: Append audio warning notice
+            if any_audio_warnings:
+                message = f"{message} [Audio Warnings detected]" if message != "Success" else "Success [Audio Warnings detected]"
             
             # Final confidence check
             if status != "review" and conf_score < 80:

@@ -3,7 +3,7 @@ import subprocess
 import logging
 from pathlib import Path
 from PIL import Image
-from typing import Optional
+from typing import Optional, Tuple, Dict
 from mutagen.id3 import ID3, TIT2, TPE1, TALB, TPE2, TCON, TIT1, COMM, TCOM, TDRC, TRCK, TPOS, TXXX, APIC
 
 logger = logging.getLogger(__name__)
@@ -51,11 +51,10 @@ class AudioTagger:
             return source_img_data
 
 
-    def convert_and_limit(self, source_path: Path, quality_tier: str, subdir: str = "") -> Path:
+    def convert_and_limit(self, source_path: Path, quality_tier: str, subdir: str = "") -> Tuple[Path, bool]:
         """
         Converts audio based on quality tier and strict constraints.
-        :param quality_tier: 'lossless' -> AIFF (24-bit/48kHz), 'lossy' -> 320k MP3
-        :param subdir: Optional subdirectory (e.g. disc number)
+        Returns (Path, has_warnings)
         """
         target_ext = ".aiff" if quality_tier == "lossless" else ".mp3"
         
@@ -64,44 +63,33 @@ class AudioTagger:
         
         target_path = dest_dir / source_path.with_suffix(target_ext).name
         
-        # Avoid upscanning/re-encoding if source is already MP3 and tier is lossy/mp3
         if source_path.suffix.lower() == ".mp3" and target_ext == ".mp3":
             import shutil
             try:
                 shutil.copy2(source_path, target_path)
-                return target_path
+                return target_path, False
             except Exception as e:
                 logger.error(f"Failed to copy MP3: {e}")
-                # Fallback to ffmpeg if copy fails
         
-        # FFmpeg command for strict limits
-        cmd = ["ffmpeg", "-i", str(source_path), "-y", "-loglevel", "error"]
+        cmd = ["ffmpeg", "-i", str(source_path), "-y", "-loglevel", "warning"]
 
         if quality_tier == "lossless":
-            # AIFF: 24-bit PCM Big Endian, 48kHz (Highest Compatibility)
-            # Using 'soxr' resampler for professional-grade sample rate conversion
-            cmd += [
-                "-ar", "48000",
-                "-resampler", "soxr",
-                "-c:a", "pcm_s24be", 
-                "-write_id3v2", "1",
-                str(target_path)
-            ]
+            cmd += ["-ar", "48000", "-resampler", "soxr", "-c:a", "pcm_s24be", "-write_id3v2", "1", str(target_path)]
         else:
-            # MP3: Convert to 320kbps CBR, max 48kHz with high-quality resampling
-            cmd += [
-                "-ar", "48000",
-                "-resampler", "soxr",
-                "-codec:a", "libmp3lame", 
-                "-b:a", "320k", 
-                str(target_path)
-            ]
+            cmd += ["-ar", "48000", "-resampler", "soxr", "-codec:a", "libmp3lame", "-b:a", "320k", str(target_path)]
 
         try:
-            subprocess.run(cmd, check=True)
-            return target_path
+            # Capture output to prevent console pollution
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            has_warnings = False
+            if result.stderr:
+                # Log detailed warnings to file logger ONLY
+                if any(w in result.stderr for w in ["invalid rice order", "decode_frame() failed", "mimetype"]):
+                    logger.debug(f"FFmpeg warnings for {source_path.name}: {result.stderr}")
+                    has_warnings = True
+            return target_path, has_warnings
         except subprocess.CalledProcessError as e:
-            logger.error(f"FFmpeg failed for {source_path}: {e}")
+            logger.error(f"FFmpeg failed for {source_path}: {e.stderr}")
             raise
 
     def write_tags(self, file_path: Path, tags: dict, artwork_data: Optional[bytes] = None):
