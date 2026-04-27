@@ -15,6 +15,7 @@ from .tagger import AudioTagger
 from .llm import LLMOrganizer
 from .ident.mbz import MusicBrainzIdentifier
 from .ident.embedded import EmbeddedMetadataExtractor
+from .notify import NotificationManager
 
 logger = logging.getLogger("scout.processor")
 
@@ -23,6 +24,7 @@ class LocalProcessor:
 
     def __init__(self, config: Any):
         self.config = config
+        self.notifier = NotificationManager(config)
         self.mbz = MusicBrainzIdentifier(
             config.mbz_app_name, 
             config.mbz_app_version, 
@@ -154,14 +156,9 @@ class LocalProcessor:
             if final_metadata:
                 conf_reason = final_metadata.get(first_tid, {}).get("confidence_reason", "No data")
             else:
-                # Extract error from the first chunk log if available
                 p1_err = llm_log.get("phase1_log", {}).get("error")
                 c1_err = llm_log.get("chunks", [{}])[0].get("error")
                 conf_reason = p1_err or c1_err or "LLM provided no metadata"
-
-            if conf_score < 80:
-                status = "review"
-                message = f"Incomplete result: {conf_reason}" if conf_score == 0 else f"Low confidence ({conf_score}): {conf_reason}"
 
             from concurrent.futures import ThreadPoolExecutor
 
@@ -188,7 +185,6 @@ class LocalProcessor:
                 
                 if action == "use_mbz" and mbz_candidates:
                     try:
-                        # In the new strategy, track_mapping chunks always use the fixed global candidate
                         mbz_album = mbz_candidates[0]
                         t_idx = instr.get("mbz_track_index", 0)
                         mbz_track = mbz_album["tracks"][t_idx]
@@ -248,12 +244,32 @@ class LocalProcessor:
             with ThreadPoolExecutor(max_workers=self.config.max_encoding_tasks) as executor:
                 processed_tracks_meta = [t for t in executor.map(_process_single_track, adopted_files.items()) if t]
 
-            # Validation Loop
+            # --- Validation Loop (Semantic Labeling Implementation) ---
+            zero_tracks = 0
+            unknown_titles = 0
             for t in processed_tracks_meta:
-                if t["tags"]["title"] == "Unknown" or t["tags"]["track_number"] == "0":
-                    status = "review"
-                    message = "Missing mandatory metadata (Title/Track)"
-                    break
+                if t["tags"]["title"] == "Unknown": unknown_titles += 1
+                if t["tags"]["track_number"] == "0": zero_tracks += 1
+
+            if zero_tracks > 0 or unknown_titles > 0:
+                status = "review"
+                # Extract semantic label from LLM if available
+                semantic_label = final_metadata.get(first_tid, {}).get("semantic_label") if first_tid else None
+                
+                issue_details = []
+                if zero_tracks > 0: issue_details.append(f"Track#0 x{zero_tracks}")
+                if unknown_titles > 0: issue_details.append(f"Unknown Title x{unknown_titles}")
+                
+                base_msg = f"[{', '.join(issue_details)}]"
+                message = f"{semantic_label} {base_msg}" if semantic_label else f"Missing mandatory metadata {base_msg}"
+            
+            # Final confidence check
+            if status != "review" and conf_score < 80:
+                status = "review"
+                message = f"Low confidence ({conf_score}): {conf_reason}"
+            elif status == "review" and conf_score == 0:
+                # Keep physical failure reason if available
+                message = f"Incomplete result: {conf_reason}"
 
             summary_meta = {
                 "app_id": app_id, "album_name": steam_meta.name, "status": status,
@@ -262,6 +278,19 @@ class LocalProcessor:
                 "steam_info": steam_meta.model_dump()
             }
             
+            # --- Act-13: Send Discord Notification ---
+            fields = [
+                {"name": "AppID", "value": str(app_id), "inline": True},
+                {"name": "Status", "value": status.upper(), "inline": True},
+                {"name": "Confidence", "value": f"{conf_score}%", "inline": True},
+                {"name": "Reasoning", "value": conf_reason[:1024], "inline": False}
+            ]
+            
+            if status == "review":
+                self.notifier.notify_warning(f"Review Required: {steam_meta.name}", message, fields)
+            else:
+                self.notifier.notify_info(f"Archived: {steam_meta.name}", f"Quality Check: {conf_score}%", fields)
+
             from textwrap import dedent
             basis_content = dedent(f"""\
                 # Basis for Classification: {steam_meta.name}
@@ -302,6 +331,7 @@ class LocalProcessor:
         except Exception as e:
             album_process_status = "error"
             logger.error(f"Critical failure for {app_id}: {e}")
+            self.notifier.notify_critical(f"Process Failed: {app_id}", str(e))
             import traceback
             logger.error(traceback.format_exc())
             return LocalProcessResult(
@@ -310,7 +340,6 @@ class LocalProcessor:
                 message=str(e), processed_at=self._get_localized_now()
             )
         finally:
-            # Act-12: Smart Cleanup
             if self.config.env_mode == "development" and album_process_status == "error":
                 logger.warning(f"Development Mode: Preserving temp directory for debugging: {temp_output}")
             else:

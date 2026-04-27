@@ -13,6 +13,7 @@ Objective: Implement a multi-level Discord notification system to provide real-t
     - Failure Reason (if any)
 
 ## 2. Integration & Events
+- [x] **Semantic Labeling**: Update LLM Phase 1 to generate a `semantic_label` summarizing data anomalies (e.g., SFX mixing). Display this in the CLI summary instead of generic missing metadata errors.
 - [ ] **Logging Hook**: Integrate the notification system with the logging flow or specific processing events in `processor.py`.
 - [ ] **Completion Summary**: Send a single, comprehensive "Total Run Summary" to the `COMPLETION` webhook when the main loop finishes.
 - [ ] **Circuit Breaker Notification**: Send a `CRITICAL` alert if the LLM daily limit (RPD) is reached and the system stops.

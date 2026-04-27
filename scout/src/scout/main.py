@@ -32,7 +32,7 @@ class Config(BaseSettings):
 
     steam_library_path: str
     sst_working_dir: str = "/tmp/sst-work"
-    sst_db_path: str = "sst_local_state.db"
+    sst_db_path: str = "data/sst_local_state.db"
     user_language: str = "ja"
     steam_language_full: str = "japanese"
     user_language_639_2: str = "jpn"
@@ -50,6 +50,14 @@ class Config(BaseSettings):
     mbz_app_name: str = "SST-Scout"
     mbz_app_version: str = "1.0.0"
     mbz_contact: str = "contact@example.lan"
+
+    # Notification Settings
+    notify_enabled: bool = False
+    notify_cooldown: int = 60
+    discord_webhook_critical: Optional[str] = None
+    discord_webhook_warning: Optional[str] = None
+    discord_webhook_info: Optional[str] = None
+    discord_webhook_completion: Optional[str] = None
 
 def main():
     # Argument Parsing
@@ -168,11 +176,12 @@ def main():
 
     scanner = SteamScanner(
         config.steam_library_path,
-        cache_path="scout_cache.json",
+        cache_path="data/scout_cache.json",
         language=config.steam_language_full
     )
 
     processor = LocalProcessor(config)
+    notifier = processor.notifier # Re-use the same notifier
 
     logger.info(f"Scanning library: {config.steam_library_path}")
     soundtracks = scanner.find_soundtracks(
@@ -187,12 +196,12 @@ def main():
         return
 
     logger.info(f"Queueing {len(soundtracks)} soundtracks for local processing.")
-from concurrent.futures import ThreadPoolExecutor
 
-results: List[LocalProcessResult] = []
-start_time = datetime.now()
+    from concurrent.futures import ThreadPoolExecutor
+    
+    results: List[LocalProcessResult] = []
+    start_time = datetime.now()
 
-try:
     def _process_single_album(ost, progress, task_id):
         app_id = ost["app_id"]
         install_dir = Path(ost["install_dir"])
@@ -259,11 +268,31 @@ try:
     console.print(f"  - End Time:    {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
     console.print(f"  - Total Time:   [bold green]{duration_str}[/bold green]\n")
     
+    # --- Act-13: Send Completion Summary to Discord ---
+    review_list_str = ""
+    if review_items:
+        review_list_str = "\n\n**Review Required:**\n" + "\n".join([f"• `{r.app_id}` {r.album_name} ({r.confidence_score}%)" for r in review_items[:15]])
+        if len(review_items) > 15:
+            review_list_str += f"\n*...and {len(review_items) - 15} more.*"
+
+    comp_fields = [
+        {"name": "Total Albums", "value": str(len(results)), "inline": True},
+        {"name": "Success", "value": str(len([r for r in results if r.status == "archive"])), "inline": True},
+        {"name": "Review Required", "value": str(len(review_items)), "inline": True},
+        {"name": "Start Time", "value": start_time.strftime('%Y-%m-%d %H:%M:%S'), "inline": False},
+        {"name": "Duration", "value": duration_str, "inline": True}
+    ]
+    notifier.notify_completion(
+        "Total Processing Run Complete", 
+        f"Finished processing {len(results)} albums.{review_list_str}", 
+        comp_fields
+    )
+    
     if review_items:
         # Localization
         headers_map = {
             "ja": ["AppID", "アルバム名", "判定", "確信度", "分析"],
-            "en": ["AppID", "Album Name", "Status", "Conf.", "LLM Reasoning"]
+            "en": ["AppID", "Album Name", "Status", "Conf.", "Analysis"]
         }
         lang = config.user_language if config.user_language in headers_map else "en"
         h = headers_map[lang]
@@ -281,7 +310,7 @@ try:
                 item.album_name,
                 item.status.capitalize(),
                 f"{item.confidence_score}%",
-                item.confidence_reason
+                item.message # Show the semantic reason here
             )
         
         console.print(table)
