@@ -4,9 +4,11 @@ SST is transitioning from a Web-based dashboard to a powerful, interactive Comma
 
 ## 1. Vision: "Rich Edge CLI"
 The new CLI will use the `Rich` library to provide a modern terminal experience, featuring:
-- **Live Progress**: Multi-track progress bars showing scanning, LLM consolidation, and audio conversion simultaneously.
-- **Interactive Approval**: An optional `--interactive` flag to let users review and modify metadata in the terminal before tags are written.
-- **Consolidated Tables**: Summary of processing results (Success/Review/Fail) formatted in clean tables.
+- **Live Progress**: Multi-task progress bars using the `Rich` library:
+    - **Overall Progress**: Fixed at the bottom showing the total queue status.
+    - **Per-Album Progress**: Dynamic bars for each active parallel worker, showing track-level completion.
+    - **History Persistence**: Finished albums leave a clean result line (✓) in the scrollback history.
+- **Localized Tables**: Summary of review-required items formatted in clean, localized (ja/en) tables.
 
 ## 2. Command Structure (Planned)
 

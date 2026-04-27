@@ -121,16 +121,16 @@ def main():
             return
 
     # Logging Setup with Rich
+    console = Console()
     numeric_level = getattr(logging, config.log_level.upper(), logging.INFO)
-    log_format = "%(message)s" 
-    
     handlers = []
     
     # 1. Stdout Handler (Console via Rich)
     # In production, we keep console clean for the progress bars
-    console_level = logging.WARNING if config.env_mode == "production" else numeric_level
+    console_level = logging.ERROR if config.env_mode == "production" else numeric_level
     rich_handler = RichHandler(
         level=console_level,
+        console=console,
         rich_tracebacks=True,
         markup=True,
         show_path=False,
@@ -155,7 +155,10 @@ def main():
         force=True
     )
     
-    console = Console()
+    # Act-13: Silence noisy external libraries on console ONLY
+    for logger_name in ["urllib3", "PIL", "musicbrainzngs", "requests", "mutagen"]:
+        logging.getLogger(logger_name).setLevel(logging.ERROR)
+
     logger.info(f"SST Local Processor starting in [bold cyan]{config.env_mode}[/bold cyan] mode")
     if config.env_mode == "production":
         logger.info(f"Detailed logs redirected to [yellow]{log_file}[/yellow]")
@@ -202,9 +205,12 @@ def main():
     results: List[LocalProcessResult] = []
     start_time = datetime.now()
 
-    def _process_single_album(ost, progress, task_id):
+    def _process_single_album(ost, progress, overall_task):
         app_id = ost["app_id"]
         install_dir = Path(ost["install_dir"])
+        
+        # Act-13: Dynamic per-album sub-task bar
+        album_task = progress.add_task(f"[cyan]Mapping: {ost['name']}", total=None)
         
         steam_meta = SteamMetadata(
             app_id=app_id,
@@ -223,35 +229,54 @@ def main():
             header_image_url=ost.get("header_image_url")
         )
 
-        result = processor.process_album(app_id, install_dir, steam_meta)
+        progress.update(album_task, description=f"[yellow]Processing: {ost['name']}")
+        
+        # Initialize total tracks for bar
+        all_files = processor._list_audio_files(install_dir)
+        progress.update(album_task, total=len(all_files))
+
+        # Pass callback to advance the bar
+        result = processor.process_album(
+            app_id, install_dir, steam_meta,
+            on_track_complete=lambda: progress.advance(album_task)
+        )
         results.append(result)
         
-        # Advance the progress bar
-        progress.update(task_id, advance=1, description=f"Finished: {ost['name']}")
+        # Cleanup individual task and advance global progress
+        progress.remove_task(album_task)
+        progress.update(overall_task, advance=1)
+        
+        # Act-13: Trace in terminal with status color
+        status_color = "green" if result.status == "archive" else "yellow"
+        console.print(f"[bold {status_color}]✓[/bold {status_color}] {ost['name']} -> [bold]{result.status.upper()}[/bold]")
         
         if result.status == "archive":
             logger.info(f"Successfully archived App ID {app_id}: {ost['name']}")
         elif result.status == "review":
-            logger.warning(f"Sent App ID {app_id} to review: {result.message}")
+            if config.env_mode == "development":
+                logger.warning(f"Sent App ID {app_id} to review: {result.message}")
+            else:
+                logger.debug(f"Sent App ID {app_id} to review: {result.message}")
         else:
             logger.error(f"Failed to process App ID {app_id}: {result.message}")
 
     try:
-        # Use Rich Progress Bar
+        # Use Multi-Progress Display
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
             BarColumn(),
             TaskProgressColumn(),
             TimeRemainingColumn(),
-            console=console
+            console=console,
+            expand=True
         ) as progress:
-            overall_task = progress.add_task("Processing Albums...", total=len(soundtracks))
+            overall_task = progress.add_task("[bold blue]Overall Progress", total=len(soundtracks))
             
             with ThreadPoolExecutor(max_workers=max_album_workers) as executor:
                 list(executor.map(lambda ost: _process_single_album(ost, progress, overall_task), soundtracks))
     finally:
-        # Act-12: Ensure terminal state is clean
+        # Ensure terminal state is clean
         console.show_cursor(True)
     
     end_time = datetime.now()
