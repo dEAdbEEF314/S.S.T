@@ -1,0 +1,146 @@
+#!/bin/bash
+
+# ==============================================================================
+# S.S.T (Steam Soundtrack Tagger) Launcher
+# ==============================================================================
+
+# --- Configuration ---
+VENV_PYTHON="scout/.venv/bin/python"
+MAIN_MODULE="scout.main"
+export PYTHONPATH="scout/src"
+
+# --- Colors ---
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# --- Help Message ---
+show_help() {
+    echo -e "${BLUE}🚀 Project S.S.T Launcher${NC}"
+    echo "Usage: ./sst [options]"
+    echo ""
+    echo "Basic Options:"
+    echo "  -n, --limit N      Process N unprocessed soundtracks."
+    echo "  -f, --force        Force re-processing of already completed albums."
+    echo "      --appid ID     Process only a specific Steam AppID."
+    echo ""
+    echo "Maintenance & Stats (Exclusive):"
+    echo "      --delete-db    Reset the local database (Requires 3 confirmations)."
+    echo "      --stats        Show processing statistics from the database."
+    echo "      --audit        Run consistency check on generated ZIP files."
+    echo ""
+    echo "Debugging & Monitoring:"
+    echo "      --dev          Run in Development Mode (DEBUG logs, keep temp files)."
+    echo "      --tail         Watch the latest log file (tail -f)."
+    echo "  -h, --help         Show this help message."
+}
+
+# --- Argument Parsing ---
+CMD_ARGS=()
+TAIL_MODE=false
+STATS_MODE=false
+AUDIT_MODE=false
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -n|--limit)
+            CMD_ARGS+=("--limit" "$2")
+            shift 2
+            ;;
+        -f|--force)
+            CMD_ARGS+=("--force")
+            shift
+            ;;
+        --appid)
+            CMD_ARGS+=("--appid" "$2")
+            shift 2
+            ;;
+        --delete-db)
+            CMD_ARGS+=("--reset-db")
+            shift
+            ;;
+        --stats)
+            STATS_MODE=true
+            shift
+            ;;
+        --audit)
+            AUDIT_MODE=true
+            shift
+            ;;
+        --dev)
+            export ENV_MODE=development
+            export LOG_LEVEL=DEBUG
+            shift
+            ;;
+        --tail)
+            TAIL_MODE=true
+            shift
+            ;;
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        *)
+            CMD_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+# --- Prerequisites Check ---
+if [ ! -f "$VENV_PYTHON" ]; then
+    echo -e "${RED}❌ Error: Virtual environment not found at $VENV_PYTHON${NC}"
+    echo "Please run 'cd scout && uv sync' first."
+    exit 1
+fi
+
+# --- Reset Env (Ensure clean state from .env) ---
+if [ -f ".env" ]; then
+    while IFS='=' read -r key value; do
+        if [[ ! "$key" =~ ^# && -n "$key" ]]; then unset "$key"; fi
+    done < ".env"
+fi
+
+# --- Exclusive Maintenance Modes ---
+
+if [ "$STATS_MODE" = true ]; then
+    echo -e "${BLUE}📊 S.S.T Processing Statistics${NC}"
+    if [ -f "sst_local_state.db" ] && command -v sqlite3 &> /dev/null; then
+        echo "--------------------------------"
+        sqlite3 sst_local_state.db "SELECT status, count(*) FROM processed_albums GROUP BY status;"
+        echo "--------------------------------"
+    else
+        echo "No database or sqlite3 not found."
+    fi
+    exit 0
+fi
+
+if [ "$TAIL_MODE" = true ]; then
+    LATEST_LOG=$(ls -t logs/sst_*.log 2>/dev/null | head -n 1)
+    if [ -n "$LATEST_LOG" ]; then
+        echo -e "${BLUE}📺 Monitoring latest log: $LATEST_LOG${NC}"
+        tail -f "$LATEST_LOG"
+    else
+        echo "No log files found."
+    fi
+    exit 0
+fi
+
+if [ "$AUDIT_MODE" = true ]; then
+    echo -e "${YELLOW}🔍 Running Metadata Audit...${NC}"
+    $VENV_PYTHON audit_archives.py
+    exit 0
+fi
+
+# --- Main S.S.T Execution ---
+
+# Ensure terminal is in a sane state (fixes ^M issues)
+stty sane
+
+echo -e "${GREEN}🚀 Starting S.S.T System...${NC}"
+$VENV_PYTHON -u -m $MAIN_MODULE "${CMD_ARGS[@]}"
+
+# Restoration of terminal echo
+stty echo

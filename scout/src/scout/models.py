@@ -43,5 +43,8 @@ class ProcessingContext(BaseModel):
 class LocalProcessResult(BaseModel):
     app_id: int
     status: str # archive, review, skip
+    album_name: str = "Unknown"
+    confidence_score: int = 0
+    confidence_reason: str = "N/A"
     message: str
     processed_at: datetime = Field(default_factory=datetime.utcnow)

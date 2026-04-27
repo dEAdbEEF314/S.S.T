@@ -63,20 +63,20 @@ The core logic is implemented in the `scout` package. It performs the full pipel
 - [ ] **Summary-First Pass**: Send the entire album tracklist to the LLM first to establish global context (Artist consistency, Disc count).
 - [ ] **Multi-Model Voting**: (Optional) Compare results from two different models to minimize outliers.
 - [ ] **Parent Game Logic**: Fully automate the fetching of tags from the parent game when the soundtrack app is sparse.
+| Phase 7 | Reliability & Notifications | **Planned** |
 
 ---
 
-# 🧩 Phase 7: Reliability & Packaging
+# 🧩 Phase 7: Reliability & Notifications
 
-**Objective**: Ensure the tool is "production-ready" for the user.
+**Objective**: Ensure the tool is reliable for bulk processing and provides real-time feedback via external services.
 
 ### Tasks:
-- [ ] **Dependency Bundling**: Ensure `ffmpeg` and `uv` requirements are clearly documented or bundled.
-- [ ] **State Management**: Robust SQLite tracking to prevent redundant runs.
-- [ ] **ZIP Packaging**: Refine the `output/` structure:
-    - `output/archive/[AppID]_[Name].zip`
-    - `output/review/[AppID]_[Name].zip`
-
+- [ ] **Discord Integration**: Implement a robust notification system with per-level Webhook support (Critical, Warning, Info, Completion).
+- [ ] **Notification Throttling**: Implement cooldown logic to prevent spamming Discord during high-intensity error bursts.
+- [ ] **Rich Error Reporting**: Send beautiful Discord Embeds including Album name, AppID, processing time, and failure reasons.
+- [ ] **System Hardening**: Implement global fail-safes to ensure the processor can recover from network interruptions or database locking issues.
+- [ ] **Performance Audit**: Fine-tune parallel worker counts for local vs. remote LLM modes based on real-world test data.
 ---
 
 # 🚫 Discontinued / Outdated Goals
