@@ -71,6 +71,7 @@ class AudioTagger:
             except Exception as e:
                 logger.error(f"Failed to copy MP3: {e}")
         
+        # FFmpeg command for strict limits
         cmd = ["ffmpeg", "-i", str(source_path), "-y", "-loglevel", "warning"]
 
         if quality_tier == "lossless":
