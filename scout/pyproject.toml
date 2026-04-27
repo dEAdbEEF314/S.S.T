@@ -17,6 +17,7 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "python-magic>=0.4.27",
     "requests>=2.33.1",
+    "rich>=15.0.0",
     "vdf>=3.4",
 ]
 

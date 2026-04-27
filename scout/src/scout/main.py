@@ -2,18 +2,23 @@ import os
 import json
 import logging
 import argparse
-from typing import Optional
+import multiprocessing
+from typing import Optional, List
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
+from rich.logging import RichHandler
+from rich.table import Table
+from rich.console import Console
 
 from .scanner import SteamScanner
 from .processor import LocalProcessor
 from .models import SteamMetadata, LocalProcessResult
 
 # Setup Logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("scout")
 
 class Config(BaseSettings):
@@ -79,53 +84,82 @@ def main():
 
     # Handle DB Reset
     if args.reset_db:
+        from rich.prompt import Confirm
         db_file = Path(config.sst_db_path)
         if not db_file.exists():
             print("Database file does not exist. Nothing to reset.")
             return
             
-        print(f"!!! WARNING: You are about to delete the database: {db_file} !!!")
-        confirms = [
-            "Are you absolutely sure you want to reset the database? (y/n): ",
-            "This will clear ALL history of processed albums. Continue? (y/n): ",
-            "FINAL CONFIRMATION: Type 'DELETE' to confirm (anything else to cancel): "
-        ]
+        console = Console()
+        console.print(f"[bold red]!!! WARNING: You are about to delete the database: {db_file} !!![/bold red]")
         
         try:
-            if input(confirms[0]).lower() != 'y': return
-            if input(confirms[1]).lower() != 'y': return
-            if input(confirms[2]) != 'DELETE':
-                print("Reset cancelled.")
+            if not Confirm.ask("Are you absolutely sure you want to reset the database?", console=console):
+                return
+            if not Confirm.ask("This will clear ALL history of processed albums. Continue?", console=console):
+                return
+            
+            # Final text confirmation
+            final_check = input("FINAL CONFIRMATION: Type 'DELETE' to confirm: ")
+            if final_check != 'DELETE':
+                console.print("[yellow]Reset cancelled.[/yellow]")
                 return
             
             db_file.unlink()
-            print(f"Database {db_file} has been successfully reset.")
+            console.print(f"[green]Database {db_file} has been successfully reset.[/green]")
             return
         except (KeyboardInterrupt, EOFError):
-            print("\nReset aborted.")
+            console.print("\n[yellow]Reset aborted.[/yellow]")
             return
 
-    # Initialize logging with the level from config
+    # Logging Setup with Rich
     numeric_level = getattr(logging, config.log_level.upper(), logging.INFO)
+    log_format = "%(message)s" 
+    
+    handlers = []
+    
+    # 1. Stdout Handler (Console via Rich)
+    # In production, we keep console clean for the progress bars
+    console_level = logging.WARNING if config.env_mode == "production" else numeric_level
+    rich_handler = RichHandler(
+        level=console_level,
+        rich_tracebacks=True,
+        markup=True,
+        show_path=False,
+        show_level=True,
+        show_time=True
+    )
+    handlers.append(rich_handler)
+    
+    # 2. File Handler (Persistent logs)
+    if config.env_mode == "production" or numeric_level <= logging.INFO:
+        log_dir = Path("logs")
+        log_dir.mkdir(exist_ok=True)
+        log_file = log_dir / f"sst_{datetime.now().strftime('%Y%m%d')}.log"
+        file_handler = logging.FileHandler(log_file, encoding='utf-8')
+        file_handler.setLevel(numeric_level)
+        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        handlers.append(file_handler)
+
     logging.basicConfig(
         level=numeric_level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=handlers,
         force=True
     )
-    logger.setLevel(numeric_level)
     
-    logger.info(f"SST Local Processor starting in {config.env_mode} mode")
+    console = Console()
+    logger.info(f"SST Local Processor starting in [bold cyan]{config.env_mode}[/bold cyan] mode")
+    if config.env_mode == "production":
+        logger.info(f"Detailed logs redirected to [yellow]{log_file}[/yellow]")
 
     # Act-12: Dynamic Album Workers Calculation
-    import multiprocessing
     cpu_count = multiprocessing.cpu_count()
     
     if config.llm_force_local:
-        # For local LLMs, we don't care about RPM. Limit by CPU only.
-        calculated_workers = cpu_count * 2
-        logger.info(f"Force Local Mode: Bypassing RPM limits. Using CPU-based limit: {calculated_workers}")
+        # Act-12: Limit parallel albums in local mode to avoid server overload/timeouts
+        calculated_workers = min(cpu_count, 4)
+        logger.info(f"Force Local Mode: Bypassing RPM limits. Using load-balanced limit: {calculated_workers}")
     else:
-        # For remote LLMs, respect the 70% RPM rule
         calculated_workers = min(int(config.llm_limit_rpm * 0.7), cpu_count * 2, 10)
     
     max_album_workers = max(1, calculated_workers)
@@ -141,7 +175,6 @@ def main():
     processor = LocalProcessor(config)
 
     logger.info(f"Scanning library: {config.steam_library_path}")
-    # Pass is_processed as a callback so the scanner can find the next ACTIVE albums up to the limit
     soundtracks = scanner.find_soundtracks(
         force=args.force, 
         limit=args.limit,
@@ -149,13 +182,18 @@ def main():
         target_appid=args.appid
     )
     
-    active_list = soundtracks # Scanner already filtered them
+    if not soundtracks:
+        logger.info("No active soundtracks found.")
+        return
 
-    logger.info(f"Queueing {len(active_list)} soundtracks for local processing.")
+    logger.info(f"Queueing {len(soundtracks)} soundtracks for local processing.")
+from concurrent.futures import ThreadPoolExecutor
 
-    from concurrent.futures import ThreadPoolExecutor
+results: List[LocalProcessResult] = []
+start_time = datetime.now()
 
-    def _process_single_album(ost):
+try:
+    def _process_single_album(ost, progress, task_id):
         app_id = ost["app_id"]
         install_dir = Path(ost["install_dir"])
         
@@ -176,9 +214,11 @@ def main():
             header_image_url=ost.get("header_image_url")
         )
 
-        # Process locally (Select -> Convert -> Tag -> Upload)
-        logger.info(f"Target Directory: {install_dir}")
         result = processor.process_album(app_id, install_dir, steam_meta)
+        results.append(result)
+        
+        # Advance the progress bar
+        progress.update(task_id, advance=1, description=f"Finished: {ost['name']}")
         
         if result.status == "archive":
             logger.info(f"Successfully archived App ID {app_id}: {ost['name']}")
@@ -187,9 +227,66 @@ def main():
         else:
             logger.error(f"Failed to process App ID {app_id}: {result.message}")
 
-    # Act-12: Enabled parallel album processing with dynamic worker limit
-    with ThreadPoolExecutor(max_workers=max_album_workers) as executor:
-        list(executor.map(_process_single_album, active_list))
+    try:
+        # Use Rich Progress Bar
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            console=console
+        ) as progress:
+            overall_task = progress.add_task("Processing Albums...", total=len(soundtracks))
+            
+            with ThreadPoolExecutor(max_workers=max_album_workers) as executor:
+                list(executor.map(lambda ost: _process_single_album(ost, progress, overall_task), soundtracks))
+    finally:
+        # Act-12: Ensure terminal state is clean
+        console.show_cursor(True)
+    
+    end_time = datetime.now()
+    duration = end_time - start_time
+    hours, remainder = divmod(int(duration.total_seconds()), 3600)
+    minutes, seconds = divmod(remainder, 60)
+    duration_str = f"{hours}h {minutes}m {seconds}s" if hours > 0 else f"{minutes}m {seconds}s"
+
+    # --- Final Summary Table (Review Items Only) ---
+    review_items = [r for r in results if r.status == "review"]
+    
+    console.print(f"\n[bold blue]🏁 Processing Complete![/bold blue]")
+    console.print(f"  - Start Time:  {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    console.print(f"  - End Time:    {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    console.print(f"  - Total Time:   [bold green]{duration_str}[/bold green]\n")
+    
+    if review_items:
+        # Localization
+        headers_map = {
+            "ja": ["AppID", "アルバム名", "判定", "確信度", "分析"],
+            "en": ["AppID", "Album Name", "Status", "Conf.", "LLM Reasoning"]
+        }
+        lang = config.user_language if config.user_language in headers_map else "en"
+        h = headers_map[lang]
+
+        table = Table(title=f"\nItems Requiring Review ({len(review_items)})", title_style="bold yellow")
+        table.add_column(h[0], style="cyan", no_wrap=True)
+        table.add_column(h[1], style="magenta", min_width=20)
+        table.add_column(h[2], style="yellow", width=12)
+        table.add_column(h[3], justify="right", style="green")
+        table.add_column(h[4], style="white", width=60) # Allow wrapping within 60 chars
+
+        for item in review_items:
+            table.add_row(
+                str(item.app_id),
+                item.album_name,
+                item.status.capitalize(),
+                f"{item.confidence_score}%",
+                item.confidence_reason
+            )
+        
+        console.print(table)
+    else:
+        console.print("\n[bold green]All items processed successfully! No reviews required.[/bold green]")
 
 if __name__ == "__main__":
     main()

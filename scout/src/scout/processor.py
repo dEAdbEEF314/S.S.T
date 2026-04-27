@@ -115,6 +115,9 @@ class LocalProcessor:
         processed_tracks_meta = [] 
         adopted_files = self._adopt_optimal_files(track_groups)
         
+        # Track processing status for cleanup decision
+        album_process_status = "unknown"
+        
         try:
             tagger = AudioTagger(temp_output)
             
@@ -146,11 +149,19 @@ class LocalProcessor:
             # Extract common confidence
             first_tid = next(iter(final_metadata)) if final_metadata else None
             conf_score = final_metadata.get(first_tid, {}).get("confidence_score", 0) if first_tid else 0
-            conf_reason = final_metadata.get(first_tid, {}).get("confidence_reason", "No data") if first_tid else "N/A"
             
+            # Act-12: More detailed reasoning for failures
+            if final_metadata:
+                conf_reason = final_metadata.get(first_tid, {}).get("confidence_reason", "No data")
+            else:
+                # Extract error from the first chunk log if available
+                p1_err = llm_log.get("phase1_log", {}).get("error")
+                c1_err = llm_log.get("chunks", [{}])[0].get("error")
+                conf_reason = p1_err or c1_err or "LLM provided no metadata"
+
             if conf_score < 80:
                 status = "review"
-                message = f"Low confidence ({conf_score}): {conf_reason}"
+                message = f"Incomplete result: {conf_reason}" if conf_score == 0 else f"Low confidence ({conf_score}): {conf_reason}"
 
             from concurrent.futures import ThreadPoolExecutor
 
@@ -281,15 +292,29 @@ class LocalProcessor:
             }
             self._save_local_package(app_id, status, steam_meta.name, temp_output, log_bundle)
             self._record_processed(app_id, status, steam_meta.name, summary_meta)
-            return LocalProcessResult(app_id=app_id, status=status, message=message, processed_at=self._get_localized_now())
+            album_process_status = status
+            return LocalProcessResult(
+                app_id=app_id, status=status, album_name=steam_meta.name, 
+                confidence_score=conf_score, confidence_reason=conf_reason,
+                message=message, processed_at=self._get_localized_now()
+            )
 
         except Exception as e:
+            album_process_status = "error"
             logger.error(f"Critical failure for {app_id}: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            return LocalProcessResult(app_id=app_id, status="error", message=str(e), processed_at=self._get_localized_now())
+            return LocalProcessResult(
+                app_id=app_id, status="error", album_name=steam_meta.name, 
+                confidence_score=0, confidence_reason=str(e),
+                message=str(e), processed_at=self._get_localized_now()
+            )
         finally:
-            if temp_output.exists(): shutil.rmtree(temp_output)
+            # Act-12: Smart Cleanup
+            if self.config.env_mode == "development" and album_process_status == "error":
+                logger.warning(f"Development Mode: Preserving temp directory for debugging: {temp_output}")
+            else:
+                if temp_output.exists(): shutil.rmtree(temp_output)
 
     def _prepare_llm_track_context(self, track_groups: Dict) -> Dict[str, List[Dict[str, Any]]]:
         """Merges redundant tags across formats and prepares lean context."""
