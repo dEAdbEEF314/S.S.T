@@ -252,7 +252,7 @@ Return ONLY a valid JSON object:
                 if "localhost" in self.api_url or "127.0.0.1" in self.api_url:
                     payload["options"] = {"num_ctx": 32768, "num_predict": 4096}
 
-                response = requests.post(self.api_url, headers=headers, json=payload, timeout=120)
+                response = requests.post(self.api_url, headers=headers, json=payload, timeout=300)
                 
                 if response.status_code == 200:
                     content = response.json().get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -289,6 +289,12 @@ Return ONLY a valid JSON object:
                 log_entry["error"] = f"HTTP {response.status_code}: {response.text}"
                 return None, log_entry
 
+            except requests.exceptions.Timeout:
+                log_entry["error"] = "Timeout: LLM took too long to respond (>300s)"
+                if attempt < max_retries:
+                    logger.warning(f"LLM attempt {attempt+1} timed out. Retrying...")
+                    time.sleep(retry_delay)
+                    continue
             except Exception as e:
                 logger.warning(f"LLM attempt {attempt+1} encountered error: {e}")
                 if attempt < max_retries:
