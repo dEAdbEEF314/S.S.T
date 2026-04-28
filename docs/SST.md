@@ -34,6 +34,10 @@ LLM confidence scores must adhere to a strict threshold:
 - **Rank B (80-90%)**: Any minor discrepancy, track count mismatch, or "Dirty Tags". -> **REVIEW**
 - **Rank C (< 80%)**: Conflict or insufficient evidence. -> **REVIEW**
 
+### 2.3 Steam API Access Optimization
+- **Targeted Fetching**: The system MUST utilize the Steam API Key and `@data/userdata.json` to identify relevant AppIDs (Wishlists, Library, etc.).
+- **Minimal Footprint**: Brute-force scanning of the Store API is strictly forbidden. Use user app lists to target and fetch metadata for confirmed soundtracks or parent games with the absolute minimum number of API requests required.
+
 ---
 
 ## 3. Audio & Packaging Integrity
