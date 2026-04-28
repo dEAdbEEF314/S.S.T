@@ -191,33 +191,38 @@ Return ONLY a valid JSON object:
             chunk_sources = {tid: track_sources[tid] for tid in chunk_ids}
             
             mapping_prompt = f"""
-Now map the following tracks using the FIXED ALBUM IDENTITY.
+            Now map the following tracks using the FIXED ALBUM IDENTITY.
 
-### ABSOLUTE LANGUAGE RULE:
-**IMPORTANT: You MUST write all "reason" fields ONLY in language: {self.user_language.upper()}.**
+            ### ABSOLUTE LANGUAGE RULE:
+            **IMPORTANT: You MUST write all "reason" fields ONLY in language: {self.user_language.upper()}.**
 
-### FIXED ALBUM IDENTITY:
-{json.dumps(global_identity, indent=2)}
-- Strategy: {strategy}
+            ### ZERO INFERENCE RULE:
+            **1. DO NOT guess or infer titles from filenames if they look like internal IDs or SFX (e.g. drizzle2.wav, TR_01.flac).**
+            **2. If NO strong metadata exists in Embedded Tags or MusicBrainz, use "action": "needs_review" and reason: "証拠不足 (Insufficient evidence)".**
+            **3. NEVER provide creative explanations like "mismatched genre". If you don't know, say you don't know.**
 
-### TRACKS TO MAP:
-{json.dumps(chunk_sources, indent=2, ensure_ascii=False)}
+            ### FIXED ALBUM IDENTITY:
+            {json.dumps(global_identity, indent=2)}
+            - Strategy: {strategy}
 
-### MANDATORY OUTPUT FORMAT:
-Return ONLY a valid JSON object:
-{{
-  "track_instructions": {{
-     "TRACK_ID": {{
-        "action": "use_mbz" | "use_local_tag" | "use_filename" | "needs_review",
-        "mbz_track_index": 0, // Only if action is use_mbz. Index in the tracks list of chosen MBZ candidate.
-        "override_title": null, 
-        "override_track": null,
-        "reason": "Explain your decision in language: {self.user_language}"
-     }},
-     ...
-  }}
-}}
-"""
+            ### TRACKS TO MAP:
+            {json.dumps(chunk_sources, indent=2, ensure_ascii=False)}
+
+            ### MANDATORY OUTPUT FORMAT:
+            Return ONLY a valid JSON object:
+            {{
+            "track_instructions": {{
+            "TRACK_ID": {{
+            "action": "use_mbz" | "use_local_tag" | "use_filename" | "needs_review",
+            "mbz_track_index": 0, // Only if action is use_mbz.
+            "override_title": null, 
+            "override_track": null,
+            "reason": "Explain your decision in language: {self.user_language.upper()}"
+            }},
+            ...
+            }}
+            }}
+            """
             chunk_res, chunk_log = self._call_llm(mapping_prompt)
             full_logs.append(chunk_log)
             
