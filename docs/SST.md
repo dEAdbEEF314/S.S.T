@@ -20,9 +20,14 @@ The following fields from the Steam Store API are absolute truths:
 - **Artist (Album-level)**: `steam_meta.developer` + `steam_meta.publisher`
 - **Release Year**: `steam_meta.release_date[:4]`
 - **Steam IDs**: `app_id`, `parent_app_id`
-- **Comment/Grouping Metadata**: Must reference the **Parent Game** details, not just the soundtrack app.
+- **Comment/Grouping Metadata**: Must reference the **Parent Game** details. If `parent_app_id` is missing, fallback to using the soundtrack's own AppID and Name.
 
-### 2.2 Gate-based Scoring System
+### 2.2 MusicBrainz Candidates & Conflict Resolution
+- **Steam Date is LOCKED**: The release year from Steam is the ultimate truth for the `TDRC` tag.
+- **Candidate Passing**: To prevent context bloat and focus the LLM's attention, the system pre-filters candidates and passes ONLY the **top 3-5 pre-filtered MBZ candidates** (scored by `mbz.py`) to the LLM.
+- **Conflict Handling**: If the LLM selects an MBZ candidate but detected a discrepancy of more than 2 years between the LOCKED Steam date and the MBZ candidate's date, it MUST flag the album for `REVIEW`.
+
+### 2.3 Gate-based Scoring System
 LLM confidence scores must adhere to a strict threshold:
 - **Rank S (100%)**: Perfect match between Steam, MBZ, and Local Tags. -> **ARCHIVE**
 - **Rank A (95%)**: High consistency, no "Dirty Tags". -> **ARCHIVE**

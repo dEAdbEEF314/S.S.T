@@ -73,237 +73,159 @@ class LocalProcessor:
             return datetime.now(timezone(timedelta(hours=9)))
         return datetime.now(timezone.utc)
 
+    def _fetch_album_artwork(self, steam_meta: SteamMetadata, mbz_candidates: List[Dict]) -> Optional[bytes]:
+        """Prioritizes MBZ artwork, falls back to Steam header."""
+        if mbz_candidates:
+            art_url = self.mbz.get_release_artwork_url(mbz_candidates[0]["mbid"])
+            if art_url:
+                try:
+                    logger.info(f"Downloading album artwork from MusicBrainz: {art_url}")
+                    import requests
+                    r = requests.get(art_url, timeout=15)
+                    if r.status_code == 200: return r.content
+                except Exception as e:
+                    logger.warning(f"Failed to download MusicBrainz artwork: {e}")
+        
+        if steam_meta.header_image_url:
+            try:
+                logger.info(f"Using Steam header image as fallback: {steam_meta.header_image_url}")
+                import requests
+                r = requests.get(steam_meta.header_image_url, timeout=15)
+                if r.status_code == 200: return r.content
+            except Exception as e:
+                logger.warning(f"Failed to download Steam fallback artwork: {e}")
+        return None
+
+    def _build_tag_map(self, app_id: int, disc: int, clean_title: str, adopted_info: Dict, 
+                       steam_meta: SteamMetadata, instr: Dict, mbz_candidates: List[Dict], track_sources: Dict) -> Dict[str, Any]:
+        """Constructs the ID3v2.3 tag map based on merged sources and definitions."""
+        res_title = clean_title
+        res_artist = steam_meta.developer or "Unknown Artist"
+        res_track = str(adopted_info.get("filename_track") or 0)
+        res_disc = f"{disc}/1"
+        
+        action = instr.get("action", "use_local_tag")
+        
+        if action == "use_mbz" and mbz_candidates:
+            try:
+                # SST.md: Top pre-filtered candidate is the primary source
+                mbz_album = mbz_candidates[0]
+                t_idx = instr.get("mbz_track_index", 0)
+                mbz_track = mbz_album["tracks"][t_idx]
+                res_title = mbz_track.get("title", res_title)
+                res_artist = mbz_track.get("artist", res_artist)
+                res_track = str(mbz_track.get("position", res_track))
+                res_disc = f"{mbz_album.get('disc_number', disc)}/{mbz_album.get('total_discs', 1)}"
+            except: pass
+        
+        elif action == "use_local_tag":
+            local_tags = {}
+            tid = f"{disc}_{clean_title}"
+            for s in track_sources.get(tid, []):
+                if s["type"] == "embedded_merged":
+                    local_tags = s.get("tags", {})
+                    break
+            res_title = local_tags.get("title", res_title)
+            res_artist = local_tags.get("artist", res_artist)
+            res_track = str(local_tags.get("track_number", res_track))
+            res_disc = str(local_tags.get("disc_number", res_disc))
+
+        if instr.get("override_title"): res_title = instr["override_title"]
+        if instr.get("override_track"): res_track = str(instr["override_track"])
+
+        raw_genre = instr.get("TCON", steam_meta.genre or steam_meta.parent_genre or 'Soundtrack')
+        final_genre = raw_genre if raw_genre.startswith("STEAM VGM") else f"STEAM VGM, {raw_genre}"
+
+        target_comment_appid = steam_meta.parent_app_id or app_id
+        target_comment_url = f"https://store.steampowered.com/app/{target_comment_appid}"
+        
+        return {
+            "title": res_title.strip(),
+            "artist": res_artist.strip(),
+            "album": steam_meta.name, # LOCKED
+            "album_artist": f"{steam_meta.developer}; {steam_meta.publisher}",
+            "genre": final_genre,
+            "grouping": f"{steam_meta.parent_name or steam_meta.name}; Steam",
+            "comment": f"{steam_meta.parent_name or steam_meta.name}; {', '.join(steam_meta.tags[:10])}; {target_comment_appid}; {target_comment_url}",
+            "composer": instr.get("TCOM", steam_meta.developer or "Unknown"),
+            "year": instr.get("TDRC", steam_meta.release_date[:4] if steam_meta.release_date else str(datetime.now().year)),
+            "track_number": res_track.split('/')[0].strip(),
+            "disc_number": res_disc if "/" in str(res_disc) else f"{res_disc}/1",
+            "language": self.config.user_language_639_2
+        }
+
     def process_album(self, app_id: int, install_dir: Path, steam_meta: SteamMetadata, on_track_complete: Optional[callable] = None) -> LocalProcessResult:
         if not install_dir.exists():
-            return LocalProcessResult(app_id=app_id, status="error", message="Dir not found", confidence_score=0, confidence_reason="FS Error")
+            return LocalProcessResult(app_id=app_id, status="error", album_name=steam_meta.name, message="Dir not found", confidence_score=0)
 
         logger.info(f"--- Processing {steam_meta.name} ({app_id}) ---")
-        
         all_files = self._list_audio_files(install_dir)
-        if not all_files: return LocalProcessResult(app_id=app_id, status="skip", message="No audio", confidence_score=0, confidence_reason="No files")
+        if not all_files: return LocalProcessResult(app_id=app_id, status="skip", album_name=steam_meta.name, message="No audio", confidence_score=0)
 
         track_groups = self._group_by_logical_track(all_files)
         
-        # 1. Collect Sources (Deterministic MBZ Candidates) - Locked for 1req/s
         with LocalProcessor._mbz_lock:
             mbz_candidates, mbz_log = self.mbz.search_release(
-                steam_meta.name, 
-                len(track_groups), 
-                app_id=app_id, 
+                steam_meta.name, len(track_groups), app_id=app_id, 
                 artists=[steam_meta.developer, steam_meta.publisher],
                 year=steam_meta.release_date[:4] if steam_meta.release_date else None,
                 parent_year=steam_meta.parent_release_date[:4] if steam_meta.parent_release_date else None
             )
-            import time
-            time.sleep(1.0) # Strict enforcement
+            time.sleep(1.0)
         
-        # 2. Prepare weighted context for LLM
         track_sources = self._prepare_llm_track_context(track_groups)
-        
-        # 3. LLM Consolidation (Stateful Sequential Pass)
         final_metadata, llm_log = self.llm.consolidate_metadata(steam_meta.model_dump(), track_sources, mbz_candidates)
         
-        status = "archive"
-        message = "Success"
-
         if not final_metadata:
-            status = "review"
-            message = "LLM failed to return valid data or requested review"
-            final_metadata = {}
-        
-        # 4. Conversion, Tagging and Local Packaging
+            return LocalProcessResult(app_id=app_id, status="review", album_name=steam_meta.name, message="LLM Failure", confidence_score=0)
+
         temp_output = self.working_dir / f"final_{app_id}_{datetime.now().strftime('%H%M%S')}"
         temp_output.mkdir(parents=True, exist_ok=True)
-        processed_tracks_meta = [] 
-        adopted_files = self._adopt_optimal_files(track_groups)
-        
-        # Track processing status for cleanup decision
         album_process_status = "unknown"
         
         try:
             tagger = AudioTagger(temp_output)
-            
-            # --- Album-Level Artwork ---
-            album_artwork = None
-            if mbz_candidates:
-                art_url = self.mbz.get_release_artwork_url(mbz_candidates[0]["mbid"])
-                if art_url:
-                    try:
-                        logger.info(f"Downloading album artwork from MusicBrainz: {art_url}")
-                        import requests
-                        r = requests.get(art_url, timeout=15)
-                        if r.status_code == 200: album_artwork = r.content
-                    except Exception as e:
-                        logger.warning(f"Failed to download MusicBrainz artwork: {e}")
-            
-            if not album_artwork and steam_meta.header_image_url:
-                try:
-                    logger.info(f"Using Steam header image as fallback: {steam_meta.header_image_url}")
-                    import requests
-                    r = requests.get(steam_meta.header_image_url, timeout=15)
-                    if r.status_code == 200: album_artwork = r.content
-                except Exception as e:
-                    logger.warning(f"Failed to download Steam fallback artwork: {e}")
+            album_artwork = self._fetch_album_artwork(steam_meta, mbz_candidates)
+            if album_artwork: album_artwork = tagger.process_artwork(album_artwork)
 
-            if album_artwork:
-                album_artwork = tagger.process_artwork(album_artwork)
-
-            # Extract common confidence
-            first_tid = next(iter(final_metadata)) if final_metadata else None
-            conf_score = final_metadata.get(first_tid, {}).get("confidence_score", 0) if first_tid else 0
-            
-            # More detailed reasoning for failures
-            if final_metadata:
-                conf_reason = final_metadata.get(first_tid, {}).get("confidence_reason", "No data")
-            else:
-                p1_err = llm_log.get("phase1_log", {}).get("error")
-                c1_err = llm_log.get("chunks", [{}])[0].get("error")
-                conf_reason = p1_err or c1_err or "LLM provided no metadata"
-
-            # Track audio warnings or critical failures per album
             any_audio_warnings = False
             any_audio_failures = False
 
-            from concurrent.futures import ThreadPoolExecutor
-
             def _process_single_track(track_data):
                 nonlocal any_audio_warnings, any_audio_failures
-                track_key, adopted_info = track_data
-                disc, clean_title = track_key
-                source_path = adopted_info["path"]
-                tier = adopted_info["tier"]
-                
-                # --- Act-13 Hotfix: Local Buffering (Native WSL2 Copy) ---
+                (disc, clean_title), adopted_info = track_data
                 try:
                     local_raw_dir = temp_output / "raw_src" / str(disc)
                     local_raw_dir.mkdir(parents=True, exist_ok=True)
-                    local_source_path = local_raw_dir / source_path.name
+                    local_source_path = local_raw_dir / adopted_info["path"].name
+                    shutil.copy2(adopted_info["path"], local_source_path)
                     
-                    if not local_source_path.exists():
-                        shutil.copy2(source_path, local_source_path)
-                    
-                    # Convert from LOCAL native path
-                    processed_path, has_warnings = tagger.convert_and_limit(local_source_path, tier, subdir=str(disc))
-                    
+                    processed_path, has_warnings = tagger.convert_and_limit(local_source_path, adopted_info["tier"], subdir=str(disc))
                     if has_warnings: any_audio_warnings = True
-                    
-                    # Cleanup local copy immediately
                     if local_source_path.exists(): local_source_path.unlink()
                     
+                    instr = final_metadata.get(f"{disc}_{clean_title}") or {"action": "use_local_tag"}
+                    tag_map = self._build_tag_map(app_id, disc, clean_title, adopted_info, steam_meta, instr, mbz_candidates, track_sources)
+                    
+                    track_art = self._get_best_artwork(track_groups[(disc, clean_title)])
+                    tagger.write_tags(processed_path, tag_map, tagger.process_artwork(track_art) if track_art else album_artwork)
+                    
+                    if on_track_complete: on_track_complete()
+                    
+                    return {"file_path": f"{disc}/{processed_path.name}", "tags": tag_map, "source": instr.get("reason", "Fallback")}
                 except Exception as e:
-                    logger.error(f"Audio processing failed for {source_path.name}: {e}")
+                    logger.error(f"Track failure for {clean_title}: {e}")
                     any_audio_failures = True
                     return None
 
-                track_id_str = f"{disc}_{clean_title}"
-                instr = final_metadata.get(track_id_str) or {"action": "use_local_tag"}
-                
-                # Tag Resolution Logic
-                res_title = clean_title
-                res_artist = steam_meta.developer or "Unknown Artist"
-                res_track = str(adopted_info.get("filename_track") or 0)
-                res_disc = f"{disc}/1"
-                
-                action = instr.get("action", "use_local_tag")
-                
-                if action == "use_mbz" and mbz_candidates:
-                    try:
-                        mbz_album = mbz_candidates[0]
-                        t_idx = instr.get("mbz_track_index", 0)
-                        mbz_track = mbz_album["tracks"][t_idx]
-                        res_title = mbz_track.get("title", res_title)
-                        res_artist = mbz_track.get("artist", res_artist)
-                        res_track = str(mbz_track.get("position", res_track))
-                        res_disc = f"{mbz_album.get('disc_number', disc)}/{mbz_album.get('total_discs', 1)}"
-                    except: pass
-                
-                elif action == "use_local_tag":
-                    local_tags = {}
-                    for s in track_sources.get(track_id_str, []):
-                        if s["type"] == "embedded_merged":
-                            local_tags = s.get("tags", {})
-                            break
-                    res_title = local_tags.get("title", res_title)
-                    res_artist = local_tags.get("artist", res_artist)
-                    res_track = str(local_tags.get("track_number", res_track))
-                    res_disc = str(local_tags.get("disc_number", res_disc))
-
-                if instr.get("override_title"): res_title = instr["override_title"]
-                if instr.get("override_track"): res_track = str(instr["override_track"])
-
-                raw_genre = instr.get("TCON", steam_meta.genre or steam_meta.parent_genre or 'Soundtrack')
-                final_genre = raw_genre if raw_genre.startswith("STEAM VGM") else f"STEAM VGM, {raw_genre}"
-
-                target_comment_appid = steam_meta.parent_app_id or app_id
-                target_comment_url = f"https://store.steampowered.com/app/{target_comment_appid}"
-                
-                tag_map = {
-                    "title": res_title.strip(),
-                    "artist": res_artist.strip(),
-                    "album": steam_meta.name,
-                    "album_artist": f"{steam_meta.developer}; {steam_meta.publisher}" if steam_meta.developer and steam_meta.publisher else instr.get("TPE2", "Unknown Artist"),
-                    "genre": final_genre,
-                    "grouping": f"{steam_meta.parent_name or steam_meta.name}; Steam",
-                    "comment": f"{steam_meta.parent_name or steam_meta.name}; {', '.join(steam_meta.tags[:10])}; {target_comment_appid}; {target_comment_url}",
-                    "composer": instr.get("TCOM", steam_meta.developer or "Unknown"),
-                    "year": instr.get("TDRC", steam_meta.release_date[:4] if steam_meta.release_date else str(datetime.now().year)),
-                    "track_number": res_track.split('/')[0].strip(),
-                    "disc_number": res_disc if "/" in str(res_disc) else f"{res_disc}/1",
-                    "language": self.config.user_language_639_2
-                }
-                
-                track_artwork = self._get_best_artwork(track_groups[track_key])
-                final_art = tagger.process_artwork(track_artwork) if track_artwork else album_artwork
-
-                tagger.write_tags(processed_path, tag_map, final_art)
-                
-                if on_track_complete:
-                    on_track_complete()
-                
-                return {
-                    "file_path": f"{disc}/{processed_path.name}",
-                    "original_filename": source_path.name,
-                    "tags": tag_map,
-                    "source": instr.get("reason", "System Fallback")
-                }
-
+            from concurrent.futures import ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=self.config.max_encoding_tasks) as executor:
-                processed_tracks_meta = [t for t in executor.map(_process_single_track, adopted_files.items()) if t]
+                processed_tracks_meta = [t for t in executor.map(_process_single_track, self._adopt_optimal_files(track_groups).items()) if t]
 
-            # --- Validation Loop (Semantic Labeling Implementation) ---
-            zero_tracks = 0
-            unknown_titles = 0
-            for t in processed_tracks_meta:
-                if t["tags"]["title"] == "Unknown": unknown_titles += 1
-                if t["tags"]["track_number"] == "0": zero_tracks += 1
-
-            if zero_tracks > 0 or unknown_titles > 0:
-                status = "review"
-                # Extract semantic label from LLM if available
-                semantic_label = final_metadata.get(first_tid, {}).get("semantic_label") if first_tid else None
-                
-                issue_details = []
-                if zero_tracks > 0: issue_details.append(f"Track#0 x{zero_tracks}")
-                if unknown_titles > 0: issue_details.append(f"Unknown Title x{unknown_titles}")
-                
-                base_msg = f"[{', '.join(issue_details)}]"
-                message = f"{semantic_label} {base_msg}" if semantic_label else f"Missing mandatory metadata {base_msg}"
-            
-            # Act-13 Hotfix: Append audio warning notice or CRITICAL failure
-            if any_audio_failures:
-                status = "review"
-                message = f"{message} [CRITICAL: Audio Source Error - Re-download recommended]" if message != "Success" else "[CRITICAL: Audio Source Error - Re-download recommended]"
-            elif any_audio_warnings:
-                status = "review"
-                message = f"{message} [Audio Warnings detected]" if message != "Success" else "Audio quality warning detected"
-
-            # Final confidence check (if not already review)
-            if status != "review" and conf_score < 80:
-                status = "review"
-                message = f"Low confidence ({conf_score}): {conf_reason}"
-            elif status == "review" and conf_score == 0 and not any_audio_warnings and not any_audio_failures:
-                # Preservation of physical failure reasons
-                message = f"Incomplete result: {conf_reason}"
+            # Final Validation & Results
+            status, message, conf_score, conf_reason = self._validate_results(
+                processed_tracks_meta, final_metadata, any_audio_failures, any_audio_warnings
+            )
 
             summary_meta = {
                 "app_id": app_id, "album_name": steam_meta.name, "status": status,
@@ -312,41 +234,11 @@ class LocalProcessor:
                 "steam_info": steam_meta.model_dump()
             }
             
-            # --- Act-13: Send Discord Notification ---
-            fields = [
-                {"name": "AppID", "value": str(app_id), "inline": True},
-                {"name": "Status", "value": status.upper(), "inline": True},
-                {"name": "Confidence", "value": f"{conf_score}%", "inline": True},
-                {"name": "Reasoning", "value": conf_reason[:1024], "inline": False}
-            ]
+            self._send_notifications(app_id, steam_meta.name, status, message, conf_score, conf_reason)
             
-            if status == "review":
-                self.notifier.notify_warning(f"Review Required: {steam_meta.name}", message, fields)
-            else:
-                self.notifier.notify_info(f"Archived: {steam_meta.name}", f"Quality Check: {conf_score}%", fields)
-
-            from textwrap import dedent
-            basis_content = dedent(f"""\
-                # Basis for Classification: {steam_meta.name}
-
-                ## Classification Result
-                - **Status**: {status.upper()}
-                - **Confidence Score**: {conf_score}/100
-                - **Primary Reason**: {message}
-                - **LLM Reasoning**: {conf_reason}
-
-                ## Investigation Links
-                - [Search VGMdb](https://vgmdb.net/search?q={steam_meta.name.replace(" ", "+")})
-                - [Search MusicBrainz](https://musicbrainz.org/search?type=release&query={steam_meta.name.replace(" ", "+")})
-                - [Steam Store Page]({steam_meta.url})
-
-                ## Album Context
-                - **AppID**: {app_id}
-                - **Parent Game**: {steam_meta.parent_name or 'N/A'} ({steam_meta.parent_app_id or 'N/A'})
-                - **Track Count**: {len(processed_tracks_meta)}
-                - **Language Settings**: {self.config.user_language}
-            """)
-
+            # Basis for Classification
+            basis_content = self._generate_classification_basis(app_id, steam_meta, status, message, conf_score, conf_reason, len(processed_tracks_meta))
+            
             log_bundle = {
                 "llm_log.json": llm_log, 
                 "mbz_log.json": mbz_log, 
@@ -356,38 +248,96 @@ class LocalProcessor:
             self._save_local_package(app_id, status, steam_meta.name, temp_output, log_bundle)
             self._record_processed(app_id, status, steam_meta.name, summary_meta)
             album_process_status = status
-            return LocalProcessResult(
-                app_id=app_id, status=status, album_name=steam_meta.name, 
-                confidence_score=conf_score, confidence_reason=conf_reason,
-                message=message, processed_at=self._get_localized_now()
-            )
+            
+            return LocalProcessResult(app_id=app_id, status=status, album_name=steam_meta.name, 
+                                     confidence_score=conf_score, confidence_reason=conf_reason, message=message)
 
         except Exception as e:
             album_process_status = "error"
-            logger.error(f"Critical failure for {app_id}: {e}")
+            logger.error(f"Process failed for {app_id}: {e}")
             self.notifier.notify_critical(f"Process Failed: {app_id}", str(e))
-            import traceback
-            logger.error(traceback.format_exc())
-            return LocalProcessResult(
-                app_id=app_id, status="error", album_name=steam_meta.name, 
-                confidence_score=0, confidence_reason=str(e),
-                message=str(e), processed_at=self._get_localized_now()
-            )
+            return LocalProcessResult(app_id=app_id, status="error", album_name=steam_meta.name, message=str(e))
         finally:
             if self.config.env_mode == "development" and album_process_status == "error":
-                logger.warning(f"Development Mode: Preserving temp directory for debugging: {temp_output}")
+                logger.warning(f"Dev Mode: Preserving {temp_output}")
             else:
                 if temp_output.exists(): shutil.rmtree(temp_output)
 
+    def _validate_results(self, tracks, llm_data, audio_fail, audio_warn) -> Tuple[str, str, int, str]:
+        """Applies SST.md strict gates."""
+        status = "archive"
+        message = "Success"
+        
+        first_tid = next(iter(llm_data)) if llm_data else None
+        conf_score = llm_data.get(first_tid, {}).get("confidence_score", 0) if first_tid else 0
+        conf_reason = llm_data.get(first_tid, {}).get("confidence_reason", "No data") if first_tid else "N/A"
+        
+        zero_tracks = sum(1 for t in tracks if t["tags"]["track_number"] == "0")
+        unknown_titles = sum(1 for t in tracks if t["tags"]["title"] == "Unknown")
+        dirty_pattern = re.compile(r'^\d+\s*[-.]\s*')
+        dirty_tags = sum(1 for t in tracks if dirty_pattern.match(t["tags"]["title"]))
+
+        if zero_tracks > 0 or unknown_titles > 0 or dirty_tags > 0:
+            status = "review"
+            issues = []
+            if zero_tracks > 0: issues.append(f"Track#0 x{zero_tracks}")
+            if unknown_titles > 0: issues.append(f"Unknown Title x{unknown_titles}")
+            if dirty_tags > 0: issues.append(f"Dirty Tags x{dirty_tags}")
+            semantic_label = llm_data.get(first_tid, {}).get("semantic_label") if first_tid else None
+            message = f"{semantic_label} [{', '.join(issues)}]" if semantic_label else f"Metadata anomalies: [{', '.join(issues)}]"
+
+        if audio_fail:
+            status = "review"
+            message = "[CRITICAL: Audio Source Error]"
+        elif audio_warn:
+            status = "review"
+            message = "Audio quality warning detected"
+
+        if status == "archive" and conf_score < 95:
+            status = "review"
+            message = f"Low confidence ({conf_score}%): {conf_reason}"
+
+        return status, message, conf_score, conf_reason
+
+    def _send_notifications(self, app_id, name, status, message, score, reason):
+        fields = [{"name": "AppID", "value": str(app_id), "inline": True},
+                  {"name": "Status", "value": status.upper(), "inline": True},
+                  {"name": "Confidence", "value": f"{score}%", "inline": True},
+                  {"name": "Reasoning", "value": reason[:1024], "inline": False}]
+        if status == "review":
+            self.notifier.notify_warning(f"Review Required: {name}", message, fields)
+        else:
+            self.notifier.notify_info(f"Archived: {name}", f"Quality Check: {score}%", fields)
+
+    def _generate_classification_basis(self, app_id, steam_meta, status, message, score, reason, count):
+        from textwrap import dedent
+        return dedent(f"""\
+            # Basis for Classification: {steam_meta.name}
+
+            ## Classification Result
+            - **Status**: {status.upper()}
+            - **Confidence Score**: {score}/100
+            - **Primary Reason**: {message}
+            - **LLM Reasoning**: {reason}
+
+            ## Investigation Links
+            - [Search VGMdb](https://vgmdb.net/search?q={steam_meta.name.replace(" ", "+")})
+            - [Search MusicBrainz](https://musicbrainz.org/search?type=release&query={steam_meta.name.replace(" ", "+")})
+            - [Steam Store Page]({steam_meta.url})
+
+            ## Album Context
+            - **AppID**: {app_id}
+            - **Parent Game**: {steam_meta.parent_name or 'N/A'} ({steam_meta.parent_app_id or 'N/A'})
+            - **Track Count**: {count}
+            - **Language Settings**: {self.config.user_language}
+        """)
+
     def _prepare_llm_track_context(self, track_groups: Dict) -> Dict[str, List[Dict[str, Any]]]:
-        """Merges redundant tags across formats and prepares lean context."""
         context = {}
         for (disc, clean_title), variants in track_groups.items():
             tid = f"{disc}_{clean_title}"
             sources = []
             avg_duration = sum(v["duration"] for v in variants) / len(variants)
-            
-            # --- Act-11 Hotfix: Tag Merging across formats (Narita Boy Fix) ---
             merged_tags = {}
             for v in variants:
                 if v["meta"]:
@@ -395,31 +345,16 @@ class LocalProcessor:
                         if val and str(val).lower() not in ["", "none", "unknown", "0"]:
                             if key not in merged_tags: merged_tags[key] = val
 
-            # Source A: Filename (Weak)
             sources.append({
-                "type": "filename",
-                "content": variants[0]["path"].name,
+                "type": "filename", "content": variants[0]["path"].name,
                 "inferred_track_num": variants[0].get("filename_track"),
-                "duration": round(avg_duration, 2),
-                "weight": "weak"
+                "duration": round(avg_duration, 2), "weight": "weak"
             })
-            
-            # Source B: Merged Tags (Strong/Moderate)
             if merged_tags:
-                sources.append({
-                    "type": "embedded_merged",
-                    "tags": merged_tags,
-                    "duration": round(avg_duration, 2),
-                    "weight": "strong" if len(variants) > 1 else "moderate"
-                })
+                sources.append({"type": "embedded_merged", "tags": merged_tags,
+                                "duration": round(avg_duration, 2), "weight": "strong" if len(variants) > 1 else "moderate"})
             else:
-                # Act-11 Hotfix: Tag Nullification Guard
-                sources.append({
-                    "type": "no_tags_found",
-                    "content": "No embedded metadata found in any format for this track.",
-                    "weight": "critical_missing"
-                })
-            
+                sources.append({"type": "no_tags_found", "content": "No metadata found", "weight": "critical_missing"})
             context[tid] = sources
         return context
 
@@ -457,11 +392,9 @@ class LocalProcessor:
         for f in files:
             meta = EmbeddedMetadataExtractor.extract(f)
             fn_track = re.match(r'^(\d+)', f.stem)
-            
             disc_num = self._safe_int_track(meta.get("disc_number", 1)) or 1
             clean_stem = re.sub(r'^(\d+[\s.-]+)+', '', f.stem).strip().lower()
             key = (disc_num, clean_stem)
-            
             if key not in groups: groups[key] = []
             groups[key].append({
                 "path": f, "meta": meta, "duration": self._get_duration(f), 
@@ -502,15 +435,11 @@ class LocalProcessor:
 
     def _save_local_package(self, app_id: int, status: str, album_name: str, source_dir: Path, logs: Dict[str, Any]):
         try:
-            # 1. Prepare final destination
             output_base = Path("output") / status
             output_base.mkdir(parents=True, exist_ok=True)
             safe_name = "".join([c if c.isalnum() or c in ".-_" else "_" for c in album_name])
             final_zip_path = output_base / f"{app_id}_{safe_name}.zip"
-
-            # 2. Create ZIP in NATIVE temp directory first (Faster and safer)
             temp_zip_base = source_dir.parent / f"bundle_{app_id}"
-            
             for log_name, log_content in logs.items():
                 if log_content:
                     log_file = source_dir / log_name
@@ -519,14 +448,8 @@ class LocalProcessor:
                             json.dump(log_content, f, indent=2, ensure_ascii=False)
                     else:
                         log_file.write_text(str(log_content), encoding="utf-8")
-
-            # Perform compression on native FS
             archive_result = shutil.make_archive(str(temp_zip_base), 'zip', source_dir)
-            temp_zip_file = Path(archive_result)
-
-            # 3. Move the completed ZIP to the final destination (Atomic)
-            shutil.move(str(temp_zip_file), str(final_zip_path))
-            
+            shutil.move(str(archive_result), str(final_zip_path))
             logger.info(f"Local package saved: {final_zip_path}")
         except Exception as e:
             logger.error(f"Failed to save local package for {app_id}: {e}")
