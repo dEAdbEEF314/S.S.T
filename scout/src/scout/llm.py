@@ -82,7 +82,7 @@ class DistributedRateLimiter:
             time.sleep(max(0.1, wait))
 
 class LLMOrganizer:
-    def __init__(self, api_key: str, base_url: str, storage: Any = None, 
+    def __init__(self, api_key: str, base_url: str, 
                  model: str = "gemma-4-31b-it", 
                  rpm: int = 15, tpm: int = 10000000, rpd: int = 1500,
                  user_language: str = "ja",
@@ -242,6 +242,9 @@ Return ONLY a valid JSON object:
                     content = response.json().get("choices", [{}])[0].get("message", {}).get("content", "")
                     if not content or not content.strip(): raise ValueError("Empty response")
                     log_entry["response"] = content
+                    
+                    # Act-14: Detailed debug logging of raw response
+                    logger.debug(f"LLM Raw Response ({self.model}): {content[:500]}...")
                     
                     # Robust Extract
                     clean_content = re.sub(r'<(thought|reasoning)>.*?</\1>', '', content, flags=re.DOTALL | re.IGNORECASE)
