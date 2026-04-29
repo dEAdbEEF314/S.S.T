@@ -87,7 +87,8 @@ def show_detail(db_path: Path, app_id: int):
         track_table.add_column("Reason")
         
         for t in review_tracks:
-            track_table.add_row(t["original_filename"], t.get("source", "Unknown error"))
+            filename = t.get("original_filename") or t.get("file_path") or "Unknown"
+            track_table.add_row(filename, t.get("source", "Unknown error"))
         console.print(track_table)
     else:
         console.print("\n[green]No track-level issues detected.[/green]")

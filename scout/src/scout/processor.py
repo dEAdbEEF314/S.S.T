@@ -6,6 +6,7 @@ import tempfile
 import sqlite3
 import json
 import threading
+import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
@@ -177,7 +178,18 @@ class LocalProcessor:
         final_metadata, llm_log = self.llm.consolidate_metadata(steam_meta.model_dump(), track_sources, mbz_candidates)
         
         if not final_metadata:
-            return LocalProcessResult(app_id=app_id, status="review", album_name=steam_meta.name, message="LLM Failure", confidence_score=0)
+            p1_log = llm_log.get("phase1_log", {})
+            error_msg = p1_log.get("error") or "Manual Review Required"
+            summary_meta = {
+                "app_id": app_id, "album_name": steam_meta.name, "status": "review",
+                "confidence_score": 0, "confidence_reason": error_msg,
+                "processed_at": self._get_localized_now().isoformat(), "tracks": [],
+                "steam_info": steam_meta.model_dump()
+            }
+            self._record_processed(app_id, "review", steam_meta.name, summary_meta)
+            return LocalProcessResult(app_id=app_id, status="review", album_name=steam_meta.name, 
+                                     confidence_score=0, confidence_reason=error_msg, 
+                                     message=f"LLM Failure: {error_msg}", processed_at=self._get_localized_now())
 
         temp_output = self.working_dir / f"final_{app_id}_{datetime.now().strftime('%H%M%S')}"
         temp_output.mkdir(parents=True, exist_ok=True)
@@ -212,7 +224,12 @@ class LocalProcessor:
                     
                     if on_track_complete: on_track_complete()
                     
-                    return {"file_path": f"{disc}/{processed_path.name}", "tags": tag_map, "source": instr.get("reason", "Fallback")}
+                    return {
+                        "file_path": f"{disc}/{processed_path.name}", 
+                        "original_filename": local_source_path.name,
+                        "tags": tag_map, 
+                        "source": instr.get("reason", "Fallback")
+                    }
                 except Exception as e:
                     logger.error(f"Track failure for {clean_title}: {e}")
                     any_audio_failures = True
