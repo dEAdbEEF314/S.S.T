@@ -22,10 +22,23 @@ The following fields from the Steam Store API are absolute truths:
 - **Steam IDs**: `app_id`, `parent_app_id`
 - **Comment/Grouping Metadata**: Must reference the **Parent Game** details. If `parent_app_id` is missing, fallback to using the soundtrack's own AppID and Name.
 
-### 2.2 MusicBrainz Candidates & Conflict Resolution
-- **Steam Date is LOCKED**: The release year from Steam is the ultimate truth for the `TDRC` tag.
-- **Candidate Passing**: To prevent context bloat and focus the LLM's attention, the system pre-filters candidates and passes ONLY the **top 3-5 pre-filtered MBZ candidates** (scored by `mbz.py`) to the LLM.
-- **Conflict Handling**: If the LLM selects an MBZ candidate but detected a discrepancy of more than 2 years between the LOCKED Steam date and the MBZ candidate's date, it MUST flag the album for `REVIEW`.
+### 2.2 Hybrid Scoring System
+To ensure absolute reliability, the system employs a two-stage evaluation process:
+
+#### Stage 1: Python Mathematical Sieve (Calculated in `mbz.py`)
+Python calculates a deterministic score for each MusicBrainz candidate based on physical evidence:
+- **AppID Match (+500)**: Direct Steam AppID link in `url-rels`.
+- **Parent AppID Match (+300)**: Link to the parent game AppID in `url-rels`.
+- **Bandcamp Bonus (+100)**: Official Bandcamp link in `url-rels`.
+- **Title Similarity (0 to +100)**: Highest `SequenceMatcher` score against Steam Name or Local Tags.
+- **Structural Alignment (+50)**: Exact track count match. (Subtracts 10 per track discrepancy).
+- **Tracklist Fingerprint (+200)**: Awarded if the average similarity of track titles exceeds 80%.
+
+#### Stage 2: LLM Semantic Audit (Calculated in `llm.py`)
+The LLM acts as the final arbiter on a pre-sorted shortlist (Top 3-5 candidates):
+- **Translation Matching**: Resolves linguistic differences (e.g., "Battle" vs "戦闘").
+- **Tag Hygiene**: Identifies "Dirty Tags" or other subtle anomalies.
+- **Final Judgment**: Assigns the final rank (S, A, B, or C).
 
 ### 2.3 Gate-based Scoring System
 LLM confidence scores must adhere to a strict threshold:
