@@ -37,7 +37,7 @@ class LocalProcessor:
         return datetime.now(timezone(timedelta(hours=9))) if os.environ.get("TZ") == "Asia/Tokyo" else datetime.now(timezone.utc)
 
     def process_album(self, app_id: int, install_dir: Path, steam_meta: SteamMetadata, on_track_complete: Optional[callable] = None) -> LocalProcessResult:
-        logger.info(f"--- Processing {steam_meta.name} ({app_id}) ---")
+        logger.info(f"[{app_id}] --- Processing {steam_meta.name} ---")
         
         try:
             all_files = self._list_audio_files(install_dir)
@@ -60,7 +60,7 @@ class LocalProcessor:
             track_sources = self._prepare_llm_track_context(track_groups)
             
             # 2. LLM Decision
-            final_metadata, llm_log = self.llm.consolidate_metadata(steam_meta.model_dump(), track_sources, mbz_candidates)
+            final_metadata, llm_log = self.llm.consolidate_metadata(app_id, steam_meta.model_dump(), track_sources, mbz_candidates)
             
             if final_metadata is None:
                 p1_log = llm_log.get("phase1_log", {})
@@ -84,6 +84,7 @@ class LocalProcessor:
                 nonlocal any_audio_warnings, any_audio_failures
                 (disc, clean_title), adopted_info = track_data
                 try:
+                    # Native Buffering
                     local_raw_dir = temp_output / "raw_src" / str(disc)
                     local_raw_dir.mkdir(parents=True, exist_ok=True)
                     local_source_path = local_raw_dir / adopted_info["path"].name
@@ -116,7 +117,7 @@ class LocalProcessor:
                     processed_tracks_meta = [t for t in executor.map(_process_single_track, self._adopt_optimal_files(track_groups).items()) if t]
 
             # 4. Final Validation (STRICT GATES)
-            status, message, score, reason = self._validate_results(processed_tracks_meta, final_metadata, any_audio_failures, any_audio_warnings, llm_log)
+            status, message, score, reason = self._validate_results(app_id, processed_tracks_meta, final_metadata, any_audio_failures, any_audio_warnings, llm_log, mbz_candidates)
 
             # 5. Result Preservation
             summary_meta = {"app_id": app_id, "album_name": steam_meta.name, "status": status, "confidence_score": score, 
@@ -134,7 +135,7 @@ class LocalProcessor:
             return LocalProcessResult(app_id=app_id, status=status, album_name=steam_meta.name, confidence_score=score, confidence_reason=reason, message=message)
 
         except Exception as e:
-            logger.error(f"Critical failure for {app_id}: {e}", exc_info=True)
+            logger.error(f"[{app_id}] Critical failure: {e}", exc_info=True)
             self.notifier.notify_critical(f"Process Failed: {app_id}", str(e))
             return LocalProcessResult(app_id=app_id, status="error", album_name=steam_meta.name, message=str(e))
         finally:
@@ -158,26 +159,40 @@ class LocalProcessor:
             return Counter(lst).most_common(1)[0][0] if lst else None
         return {"album": most_common(albums), "artist": most_common(artists), "year": most_common(years), "tracks": track_names}
 
-    def _validate_results(self, tracks, llm_data, audio_fail, audio_warn, llm_log) -> Tuple[str, str, int, str]:
+    def _validate_results(self, app_id, tracks, llm_data, audio_fail, audio_warn, llm_log, mbz_candidates) -> Tuple[str, str, int, str]:
         p1_res = llm_log.get("phase1_res", {})
-        score = int(p1_res.get("confidence_score", 0))
+        id_conf = int(p1_res.get("identity_confidence", 0))
+        quality = int(p1_res.get("integrity_quality", 0))
         reason = p1_res.get("confidence_reason", "No LLM response")
         label = p1_res.get("semantic_label", "Review")
         ratio = p1_res.get("archive_vs_review_ratio", {"archive": 0, "review": 0})
         
-        if score < 95 or ratio.get("archive", 0) < 95:
-            return "review", f"[{label}] {reason}", score, reason
+        # Act-14 Cycle 5 Gate: Balanced Audit
+        if id_conf < 95 or ratio.get("archive", 0) < 90 or p1_res.get("strategy") == "REVIEW_REQUIRED":
+            return "review", f"[{label}] {reason}", id_conf, reason
 
         status, message = "archive", "Success"
+        
+        # Physical Anomaly Detection
         z_count = sum(1 for t in tracks if str(t["tags"].get("track_number")) == "0")
         u_count = sum(1 for t in tracks if (t["tags"].get("title") or "Unknown") == "Unknown")
         
-        dirty_pattern = re.compile(r'^\d+\s*[-.]\s*')
+        # Smart Dirty Tags (Shared Spec)
+        dirty_pattern = re.compile(r'^(\d+[\s.-]+)')
         d_count = 0
+        
+        chosen_mbz_idx = p1_res.get("global_tags", {}).get("chosen_mbz_index")
+        mbz_tracks = []
+        if mbz_candidates and chosen_mbz_idx is not None and chosen_mbz_idx < len(mbz_candidates):
+            mbz_tracks = [str(t.get("title", "")).lower() for t in mbz_candidates[chosen_mbz_idx].get("tracks", [])]
+
         for t in tracks:
-            title = t["tags"].get("title")
-            if title and dirty_pattern.match(str(title)):
-                d_count += 1
+            title = t["tags"].get("title", "")
+            match = dirty_pattern.match(str(title))
+            if match:
+                # Shared Spec: If the official MBZ track also has this pattern, it's not "dirty"
+                if str(title).lower() not in mbz_tracks:
+                    d_count += 1
 
         if z_count > 0 or u_count > 0 or d_count > 0:
             status = "review"
@@ -192,32 +207,37 @@ class LocalProcessor:
         elif audio_warn: 
             status, message = "review", "Audio quality warning detected"
 
-        return status, message, score, reason
+        return status, message, id_conf, reason
 
     def _send_notifications(self, app_id, name, status, message, score, reason, llm_log, any_audio_failures):
         p1_res = llm_log.get("phase1_res", {})
+        id_conf = p1_res.get("identity_confidence", 0)
+        quality = p1_res.get("integrity_quality", 0)
         ratio = p1_res.get("archive_vs_review_ratio", {"archive": 0, "review": 0})
-        ratio_str = f"Archive {ratio.get('archive', 0)}% : Review {ratio.get('review', 0)}%"
+        ratio_str = f"Arch {ratio.get('archive', 0)}% : Rev {ratio.get('review', 0)}%"
 
         fields = [
             {"name": "AppID", "value": str(app_id), "inline": True},
             {"name": "Status", "value": status.upper(), "inline": True},
-            {"name": "Deduction Score", "value": f"{score}%", "inline": True},
-            {"name": "Judgment Ratio", "value": ratio_str, "inline": False},
-            {"name": "Reasoning", "value": reason[:1024], "inline": False}
+            {"name": "ID/Qual", "value": f"{id_conf}% / {quality}%", "inline": True},
+            {"name": "Ratio", "value": ratio_str, "inline": False},
+            {"name": "Reason", "value": reason[:1024], "inline": False}
         ]
         if any_audio_failures: fields.append({"name": "⚠️ ALERT", "value": "Track-level failures occurred.", "inline": False})
         if status == "review": self.notifier.notify_warning(f"Review Required: {name}", message, fields)
-        else: self.notifier.notify_info(f"Archived: {name}", f"Quality Check: {score}%", fields)
+        else: self.notifier.notify_info(f"Archived: {name}", f"Quality Check: {id_conf}%", fields)
 
     def _generate_classification_basis(self, app_id, steam_meta, status, message, score, reason, count, llm_log):
         p1_res = llm_log.get("phase1_res", {})
+        id_conf = p1_res.get("identity_confidence", 0)
+        quality = p1_res.get("integrity_quality", 0)
         ratio = p1_res.get("archive_vs_review_ratio", {"archive": 0, "review": 0})
         from textwrap import dedent
         return dedent(f"""\
             # Basis for Classification: {steam_meta.name}
             - **Status**: {status.upper()}
-            - **Deduction Score**: {score}/100
+            - **Identity Confidence**: {id_conf}/100
+            - **Integrity Quality**: {quality}/100
             - **Judgment Ratio**: Archive {ratio.get('archive', 0)}% / Review {ratio.get('review', 0)}%
             - **Summary**: {message}
             - **LLM Reasoning**: {reason}

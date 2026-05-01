@@ -9,6 +9,7 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "boto3>=1.42.89",
+    "json-repair>=0.30.0",
     "minio>=7.2.20",
     "musicbrainzngs>=0.7.1",
     "mutagen>=1.47.0",
