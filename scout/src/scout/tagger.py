@@ -1,189 +1,83 @@
 import os
 import subprocess
 import logging
+import shutil
 from pathlib import Path
-from PIL import Image
-from typing import Optional, Tuple, Dict
-from mutagen.id3 import ID3, TIT2, TPE1, TALB, TPE2, TCON, TIT1, COMM, TCOM, TDRC, TRCK, TPOS, TXXX, APIC
+from typing import Dict, Any, Optional, Tuple
 
-logger = logging.getLogger(__name__)
-
-# Constants for quality limits
-MAX_SAMPLE_RATE = "48000"
-MP3_BITRATE = "320k"
-TARGET_IMAGE_SIZE = (500, 500)
+logger = logging.getLogger("scout.tagger")
 
 class AudioTagger:
     def __init__(self, output_dir: Path):
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir = output_dir
 
-    def process_artwork(self, source_img_data: bytes) -> bytes:
-        """Resizes to 500x500. If square, stretches to fill. If not, pads with black."""
-        import io
+    def process_artwork(self, raw_data: bytes) -> Optional[Path]:
+        if not raw_data: return None
         try:
-            with Image.open(io.BytesIO(source_img_data)) as img:
-                # Convert to RGB to ensure black background consistency
-                img = img.convert("RGB")
+            art_path = self.output_dir / "cover_temp.jpg"
+            with open(art_path, "wb") as f:
+                f.write(raw_data)
+            return art_path
+        except: return None
 
-                width, height = img.size
-                aspect_ratio = width / height
-
-                # If nearly square (within 1% tolerance), force resize to fill 500x500
-                if 0.99 <= aspect_ratio <= 1.01:
-                    img = img.resize(TARGET_IMAGE_SIZE, Image.Resampling.LANCZOS)
-                    new_img = img
-                else:
-                    # Maintain aspect ratio, scaling longest side to 500
-                    img.thumbnail(TARGET_IMAGE_SIZE, Image.Resampling.LANCZOS)
-                    # Create black background
-                    new_img = Image.new("RGB", TARGET_IMAGE_SIZE, (0, 0, 0))
-                    # Center the image
-                    x = (TARGET_IMAGE_SIZE[0] - img.width) // 2
-                    y = (TARGET_IMAGE_SIZE[1] - img.height) // 2
-                    new_img.paste(img, (x, y))
-
-                output = io.BytesIO()
-                new_img.save(output, format="PNG")
-                return output.getvalue()
-        except Exception as e:
-            logger.error(f"Artwork processing failed: {e}")
-            return source_img_data
-
-
-    def convert_and_limit(self, source_path: Path, quality_tier: str, subdir: str = "") -> Tuple[Path, bool]:
+    def convert_and_limit(self, source_path: Path, tier: str, subdir: str = "") -> Tuple[Path, bool]:
         """
-        Converts audio based on quality tier and strict constraints.
-        Returns (Path, has_warnings)
+        Converts to AIFF (lossless) or MP3 (lossy) using FFmpeg.
+        Returns (output_path, has_warnings).
         """
-        target_ext = ".aiff" if quality_tier == "lossless" else ".mp3"
-        
-        dest_dir = self.output_dir / subdir if subdir else self.output_dir
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        
-        target_path = dest_dir / source_path.with_suffix(target_ext).name
-        
-        if source_path.suffix.lower() == ".mp3" and target_ext == ".mp3":
-            import shutil
-            try:
-                shutil.copy2(source_path, target_path)
-                return target_path, False
-            except Exception as e:
-                logger.error(f"Failed to copy MP3: {e}")
-        
-        # FFmpeg command for strict limits
-        cmd = ["ffmpeg", "-i", str(source_path), "-y", "-loglevel", "warning"]
+        target_ext = ".aif" if tier == "lossless" else ".mp3"
+        out_rel_dir = self.output_dir / subdir
+        out_rel_dir.mkdir(parents=True, exist_ok=True)
+        target_path = out_rel_dir / (source_path.stem + target_ext)
 
-        if quality_tier == "lossless":
-            cmd += ["-ar", "48000", "-resampler", "soxr", "-c:a", "pcm_s24be", "-write_id3v2", "1", str(target_path)]
+        # Basic command
+        cmd = ["ffmpeg", "-y", "-i", str(source_path)]
+        
+        if tier == "lossless":
+            cmd += ["-write_id3v2", "1", "-id3v2_version", "3"]
         else:
-            cmd += ["-ar", "48000", "-resampler", "soxr", "-codec:a", "libmp3lame", "-b:a", "320k", str(target_path)]
+            cmd += ["-codec:a", "libmp3lame", "-qscale:a", "2"]
+
+        cmd.append(str(target_path))
+        
+        process = subprocess.run(cmd, capture_output=True, text=True)
+        has_warnings = False
+        if process.stderr:
+            # Check for critical decoding errors
+            if "Decoding error" in process.stderr or "invalid rice order" in process.stderr:
+                logger.warning(f"FFmpeg warnings for {source_path.name}: {process.stderr}")
+                has_warnings = True
+        
+        return target_path, has_warnings
+
+    def write_tags(self, file_path: Path, tag_map: Dict[str, Any], artwork_path: Optional[Path] = None):
+        from mutagen.id3 import ID3, TIT2, TPE1, TALB, TCON, TDRC, TRCK, TPOS, COMM, TPE2, TCOM, APIC, TIT1
+        from mutagen.aiff import AIFF
+        from mutagen.mp3 import MP3
 
         try:
-            # Capture output to prevent console pollution
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-            has_warnings = False
-            if result.stderr:
-                # Log detailed warnings to file logger ONLY
-                if any(w in result.stderr for w in ["invalid rice order", "decode_frame() failed", "mimetype"]):
-                    logger.debug(f"FFmpeg warnings for {source_path.name}: {result.stderr}")
-                    has_warnings = True
-            return target_path, has_warnings
-        except subprocess.CalledProcessError as e:
-            logger.error(f"FFmpeg failed for {source_path}: {e.stderr}")
-            raise
+            audio = AIFF(file_path) if file_path.suffix == ".aif" else MP3(file_path)
+            if audio.tags is None: audio.add_tags()
+            tags = audio.tags
 
-    def write_tags(self, file_path: Path, tags: dict, artwork_data: Optional[bytes] = None):
-        """Writes ID3v2.3 tags with strict field mapping. Supports MP3 and AIFF."""
-        from mutagen import File
-        from mutagen.id3 import ID3, TIT2, TPE1, TALB, TPE2, TCON, TIT1, COMM, TCOM, TDRC, TRCK, TPOS, TXXX, APIC
+            # Standard Tags
+            tags.add(TIT2(encoding=3, text=tag_map["title"]))
+            tags.add(TPE1(encoding=3, text=tag_map["artist"]))
+            tags.add(TALB(encoding=3, text=tag_map["album"]))
+            tags.add(TPE2(encoding=3, text=tag_map["album_artist"]))
+            tags.add(TCON(encoding=3, text=tag_map["genre"]))
+            tags.add(TDRC(encoding=3, text=tag_map["year"]))
+            tags.add(TRCK(encoding=3, text=tag_map["track_number"]))
+            tags.add(TPOS(encoding=3, text=tag_map["disc_number"]))
+            tags.add(TCOM(encoding=3, text=tag_map["composer"]))
+            tags.add(TIT1(encoding=3, text=tag_map["grouping"]))
+            tags.add(COMM(encoding=3, lang=tag_map["language"], desc="Steam Metadata", text=tag_map["comment"]))
 
-        try:
-            # For AIFF, we need to ensure it's wrapped or handled by Mutagen correctly
-            audio_file = File(file_path)
-            if audio_file is None:
-                logger.error(f"Mutagen could not open {file_path}")
-                return
+            # Artwork
+            if artwork_path and artwork_path.exists():
+                with open(artwork_path, "rb") as f:
+                    tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Front Cover', data=f.read()))
 
-            if file_path.suffix.lower() == ".aiff":
-                # AIFF might not have tags yet
-                if not audio_file.tags:
-                    audio_file.add_tags()
-                audio = audio_file.tags
-            else:
-                # Standard ID3 for MP3
-                try:
-                    audio = ID3(file_path)
-                except:
-                    audio = ID3()
-                    audio.save(file_path)
+            audio.save()
         except Exception as e:
-            logger.error(f"Failed to initialize tags for {file_path}: {e}")
-            return
-
-        def _safe_text(val):
-            return [str(val)] if val is not None and str(val).strip() != "" else []
-
-        # Frame Mapping (ID3v2.3)
-        # Using lists for 'text' to satisfy mutagen
-        mapping = {
-            "TIT2": (TIT2, tags.get("title")),
-            "TPE1": (TPE1, tags.get("artist")),
-            "TALB": (TALB, tags.get("album")),
-            "TPE2": (TPE2, tags.get("album_artist")),
-            "TCON": (TCON, tags.get("genre")),
-            "TIT1": (TIT1, tags.get("grouping")),
-            "TCOM": (TCOM, tags.get("composer")),
-            "TDRC": (TDRC, tags.get("year")),
-            "TRCK": (TRCK, tags.get("track_number")),
-            "TPOS": (TPOS, tags.get("disc_number")),
-        }
-
-        for frame_class, value in mapping.values():
-            text_list = _safe_text(value)
-            if text_list:
-                audio.add(frame_class(encoding=1, text=text_list))
-
-        # --- Act-11: Smarter Comment Merging ---
-        new_comment = tags.get("comment")
-        if new_comment:
-            existing_comms = audio.getall("COMM")
-            combined_text = str(new_comment)
-            
-            if existing_comms:
-                # Extract text from existing COMM frames
-                existing_texts = []
-                for comm in existing_comms:
-                    if comm.text: existing_texts.append(str(comm.text[0]))
-                
-                # If existing text is already there and not identical, append with "; "
-                if existing_texts:
-                    prefix = " / ".join(existing_texts) # Merge multiple existing ones if any
-                    if str(new_comment) not in prefix:
-                        combined_text = f"{prefix}; {new_comment}"
-                    else:
-                        combined_text = prefix # Already contains the info
-
-            # Remove ALL old COMM frames to prevent "\\" multi-value representation
-            audio.delall("COMM")
-            # Add unified COMM frame
-            audio.add(COMM(encoding=1, lang="jpn", desc="", text=[combined_text]))
-
-        # Custom TXXX fields
-        if tags.get("mbid"):
-            audio.add(TXXX(encoding=1, desc="MusicBrainz Album Id", text=tags["mbid"]))
-        if tags.get("steam_appid"):
-            audio.add(TXXX(encoding=1, desc="Steam App Id", text=str(tags["steam_appid"])))
-        if tags.get("vgmdb_url"):
-            audio.add(TXXX(encoding=1, desc="VGMdb URL", text=tags["vgmdb_url"]))
-
-        # Artwork
-        if artwork_data:
-            audio.add(APIC(
-                encoding=1, mime="image/png", type=3, desc="Front Cover", data=artwork_data
-            ))
-
-        if file_path.suffix.lower() == ".aiff":
-            audio_file.save()
-        else:
-            audio.save(file_path, v2_version=3)
+            logger.error(f"Failed to write tags to {file_path.name}: {e}")

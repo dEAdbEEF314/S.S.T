@@ -9,6 +9,7 @@ import threading
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
+import json_repair
 
 logger = logging.getLogger("scout.llm")
 
@@ -30,23 +31,6 @@ class DistributedRateLimiter:
         total_chars = sum(len(m.get("content", "")) for m in messages)
         return max(1, total_chars // 3)
 
-    def _get_usage(self) -> int:
-        try:
-            path = self._get_usage_file()
-            if not path.exists(): return 0
-            with open(path, "r") as f:
-                data = json.load(f)
-                return data.get("requests", 0)
-        except: return 0
-
-    def _increment_usage(self, current: int):
-        try:
-            path = self._get_usage_file()
-            with open(path, "w") as f:
-                json.dump({"requests": current + 1, "last_update": datetime.now().isoformat()}, f)
-        except Exception as e:
-            logger.warning(f"Failed to save LLM usage: {e}")
-
     def acquire(self, messages: List[Dict[str, str]]) -> bool:
         tokens = self._estimate_tokens(messages)
         while True:
@@ -60,11 +44,6 @@ class DistributedRateLimiter:
                 req_count = len(self.request_times)
                 load_factor = req_count / self.limit_rpm if self.limit_rpm > 0 else 0
                 
-                remote_count = self._get_usage()
-                if remote_count >= self.limit_rpd:
-                    logger.info(f"Daily LLM request limit reached ({self.limit_rpd}).")
-                    raise SystemExit(0)
-
                 if load_factor >= 0.9:
                     wait = self.request_times[0] + 61.0 - now
                 elif load_factor >= 0.7:
@@ -77,7 +56,6 @@ class DistributedRateLimiter:
                 else:
                     self.request_times.append(now)
                     self.token_times.append((now, tokens))
-                    self._increment_usage(remote_count)
                     return True
             time.sleep(max(0.1, wait))
 
@@ -94,28 +72,31 @@ class LLMOrganizer:
         self.llm_backend = llm_backend.upper()
         self.limiter = DistributedRateLimiter(rpm, tpm, rpd)
 
-    def consolidate_metadata(self, steam_info: Dict[str, Any], track_sources: Dict[str, List[Dict[str, Any]]], mbz_candidates: List[Dict[str, Any]]) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+    def consolidate_metadata(self, app_id: int, steam_info: Dict[str, Any], track_sources: Dict[str, List[Dict[str, Any]]], mbz_candidates: List[Dict[str, Any]]) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
         full_logs = []
         
         # --- Phase 1: Determine Global Identity (The "Soul") ---
         global_id_prompt = f"""
-あなたは音楽メタデータ管理の極めて厳格な監査官です。
-複数の情報源から、このアルバムの「唯一の真実（Identity）」を決定してください。
+あなたは音楽メタデータ管理の権威ある【マスター・アーカイブ監査官】です。
+提供された情報源を分析し、この作品の「Identity（身元）」と「Integrity（品質）」を個別に評価してください。
 
-### 【判定基準：100点からの減点方式】
-1. **初期値**: 100点
-2. **減点対象**:
-    - 曲名が一部でも異なる: -10点
-    - 曲数が一致しない: -20点
-    - リリース年が一致しない: -5点
-    - Dirty Tags（番号混入等）がある: -50点
-    - 曖昧な表現（〜ですが、〜と思われる）を理由に含める: -10点
+### 【重要：Dirty Tags（仕様）の解釈】
+- MBZ側の公式トラック名にも番号（例: "01. Name"）がある場合、それは「汚染」ではなく「仕様（Spec）」です。
+- MBZ側とローカル側で**共通して番号が含まれている**なら、その番号付けは正当なものとして扱いなさい。
 
-### 【重要】出力項目:
-- **`archive_vs_review_ratio`**: Archiveにすべきか、Reviewにすべきかの確信度を「比率（合計100）」で答えなさい。（例：Archive: 20, Review: 80）
-- **`confidence_score`**: 上記減点方式を適用した最終スコア（0-100）。
+### 【監査基準】
+1. **Identity Confidence (0-100)**: 
+    - Steam情報とMBZ/ローカルが同一作品である確信度。
+    - 名前とアーティストが一致し、MBZにDIRECT_STEAM_LINKがあるなら 100点。
+    - 候補が複数あり絞り込めない場合は `chosen_mbz_index: null` とし、`strategy: LOCAL_BASED` としなさい。
+2. **Integrity Quality (0-100)**:
+    - タグがそのままアーカイブ可能か。Dirty Tags（MBZにない番号混入）があれば 50点以下 としなさい。
 
-### ALBUM CONTEXT (Locked Truth):
+### 【判定の絶対ルール】
+- **ARCHIVE (Ratio 95:5以上)**: Identity Confidence >= 98 かつ Integrity Quality >= 90
+- **REVIEW**: それ以外、または少しでも音楽的矛盾を感じる場合。
+
+### ALBUM CONTEXT:
 - アルバム名: {steam_info.get('name')}
 - 開発者: {steam_info.get('developer')}
 - リリース年: {steam_info.get('release_date', '')[:4]}
@@ -128,36 +109,33 @@ class LLMOrganizer:
 
 ### MANDATORY OUTPUT FORMAT (JSON ONLY):
 {{
-  "confidence_score": number,
+  "identity_confidence": number,
+  "integrity_quality": number,
   "archive_vs_review_ratio": {{"archive": number, "review": number}},
-  "confidence_reason": "日本語による減点根拠の詳細",
+  "confidence_reason": "詳細な類似性分析と判断理由（日本語）",
   "strategy": "MBZ_BASED" | "LOCAL_BASED" | "HYBRID" | "REVIEW_REQUIRED",
   "semantic_label": "日本語 40文字以内",
   "global_tags": {{
     "canonical_album_artist": "...",
     "canonical_genre": "...",
     "canonical_year": "YYYY",
-    "chosen_mbz_index": number
+    "chosen_mbz_index": number | null
   }}
 }}
 """
-        global_res, global_log = self._call_llm(global_id_prompt)
+        global_res, global_log = self._call_llm(app_id, global_id_prompt)
         full_logs.append(global_log)
         
         if not global_res:
             return None, {"phase1_log": global_log}
             
-        # Archive判定の厳格なクロスチェック
-        # Act-14: If LLM explicitly chose REVIEW_REQUIRED, we HONOR it immediately.
-        # If score or ratio is low, we force review.
-        final_score = int(global_res.get("confidence_score", 0))
+        id_conf = int(global_res.get("identity_confidence", 0))
         archive_ratio = int(global_res.get("archive_vs_review_ratio", {}).get("archive", 0))
         
-        if final_score < 95 or archive_ratio < 95 or global_res.get("strategy") == "REVIEW_REQUIRED":
-            # Force empty instructions to trigger REVIEW status in processor
+        if id_conf < 95 or archive_ratio < 90 or global_res.get("strategy") == "REVIEW_REQUIRED":
             return {}, {"phase1_res": global_res, "phase1_log": global_log}
 
-        # --- Phase 2: Sequential Track Mapping (The "Body") ---
+        # --- Phase 2: Sequential Track Mapping ---
         global_identity = global_res.get("global_tags", {})
         strategy = global_res.get("strategy")
         all_instructions = {}
@@ -170,11 +148,8 @@ class LLMOrganizer:
             chunk_sources = {tid: track_sources[tid] for tid in chunk_ids}
             
             mapping_prompt = f"""
-以下のトラックを正確にマッピングしてください。推測は死罪に値します。
-根拠がない場合は action: "needs_review" としなさい。
-
-### FIXED IDENTITY:
-{json.dumps(global_identity, indent=2)}
+精密なトラックマッピングを行いなさい。
+Identity: {json.dumps(global_identity, indent=2)}
 
 ### TRACKS TO MAP:
 {json.dumps(chunk_sources, indent=2, ensure_ascii=False)}
@@ -186,12 +161,12 @@ class LLMOrganizer:
         "action": "use_mbz" | "use_local_tag" | "use_filename" | "needs_review",
         "mbz_track_index": number,
         "override_title": string | null,
-        "reason": "日本語判断理由"
+        "reason": "判断理由（日本語）"
      }}
   }}
 }}
 """
-            chunk_res, chunk_log = self._call_llm(mapping_prompt)
+            chunk_res, chunk_log = self._call_llm(app_id, mapping_prompt)
             full_logs.append(chunk_log)
             
             if chunk_res and "track_instructions" in chunk_res:
@@ -201,8 +176,8 @@ class LLMOrganizer:
                         "TPE2": global_identity.get("canonical_album_artist"),
                         "TCON": global_identity.get("canonical_genre"),
                         "TDRC": global_identity.get("canonical_year"),
-                        "confidence_score": final_score,
-                        "confidence_reason": global_res.get("confidence_reason"),
+                        "identity_confidence": id_conf,
+                        "confidence_score": id_conf,
                         "strategy": strategy,
                         "semantic_label": global_res.get("semantic_label"),
                         "chosen_mbz_index": global_identity.get("chosen_mbz_index", 0)
@@ -211,12 +186,11 @@ class LLMOrganizer:
 
         return all_instructions, {"phase1_res": global_res, "phase1_log": global_log, "chunks": full_logs}
 
-    def _call_llm(self, prompt: str) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+    def _call_llm(self, app_id: int, prompt: str) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
         messages = [{"role": "user", "content": prompt}]
         log_entry = {"timestamp": datetime.utcnow().isoformat(), "prompt": prompt, "response": None, "error": None}
         
-        # Act-14: Log full prompt for absolute transparency
-        logger.debug(f"--- [LLM PROMPT START] ---\n{prompt}\n--- [LLM PROMPT END] ---")
+        logger.debug(f"[{app_id}] --- [LLM PROMPT START] ---\n{prompt}\n--- [LLM PROMPT END] ---")
 
         if self.llm_backend not in ["OLLAMA"] and not self.limiter.acquire(messages):
             log_entry["error"] = "Rate limit reached"
@@ -244,21 +218,25 @@ class LLMOrganizer:
                     res_json = response.json()
                     content = res_json.get("message", {}).get("content", "") if self.llm_backend == "OLLAMA" else res_json.get("choices", [{}])[0].get("message", {}).get("content", "")
                     
-                    # Act-14: Log full response for absolute transparency
-                    logger.debug(f"--- [LLM RESPONSE START] ---\n{content}\n--- [LLM RESPONSE END] ---")
+                    logger.debug(f"[{app_id}] --- [LLM RESPONSE START] ---\n{content}\n--- [LLM RESPONSE END] ---")
                     
                     if not content or not content.strip(): raise ValueError("Empty response")
                     log_entry["response"] = content
                     
-                    clean_content = re.sub(r'<(thought|reasoning)>.*?</\1>', '', content, flags=re.DOTALL | re.IGNORECASE)
-                    start_idx = clean_content.find('{')
-                    end_idx = clean_content.rfind('}')
-                    
-                    if start_idx != -1 and end_idx != -1:
-                        json_str = clean_content[start_idx:end_idx + 1]
-                        return json.loads(json_str), log_entry
-                    else:
-                        raise ValueError("No valid JSON found in response (possible truncation)")
+                    # Robust cleaning and repair using json_repair
+                    try:
+                        # Extract content from potential markdown blocks first
+                        clean_content = re.sub(r'```json\s*(.*?)\s*```', r'\1', content, flags=re.DOTALL)
+                        clean_content = re.sub(r'<(thought|reasoning)>.*?</\1>', '', clean_content, flags=re.DOTALL | re.IGNORECASE)
+                        
+                        decoded = json_repair.repair_json(clean_content, return_objects=True)
+                        if isinstance(decoded, dict):
+                            return decoded, log_entry
+                        else:
+                            raise ValueError("Repaired JSON is not an object")
+                    except Exception as e:
+                        logger.warning(f"[{app_id}] JSON repair failed: {e}")
+                        raise
                 
                 log_entry["error"] = f"HTTP {response.status_code}"
                 if attempt < max_retries:
@@ -268,8 +246,8 @@ class LLMOrganizer:
                 return None, log_entry
 
             except Exception as e:
-                logger.warning(f"LLM {self.llm_backend} attempt {attempt+1} failed: {e}")
                 if attempt < max_retries:
+                    logger.warning(f"[{app_id}] LLM {self.llm_backend} attempt {attempt+1} failed: {e}")
                     time.sleep(retry_delay)
                     continue
                 log_entry["error"] = str(e)
