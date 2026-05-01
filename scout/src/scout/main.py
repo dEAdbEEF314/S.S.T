@@ -31,13 +31,13 @@ class Config(BaseSettings):
     user_language_639_2: str = "jpn"
     env_mode: str = "production"
     log_level: str = "INFO"
-    llm_base_url: str
+    llm_backend: str = "GEMINI"
+    llm_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai"
     llm_api_key: Optional[str] = None
-    llm_model: str = "gemma-4-31b-it"
+    llm_model: str = "gemini-1.5-pro"
     llm_limit_rpm: int = 15
     llm_limit_tpm: int = 10000000
     llm_limit_rpd: int = 1500
-    llm_force_local: bool = False
     max_encoding_tasks: int = 4
     mbz_app_name: str = "SST-Scout"
     mbz_app_version: str = "1.0.0"
@@ -51,14 +51,24 @@ class Config(BaseSettings):
 
 def setup_logging(config: Config, console: Console):
     numeric_level = getattr(logging, config.log_level.upper(), logging.INFO)
-    handlers = [RichHandler(level=logging.ERROR if config.env_mode == "production" else numeric_level, console=console, rich_tracebacks=True, markup=True, show_path=False)]
     
-    log_file = None
-    if config.env_mode == "production" or numeric_level <= logging.INFO:
-        log_dir = Path("logs")
-        log_dir.mkdir(exist_ok=True)
+    # Act-14: Force DEBUG level in development mode if not explicitly set lower
+    if config.env_mode == "development" and numeric_level > logging.DEBUG:
+        numeric_level = logging.DEBUG
+        
+    handlers = [RichHandler(level=numeric_level, console=console, rich_tracebacks=True, markup=True, show_path=False)]
+    
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+
+    if config.env_mode == "development" and numeric_level == logging.DEBUG:
+        # Unique log file per run for auditing
+        log_file = log_dir / f"SST_log_{datetime.now().strftime('%Y%m%d%H%M%S')}.log"
+    else:
+        # Standard daily append log
         log_file = log_dir / f"sst_{datetime.now().strftime('%Y%m%d')}.log"
-        handlers.append(logging.FileHandler(log_file, encoding='utf-8'))
+    
+    handlers.append(logging.FileHandler(log_file, encoding='utf-8'))
     
     logging.basicConfig(level=numeric_level, handlers=handlers, force=True)
     for lib in ["urllib3", "PIL", "musicbrainzngs", "requests", "mutagen"]: logging.getLogger(lib).setLevel(logging.ERROR)

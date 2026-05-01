@@ -26,7 +26,7 @@ class JobRunner:
 
         # Calculate workers
         cpu_count = multiprocessing.cpu_count()
-        if self.config.llm_force_local:
+        if self.config.llm_backend == "OLLAMA":
             max_album_workers = min(cpu_count, 4)
         else:
             max_album_workers = max(1, min(int(self.config.llm_limit_rpm * 0.7), cpu_count * 2, 10))
@@ -50,6 +50,13 @@ class JobRunner:
             progress.update(album_task, description=f"[yellow]Processing: {ost['name']}", total=len(all_files))
 
             result = self.processor.process_album(app_id, install_dir, steam_meta, on_track_complete=lambda: progress.advance(album_task))
+            
+            if result is None:
+                result = LocalProcessResult(
+                    app_id=app_id, status="error", album_name=ost["name"], 
+                    message="Process returned None", confidence_score=0
+                )
+            
             results.append(result)
 
             progress.remove_task(album_task)
