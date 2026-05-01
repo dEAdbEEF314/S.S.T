@@ -98,7 +98,6 @@ docs/AGENT_GUIDE_jp.md
 docs/03_ai/agent_prompt.md
 docs/03_ai/llm_strategy.md
 docs/03_ai/llm_strategy_jp.md
-Models/
 legacy/
 data/
 logs/llm_usage_*.json
