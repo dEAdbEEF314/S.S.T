@@ -87,4 +87,8 @@ ZIP files must be generated in the WSL2 native filesystem and moved to the Windo
 ## 6. System Execution Modes
 - **`production`**: Silent terminal (Progress bars only). Logs to file. High-throughput (CPU-optimized).
 - **`development`**: Detailed console logs. Error directories preserved for audit. Cache-bypass.
-- **`LLM_FORCE_LOCAL`**: Bypasses API rate limits. Enforces 20-track chunking for VRAM efficiency.
+- **`LLM_BACKEND`**:
+    - **`OLLAMA`**: Optimized for local Ollama instances. Uses native `/api/chat` for reliable parameter control (e.g., `num_ctx: 32768`).
+    - **`GEMINI`**: Optimized for Google AI Studio (Gemini 1.5 Pro/Flash).
+    - **`OPENAI_COMPATIBLE`**: General-purpose mode for LM Studio or OpenAI. Uses standard `/v1/chat/completions`.
+
