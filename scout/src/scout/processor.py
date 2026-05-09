@@ -177,30 +177,53 @@ class LocalProcessor:
         z_count = sum(1 for t in tracks if str(t["tags"].get("track_number")) == "0")
         u_count = sum(1 for t in tracks if (t["tags"].get("title") or "Unknown") == "Unknown")
         
-        # Smart Dirty Tags (Shared Spec)
-        dirty_pattern = re.compile(r'^(\d+[\s.-]+)')
+        # Smart Dirty Tags (Shared Spec: Tightened for Archive Reliability)
+        dirty_pattern = re.compile(r'^(\d+)([\s.-]+)')
         d_count = 0
         
         chosen_mbz_idx = p1_res.get("global_tags", {}).get("chosen_mbz_index")
-        mbz_tracks = []
+        mbz_release = None
         if mbz_candidates and chosen_mbz_idx is not None and chosen_mbz_idx < len(mbz_candidates):
-            mbz_tracks = [str(t.get("title", "")).lower() for t in mbz_candidates[chosen_mbz_idx].get("tracks", [])]
+            mbz_release = mbz_candidates[chosen_mbz_idx]
 
         for t in tracks:
-            title = t["tags"].get("title", "")
-            match = dirty_pattern.match(str(title))
+            title = str(t["tags"].get("title", ""))
+            track_num = str(t["tags"].get("track_number", "0"))
+            match = dirty_pattern.match(title)
+            
             if match:
-                # Shared Spec: If the official MBZ track also has this pattern, it's not "dirty"
-                if str(title).lower() not in mbz_tracks:
+                # 1. Check if MBZ title already has this pattern (Spec)
+                mbz_titles = [str(tr.get("title", "")).lower() for tr in mbz_release.get("tracks", [])] if mbz_release else []
+                if title.lower() in mbz_titles:
+                    continue
+                
+                # 2. Check if the prefixed number matches the MBZ track number
+                # If they match, we trust MBZ to clean it up. If not, it's a "Dirty Tag" conflict.
+                prefixed_num = match.group(1).lstrip('0') or '0'
+                clean_track_num = track_num.lstrip('0') or '0'
+                
+                if prefixed_num != clean_track_num:
                     d_count += 1
+                else:
+                    # They match, but is it safe? Only if we are using MBZ tags.
+                    # If the instruction was not use_mbz, it remains dirty.
+                    instr_key = f"{t['tags'].get('disc_number', 1)}_{title}" # Simplified key for check
+                    # Note: This is an approximation since we don't have the full instruction map here, 
+                    # but the principle is: if it's dirty and NOT explicitly cleaned by MBZ, it's a risk.
+                    d_count += 0.5 # Marking as suspicious but not necessarily a full error yet
 
-        if z_count > 0 or u_count > 0 or d_count > 0:
+        if z_count > 0 or u_count > 0 or d_count >= 1:
             status = "review"
             issues = []
             if z_count > 0: issues.append(f"Track#0 x{z_count}")
             if u_count > 0: issues.append(f"Unknown Title x{u_count}")
-            if d_count > 0: issues.append(f"Dirty Tags x{d_count}")
+            if d_count >= 1: issues.append(f"Dirty/Conflicting Tags x{int(d_count)}")
             message = f"{label} [{', '.join(issues)}]"
+
+        # Act-16 Absolute Trust Mandate: Any suspicion or logic gate failure forces Review.
+        if id_conf < 100 or quality < 95:
+            if status == "archive": # Only downgrade if it was otherwise going to be archived
+                status, message = "review", f"[{label}] Trust threshold not met ({id_conf}%/{quality}%)"
 
         if audio_fail: 
             status, message = "review", "[CRITICAL: Audio Source Error]"

@@ -23,7 +23,8 @@ logger = logging.getLogger("scout")
 
 class Config(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", env_ignore_empty=True, case_sensitive=False, env_prefix="")
-    steam_library_path: str
+    steam_install_path: str
+    steam_library_path: Optional[str] = None
     sst_working_dir: str = "/tmp/sst-work"
     sst_db_path: str = "data/sst_local_state.db"
     user_language: str = "ja"
@@ -115,7 +116,12 @@ def main():
     logger.info(f"SST starting in {config.env_mode} mode. Logs: {log_file}")
 
     db = DatabaseManager(Path(config.sst_db_path))
-    scanner = SteamScanner(config.steam_library_path, cache_path="data/scout_cache.json", language=config.steam_language_full)
+    scanner = SteamScanner(
+        install_path=config.steam_install_path, 
+        override_library_path=config.steam_library_path,
+        cache_path="data/scout_cache.json", 
+        language=config.steam_language_full
+    )
     processor = LocalProcessor(config, db)
     runner = JobRunner(config, processor, console)
 
