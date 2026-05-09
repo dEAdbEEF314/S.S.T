@@ -93,13 +93,13 @@ class LLMOrganizer:
     - タグがそのままアーカイブ可能か。Dirty Tags（MBZにない番号混入）があれば 50点以下 としなさい。
 
 ### 【判定の絶対ルール】
-- **ARCHIVE (Ratio 95:5以上)**: Identity Confidence >= 98 かつ Integrity Quality >= 90
-- **REVIEW**: それ以外、または少しでも音楽的矛盾を感じる場合。
+- **ARCHIVE (Ratio 95:5以上)**: Identity Confidence == 100 かつ Integrity Quality >= 95
+- **REVIEW**: それ以外、または少しでも音楽的矛盾を感じる場合。確証がない場合は迷わず REVIEW としなさい。
 
 ### ALBUM CONTEXT:
 - アルバム名: {steam_info.get('name')}
 - 開発者: {steam_info.get('developer')}
-- リリース年: {steam_info.get('release_date', '')[:4]}
+- リリース年: {(steam_info.get('release_date') or '')[:4]}
 
 ### MUSICBRAINZ CANDIDATES:
 {json.dumps(mbz_candidates, indent=2, ensure_ascii=False)}
@@ -223,19 +223,25 @@ Identity: {json.dumps(global_identity, indent=2)}
                     if not content or not content.strip(): raise ValueError("Empty response")
                     log_entry["response"] = content
                     
-                    # Robust cleaning and repair using json_repair
+                    # Act-15: Strict Parsing (No json-repair)
                     try:
-                        # Extract content from potential markdown blocks first
+                        # 1. Clean markdown code blocks and reasoning blocks
                         clean_content = re.sub(r'```json\s*(.*?)\s*```', r'\1', content, flags=re.DOTALL)
                         clean_content = re.sub(r'<(thought|reasoning)>.*?</\1>', '', clean_content, flags=re.DOTALL | re.IGNORECASE)
                         
-                        decoded = json_repair.repair_json(clean_content, return_objects=True)
-                        if isinstance(decoded, dict):
-                            return decoded, log_entry
+                        # 2. Extract first valid {...} block to handle minor chatter
+                        start_idx = clean_content.find('{')
+                        end_idx = clean_content.rfind('}')
+                        
+                        if start_idx != -1 and end_idx != -1:
+                            json_str = clean_content[start_idx:end_idx + 1]
+                            # Minor structural cleaning that isn't "inference" (e.g. trailing commas in arrays)
+                            json_str = re.sub(r',\s*([\]}])', r'\1', json_str)
+                            return json.loads(json_str), log_entry
                         else:
-                            raise ValueError("Repaired JSON is not an object")
+                            raise ValueError("No valid JSON object found in response")
                     except Exception as e:
-                        logger.warning(f"[{app_id}] JSON repair failed: {e}")
+                        logger.warning(f"[{app_id}] JSON strict parsing failed: {e}")
                         raise
                 
                 log_entry["error"] = f"HTTP {response.status_code}"
