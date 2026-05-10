@@ -2,6 +2,40 @@
 # S.S.T (Steam Soundtrack Tagger) — .gitignore
 # ==============================================================================
 
+# ── Environment Variables (CRITICAL — contains API keys & secrets) ────────────
+.env
+.env.*
+!.env.example
+
+# ── Virtual Environment (uv / venv) ──────────────────────────────────────────
+.venv/
+venv/
+ENV/
+scout/.venv/
+
+# ── Runtime / Generated Data ──────────────────────────────────────────────────
+# All local databases, caches, and user-specific data
+data/
+*.db
+*.json
+!data/README.md
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+# All logs produced by the system or libraries
+logs/
+*.log
+docs/scout_debug.txt
+docs/scout_error.txt
+docs/scout_debug.log
+docs/scout_error.log
+
+# ── Output & Packages ────────────────────────────────────────────────────────
+# Final processed soundtracks and archives
+output/
+upload/
+ui_verification/
+*.zip
+
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
@@ -23,19 +57,11 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-
-# ── Virtual Environment (uv / venv) ──────────────────────────────────────────
-.venv/
-venv/
-ENV/
+scout/dist/
+scout/build/
 
 # ── Node.js ───────────────────────────────────────────────────────────────────
 node_modules/
-
-# ── Environment Variables (CRITICAL — contains API keys & secrets) ────────────
-.env
-.env.*
-!.env.example
 
 # ── IDE / Editor ──────────────────────────────────────────────────────────────
 .vscode/
@@ -48,55 +74,16 @@ node_modules/
 .DS_Store
 Thumbs.db
 
-# ── Logs ──────────────────────────────────────────────────────────────────────
-*.log
-docs/scout_debug.txt
-docs/scout_error.txt
-
-# ── Runtime / Generated Data ──────────────────────────────────────────────────
-# SQLite databases
-*.db
-
-# Scout cache (contains local filesystem paths)
-scout_cache.json
-scout/scout_cache.json
-
-# LLM usage tracking files (runtime counters)
-llm_usage_*.json
-scout/llm_usage_*.json
-
-# ── Output & Verification ────────────────────────────────────────────────────
-output/
-upload/
-ui_verification/
-
-# ── AI Tooling (Gemini / Copilot skills) ──────────────────────────────────────
+# ── AI Tooling (Internal skills and instructions) ───────────────────────────
 .gemini/
 skills/
+.github/copilot-instructions.md
 
-# ── Local Utility Scripts (not part of the application) ───────────────────────
-capture_llm_detail.py
-run_production_test.py
-
-# ── Root-level package files (not needed — UI deps live in ui/frontend) ───────
-/package.json
-/package-lock.json
-
-# ── Legacy / Obsolete (referenced in delete_list.txt) ─────────────────────────
+# ── Legacy / Obsolete ─────────────────────────────────────────────────────────
+legacy/
 prefect.yaml
 .prefect/
-
-# ── Project Build Artifacts ───────────────────────────────────────────────────
-scout/dist/
-scout/build/
-
-.github/
-# AI Agent Specific Docs
-docs/AGENT_GUIDE_jp.md
-docs/03_ai/agent_prompt.md
-docs/03_ai/llm_strategy.md
-docs/03_ai/llm_strategy_jp.md
-legacy/
-logs/*.log
-data/*.db
-data/*.json
+package.json
+package-lock.json
+capture_llm_detail.py
+run_production_test.py
