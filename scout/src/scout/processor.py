@@ -36,6 +36,54 @@ class LocalProcessor:
         import os
         return datetime.now(timezone(timedelta(hours=9))) if os.environ.get("TZ") == "Asia/Tokyo" else datetime.now(timezone.utc)
 
+    def _check_fast_track(self, app_id: int, steam_meta: SteamMetadata, track_groups: Dict, mbz_candidates: List[Dict]) -> Tuple[bool, Optional[Dict], Optional[Dict]]:
+        """
+        Attempts to bypass LLM if sources are perfectly aligned.
+        """
+        if not mbz_candidates: return False, None, None
+        
+        best = mbz_candidates[0]
+        evidence = best.get("evidence", [])
+        
+        # 1. Check for Absolute Identity Proof
+        has_direct_link = any(e in evidence for e in ["DIRECT_STEAM_LINK", "DIRECT_STEAMDB_LINK"])
+        if not has_direct_link: return False, None, None
+        
+        # 2. Check for Structural Alignment (Track Count)
+        local_count = len(track_groups)
+        mbz_count = best.get("track_count", 0)
+        pics_count = len(steam_meta.store_tracklist)
+        
+        if local_count != mbz_count: return False, None, None
+        
+        # If PICS is available, it must also match
+        if pics_count > 0 and local_count != pics_count: return False, None, None
+        
+        # 3. Decision: Deterministic Archival is possible.
+        logger.info(f"[{app_id}] Fast-track enabled: Absolute evidence found.")
+        
+        # Build global identity deterministically
+        global_id = {
+            "canonical_album_artist": best.get("artist") or steam_meta.developer,
+            "canonical_genre": steam_meta.genres[0] if steam_meta.genres else "Game Music",
+            "canonical_year": best.get("year") or (steam_meta.release_date[:4] if steam_meta.release_date else "0000"),
+            "canonical_label": best.get("label") or steam_meta.publisher,
+            "chosen_mbz_index": 0
+        }
+        
+        # Build track map deterministically (direct index mapping)
+        final_map = {}
+        sorted_keys = sorted(track_groups.keys()) # (disc, stem)
+        for i, key in enumerate(sorted_keys):
+            tid = f"{key[0]}_{key[1]}"
+            final_map[tid] = {
+                "action": "use_mbz",
+                "mbz_track_index": i,
+                "reason": "Fast-track: Perfect source alignment"
+            }
+            
+        return True, final_map, global_id
+
     def process_album(self, app_id: int, install_dir: Path, steam_meta: SteamMetadata, on_track_complete: Optional[callable] = None) -> LocalProcessResult:
         logger.info(f"[{app_id}] --- Processing {steam_meta.name} ---")
         
@@ -59,9 +107,20 @@ class LocalProcessor:
             time.sleep(1.0)
             track_sources = self._prepare_llm_track_context(track_groups)
             
-            # 2. LLM Decision
-            final_metadata, llm_log = self.llm.consolidate_metadata(app_id, steam_meta.model_dump(), track_sources, mbz_candidates)
+            # 2. Decision Path (Fast-track or LLM)
+            is_fast, final_metadata, global_identity = self._check_fast_track(app_id, steam_meta, track_groups, mbz_candidates)
             
+            if is_fast:
+                llm_log = {
+                    "phase1_res": {"identity_confidence": 100, "integrity_quality": 100, "archive_vs_review_ratio": {"archive": 100, "review": 0}, "global_tags": global_identity},
+                    "phase1_log": {"reason": "Deterministic Fast-track enabled"},
+                    "fast_track": True
+                }
+            else:
+                final_metadata, llm_log = self.llm.consolidate_metadata(app_id, steam_meta.model_dump(), track_sources, mbz_candidates)
+                p1_res = llm_log.get("phase1_res", {})
+                global_identity = p1_res.get("global_tags", {})
+
             if final_metadata is None:
                 p1_log = llm_log.get("phase1_log", {})
                 error_msg = p1_log.get("error") or "Manual Review Required"
@@ -71,8 +130,13 @@ class LocalProcessor:
                 return LocalProcessResult(app_id=app_id, status="review", album_name=steam_meta.name, confidence_score=0, confidence_reason=error_msg, message=f"LLM Failure: {error_msg}")
 
             # 3. Execution Setup
-            temp_output = self.working_dir / f"final_{app_id}_{datetime.now().strftime('%H%M%S')}"
+            run_id = datetime.now().strftime('%H%M%S')
+            temp_output = self.working_dir / f"final_{app_id}_{run_id}"
             temp_output.mkdir(parents=True, exist_ok=True)
+            
+            # Temporary buffer for raw files (OUTSIDE of temp_output)
+            buffer_dir = self.working_dir / f"buffer_{app_id}_{run_id}"
+            buffer_dir.mkdir(parents=True, exist_ok=True)
             
             tagger = AudioTagger(temp_output)
             album_artwork = self._fetch_album_artwork(steam_meta, mbz_candidates)
@@ -84,8 +148,8 @@ class LocalProcessor:
                 nonlocal any_audio_warnings, any_audio_failures
                 (disc, clean_title), adopted_info = track_data
                 try:
-                    # Native Buffering
-                    local_raw_dir = temp_output / "raw_src" / str(disc)
+                    # Native Buffering (Fast I/O area)
+                    local_raw_dir = buffer_dir / str(disc)
                     local_raw_dir.mkdir(parents=True, exist_ok=True)
                     local_source_path = local_raw_dir / adopted_info["path"].name
                     shutil.copy2(adopted_info["path"], local_source_path)
@@ -94,8 +158,9 @@ class LocalProcessor:
                     if has_warnings: any_audio_warnings = True
                     if local_source_path.exists(): local_source_path.unlink()
                     
+                    # FALLBACK: If LLM didn't provide mapping (Review mode), use local tag
                     instr = final_metadata.get(f"{disc}_{clean_title}") or {"action": "use_local_tag"}
-                    tag_map = MetadataBuilder.build_tag_map(app_id, disc, clean_title, adopted_info, steam_meta, instr, mbz_candidates, track_sources, self.config.user_language_639_2)
+                    tag_map = MetadataBuilder.build_tag_map(app_id, disc, clean_title, adopted_info, steam_meta, instr, mbz_candidates, track_sources, self.config.user_language_639_2, global_identity)
                     
                     track_art = self._get_best_artwork(track_groups[(disc, clean_title)])
                     tagger.write_tags(processed_path, tag_map, tagger.process_artwork(track_art) if track_art else album_artwork)
@@ -111,10 +176,8 @@ class LocalProcessor:
 
             from concurrent.futures import ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=self.config.max_encoding_tasks) as executor:
-                if not final_metadata:
-                    processed_tracks_meta = []
-                else:
-                    processed_tracks_meta = [t for t in executor.map(_process_single_track, self._adopt_optimal_files(track_groups).items()) if t]
+                # Always attempt to process all variants in track_groups
+                processed_tracks_meta = [t for t in executor.map(_process_single_track, self._adopt_optimal_files(track_groups).items()) if t]
 
             # 4. Final Validation (STRICT GATES)
             status, message, score, reason = self._validate_results(app_id, processed_tracks_meta, final_metadata, any_audio_failures, any_audio_warnings, llm_log, mbz_candidates)
@@ -127,9 +190,12 @@ class LocalProcessor:
             self._send_notifications(app_id, steam_meta.name, status, message, score, reason, llm_log, any_audio_failures)
             
             log_bundle = {"llm_log.json": llm_log, "mbz_log.json": mbz_log, "metadata.json": summary_meta,
-                          "BASIS_for_CLASSIFICATION.md": self._generate_classification_basis(app_id, steam_meta, status, message, score, reason, len(processed_tracks_meta), llm_log)}
+                          "BASIS_for_CLASSIFICATION.md": self._generate_classification_basis(app_id, steam_meta, status, message, score, reason, len(processed_tracks_meta), llm_log, mbz_candidates)}
             
-            PackageManager.save_local_package(app_id, status, steam_meta.name, temp_output, log_bundle)
+            if not processed_tracks_meta and status != "skip":
+                logger.warning(f"[{app_id}] No tracks were processed successfully. Check logs for failures.")
+            
+            PackageManager.save_local_package(app_id, status, steam_meta.name, temp_output, log_bundle, self.config.sst_output_dir)
             self.db.record_processed(app_id, status, steam_meta.name, self._get_localized_now().isoformat(), summary_meta)
             
             return LocalProcessResult(app_id=app_id, status=status, album_name=steam_meta.name, confidence_score=score, confidence_reason=reason, message=message)
@@ -140,8 +206,14 @@ class LocalProcessor:
             return LocalProcessResult(app_id=app_id, status="error", album_name=steam_meta.name, message=str(e))
         finally:
             if 'temp_output' in locals() and temp_output.exists():
-                if not (self.config.env_mode == "development" and 'status' in locals() and status == "error"):
-                    shutil.rmtree(temp_output)
+                # Always cleanup in production. In dev (DEBUG), keep only if there was an error for debugging.
+                is_debug = self.config.log_level.upper() == "DEBUG"
+                should_keep = (is_debug and 'status' in locals() and status == "error")
+                if not should_keep:
+                    shutil.rmtree(temp_output, ignore_errors=True)
+            
+            if 'buffer_dir' in locals() and buffer_dir.exists():
+                shutil.rmtree(buffer_dir, ignore_errors=True)
         
         return LocalProcessResult(app_id=app_id, status="error", album_name=steam_meta.name, message="Unexpected fallthrough", confidence_score=0)
 
@@ -250,23 +322,32 @@ class LocalProcessor:
         if status == "review": self.notifier.notify_warning(f"Review Required: {name}", message, fields)
         else: self.notifier.notify_info(f"Archived: {name}", f"Quality Check: {id_conf}%", fields)
 
-    def _generate_classification_basis(self, app_id, steam_meta, status, message, score, reason, count, llm_log):
+    def _generate_classification_basis(self, app_id, steam_meta, status, message, score, reason, count, llm_log, mbz_candidates):
         p1_res = llm_log.get("phase1_res", {})
         id_conf = p1_res.get("identity_confidence", 0)
         quality = p1_res.get("integrity_quality", 0)
         ratio = p1_res.get("archive_vs_review_ratio", {"archive": 0, "review": 0})
-        from textwrap import dedent
-        return dedent(f"""\
-            # Basis for Classification: {steam_meta.name}
-            - **Status**: {status.upper()}
-            - **Identity Confidence**: {id_conf}/100
-            - **Integrity Quality**: {quality}/100
-            - **Judgment Ratio**: Archive {ratio.get('archive', 0)}% / Review {ratio.get('review', 0)}%
-            - **Summary**: {message}
-            - **LLM Reasoning**: {reason}
-            - **Parent Game**: {steam_meta.parent_name or 'N/A'} ({steam_meta.parent_app_id or 'N/A'})
-            - **Tracks Processed**: {count}
-        """)
+        
+        candidate_urls = [f"- {c.get('mbid_url')} (Score: {c.get('score')})" for c in mbz_candidates] if mbz_candidates else ["- None"]
+        
+        # Clean up reason and message to prevent line break issues in bullet points
+        clean_reason = str(reason).replace('\n', ' ')
+        clean_message = str(message).replace('\n', ' ')
+
+        return f"""# Basis for Classification: {steam_meta.name}
+- **Status**: {status.upper()}
+- **Identity Confidence**: {id_conf}/100
+- **Integrity Quality**: {quality}/100
+- **Judgment Ratio**: Archive {ratio.get('archive', 0)}% / Review {ratio.get('review', 0)}%
+- **Summary**: {clean_message}
+- **LLM Reasoning**: {clean_reason}
+- **Steam Store**: https://store.steampowered.com/app/{app_id}
+- **Parent Game**: {steam_meta.parent_name or 'N/A'} ({steam_meta.parent_app_id or 'N/A'})
+- **Tracks Processed**: {count}
+
+## MusicBrainz Candidates
+{"\n".join(candidate_urls)}
+"""
 
     def _list_audio_files(self, directory: Path) -> List[Path]:
         exts = {".flac", ".wav", ".mp3", ".ogg", ".aac", ".m4a", ".aiff"}
@@ -279,16 +360,21 @@ class LocalProcessor:
             t_num = re.match(r'^(\d+)', f.stem)
             disc = 1
             if meta.get("disc_number"):
-                try: 
+                try:
                     d_str = str(meta.get("disc_number")).split('/')[0]
                     if d_str.isdigit(): disc = int(d_str)
                 except: pass
-            key = (disc, re.sub(r'^(\d+[\s.-]+)+', '', f.stem).strip().lower())
+
+            # Clean stem for grouping: remove leading numbers and common suffixes like (AIFF), (MP3), [FLAC]
+            stem = f.stem
+            stem = re.sub(r'^(\d+[\s.-]+)+', '', stem)
+            stem = re.sub(r'[\s(\[]+(aiff|mp3|flac|wav|lossless|high-res)[\s)\]]+$', '', stem, flags=re.IGNORECASE)
+
+            key = (disc, stem.strip().lower())
             if key not in groups: groups[key] = []
             groups[key].append({"path": f, "meta": meta, "duration": self._get_duration(f), "format": f.suffix.lower().lstrip('.'),
                                 "filename_track": int(t_num.group(1)) if t_num else None})
         return groups
-
     def _get_duration(self, path: Path) -> float:
         import subprocess
         try:

@@ -38,13 +38,8 @@ class JobRunner:
             install_dir = Path(ost["install_dir"])
             album_task = progress.add_task(f"[cyan]Mapping: {ost['name']}", total=None)
 
-            steam_meta = SteamMetadata(
-                app_id=app_id, name=ost["name"], developer=ost.get("developer"), publisher=ost.get("publisher"),
-                url=ost.get("url"), tags=ost.get("tags", []), genre=ost.get("genre"), release_date=ost.get("release_date"),
-                parent_app_id=ost.get("parent_app_id"), parent_name=ost.get("parent_name"), parent_tags=ost.get("parent_tags", []),
-                parent_genre=ost.get("parent_genre"), parent_release_date=ost.get("parent_release_date"),
-                header_image_url=ost.get("header_image_url")
-            )
+            # Use dict unpacking to ensure all fields from ost are included in SteamMetadata
+            steam_meta = SteamMetadata(**ost)
 
             all_files = self.processor._list_audio_files(install_dir)
             progress.update(album_task, description=f"[yellow]Processing: {ost['name']}", total=len(all_files))

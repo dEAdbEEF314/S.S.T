@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import Dict, Any, List, Optional
 from .models import SteamMetadata
 
@@ -15,7 +16,8 @@ class MetadataBuilder:
         instr: Dict, 
         mbz_candidates: List[Dict], 
         track_sources: Dict,
-        user_language_639_2: str
+        user_language_639_2: str,
+        global_identity: Dict[str, Any] = {}
     ) -> Dict[str, Any]:
         """
         Constructs the ID3v2.3 tag map based on merged sources and SST.md definitions.
@@ -66,26 +68,48 @@ class MetadataBuilder:
         if instr.get("override_title"): res_title = instr["override_title"]
         if instr.get("override_track"): res_track = str(instr["override_track"])
 
-        # 3. Genre logic - Guard against NoneType
-        raw_genre = instr.get("TCON") or steam_meta.genre or steam_meta.parent_genre or 'Soundtrack'
-        final_genre = raw_genre if str(raw_genre).startswith("STEAM VGM") else f"STEAM VGM, {raw_genre}"
+        # 3. Genre logic
+        all_genres = steam_meta.genres if steam_meta.genres else []
+        if not all_genres and steam_meta.parent_genres:
+            all_genres = steam_meta.parent_genres
+        
+        if all_genres:
+            joined_genres = ", ".join(all_genres)
+        else:
+            joined_genres = steam_meta.genre or steam_meta.parent_genre or 'Soundtrack'
+            
+        final_genre = f"STEAM VGM, {joined_genres}"
 
         # 4. Comment/Grouping logic (Parent Game Reference)
         target_name = steam_meta.parent_name or steam_meta.name
         target_appid = steam_meta.parent_app_id or app_id
+        target_tags = steam_meta.parent_tags if steam_meta.parent_tags else steam_meta.tags
         target_url = f"https://store.steampowered.com/app/{target_appid}"
         
-        # 5. Final Map Construction
+        # 5. Label Fallback (Topic 6)
+        res_label = global_identity.get("canonical_label")
+        if not res_label and mbz_candidates:
+            res_label = mbz_candidates[0].get("label")
+        if not res_label:
+            res_label = f"{steam_meta.developer or steam_meta.publisher}"
+
+        # 6. Year extraction (Topic 4/5)
+        raw_date = instr.get("TDRC") or steam_meta.release_date or ""
+        year_match = re.search(r'(\d{4})', str(raw_date))
+        res_year = year_match.group(1) if year_match else "0000"
+
+        # 7. Final Map Construction
         return {
             "title": (res_title or clean_title).strip(),
             "artist": res_artist.strip(),
             "album": steam_meta.name, # LOCKED
-            "album_artist": f"{steam_meta.developer}; {steam_meta.publisher}", # SST.md 5
+            "album_artist": f"{steam_meta.developer}, {steam_meta.publisher}", # SST.md 5
             "genre": final_genre,
-            "grouping": f"{target_name}; Steam",
-            "comment": f"{target_name}; {', '.join(steam_meta.tags[:10])}; {target_appid}; {target_url}",
+            "label": res_label,
+            "grouping": f"{target_name}, Steam",
+            "comment": f"{target_name}, {', '.join(target_tags)}, {target_appid}, {target_url}",
             "composer": instr.get("TCOM", steam_meta.developer or "Unknown"),
-            "year": instr.get("TDRC", steam_meta.release_date[:4] if steam_meta.release_date else "0000"),
+            "year": res_year,
             "track_number": str(res_track).split('/')[0].strip(),
             "disc_number": res_disc if "/" in str(res_disc) else f"{res_disc}/1",
             "language": user_language_639_2,

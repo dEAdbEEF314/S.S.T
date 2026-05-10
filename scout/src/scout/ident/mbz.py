@@ -66,15 +66,32 @@ class MusicBrainzIdentifier:
             relations = release_data.get('url-relation-list', [])
             for rel in relations:
                 url = rel.get('target', '')
+                # Steam Store Link
                 if app_id and f"store.steampowered.com/app/{app_id}" in url:
                     score += 500
                     evidence_notes.append("DIRECT_STEAM_LINK")
                 elif parent_app_id and f"store.steampowered.com/app/{parent_app_id}" in url:
                     score += 300
                     evidence_notes.append("PARENT_STEAM_LINK")
+                
+                # SteamDB Link (Topic 8)
+                if app_id and f"steamdb.info/app/{app_id}" in url:
+                    score += 500
+                    evidence_notes.append("DIRECT_STEAMDB_LINK")
+                elif parent_app_id and f"steamdb.info/app/{parent_app_id}" in url:
+                    score += 300
+                    evidence_notes.append("PARENT_STEAMDB_LINK")
+
                 if "bandcamp.com" in url:
                     score += 100
                     evidence_notes.append("BANDCAMP_LINK")
+
+            # --- Label Info Extraction ---
+            labels = []
+            for li in release_data.get('label-info-list', []):
+                if li.get('label') and li['label'].get('name'):
+                    labels.append(li['label']['name'])
+            canonical_label = ", ".join(labels) if labels else None
 
             # --- Tier 2: Strong Semantic & Structural ---
             title_text = release_data.get('title', '')
@@ -141,10 +158,12 @@ class MusicBrainzIdentifier:
 
             scored_candidates.append({
                 "mbid": mbid,
+                "mbid_url": f"https://musicbrainz.org/release/{mbid}",
                 "score": score,
                 "evidence": evidence_notes,
                 "album": title_text,
                 "artist": release_data.get('artist-credit-phrase'),
+                "label": canonical_label,
                 "year": str(mb_y) if mb_y else "",
                 "track_count": mb_tracks,
                 "is_digital": is_digital,

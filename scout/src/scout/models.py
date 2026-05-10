@@ -9,14 +9,19 @@ class SteamMetadata(BaseModel):
     publisher: Optional[str] = None
     tags: List[str] = []
     genre: Optional[str] = None
+    genres: List[str] = [] # ALL genres
+    label: Optional[str] = None
     url: Optional[str] = None
     release_date: Optional[str] = None
     parent_app_id: Optional[int] = None
     parent_name: Optional[str] = None
     parent_tags: List[str] = []
     parent_genre: Optional[str] = None
+    parent_genres: List[str] = [] # ALL parent genres
     parent_release_date: Optional[str] = None
     header_image_url: Optional[str] = None
+    store_tracklist: List[Dict[str, Any]] = [] # Scraped from HTML
+    store_credits: str = "" # Scraped from HTML
 
 class TrackMetadata(BaseModel):
     title: str

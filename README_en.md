@@ -53,5 +53,17 @@ PYTHONPATH=scout/src ./scout/.venv/bin/python -m scout.main --limit 10
 -   **Zero Hallucination**: LLM prompts are strictly designed to prevent inference. Missing data remains "Unknown" for manual review.
 -   **Local Database**: Archived metadata is stored in `sst_local_state.db`. Any `app_id` present in this DB is skipped by default.
 
+## 🚀 Recommended Review Workflow (Act-16)
+
+1.  **Manual Review**: Files in the `review/` directory (set via `SST_OUTPUT_DIR`) are automatically extracted into folders. Use tools like **MP3tag** to correct metadata.
+    - Refer to `BASIS_for_CLASSIFICATION.md` in each folder to see why the system flagged it for review.
+2.  **Finalization**: Once metadata is corrected, run:
+    ```bash
+    ./sst --finalize
+    ```
+    - This command (must be run in WSL) scans all folders in `review/`, reads your corrected tags, and updates the local database.
+    - **Note**: The system will *not* delete the files after ingestion. Its task is complete once the DB is updated.
+3.  **Library Import**: Move the finalized files to your music management software (e.g., MusicBee) and manage them as you wish.
+
 ## 📄 License
 TBD

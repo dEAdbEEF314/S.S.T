@@ -77,7 +77,6 @@ skills/
 # ── Local Utility Scripts (not part of the application) ───────────────────────
 capture_llm_detail.py
 run_production_test.py
-delete_list.txt
 
 # ── Root-level package files (not needed — UI deps live in ui/frontend) ───────
 /package.json
@@ -91,7 +90,6 @@ prefect.yaml
 scout/dist/
 scout/build/
 
-.gitignore
 .github/
 # AI Agent Specific Docs
 docs/AGENT_GUIDE_jp.md
@@ -99,5 +97,6 @@ docs/03_ai/agent_prompt.md
 docs/03_ai/llm_strategy.md
 docs/03_ai/llm_strategy_jp.md
 legacy/
-data/
-logs/llm_usage_*.json
+logs/*.log
+data/*.db
+data/*.json

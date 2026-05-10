@@ -51,7 +51,7 @@ class AudioTagger:
         return target_path, has_warnings
 
     def write_tags(self, file_path: Path, tag_map: Dict[str, Any], artwork_path: Optional[Path] = None):
-        from mutagen.id3 import ID3, TIT2, TPE1, TALB, TCON, TDRC, TRCK, TPOS, COMM, TPE2, TCOM, APIC, TIT1
+        from mutagen.id3 import ID3, TIT2, TPE1, TALB, TCON, TDRC, TRCK, TPOS, COMM, TPE2, TCOM, APIC, TIT1, TYER, TPUB
         from mutagen.aiff import AIFF
         from mutagen.mp3 import MP3
 
@@ -66,18 +66,78 @@ class AudioTagger:
             tags.add(TALB(encoding=3, text=tag_map["album"]))
             tags.add(TPE2(encoding=3, text=tag_map["album_artist"]))
             tags.add(TCON(encoding=3, text=tag_map["genre"]))
-            tags.add(TDRC(encoding=3, text=tag_map["year"]))
+
+            # Label/Publisher (TPUB)
+            if tag_map.get("label"):
+                tags.add(TPUB(encoding=3, text=tag_map["label"]))
+
+            # Handle Year (TYER for ID3v2.3, TDRC for ID3v2.4)
+            year_val = tag_map["year"][:4] if tag_map.get("year") else "0000"
+            if isinstance(audio, MP3):
+                tags.add(TYER(encoding=3, text=year_val))
+            else:
+                tags.add(TDRC(encoding=3, text=year_val))
+
             tags.add(TRCK(encoding=3, text=tag_map["track_number"]))
             tags.add(TPOS(encoding=3, text=tag_map["disc_number"]))
             tags.add(TCOM(encoding=3, text=tag_map["composer"]))
             tags.add(TIT1(encoding=3, text=tag_map["grouping"]))
-            tags.add(COMM(encoding=3, lang=tag_map["language"], desc="Steam Metadata", text=tag_map["comment"]))
+
+            # Comment length adjustment (Prune tags unit by unit if too long)
+            comment_text = tag_map["comment"]
+            if isinstance(audio, MP3) and len(comment_text.encode('utf-16')) > 2000:
+                parts = comment_text.split(" | ")
+                if len(parts) >= 4:
+                    name, tags_str, app_id, url = parts[0], parts[1], parts[2], parts[3]
+                    tags_list = tags_str.split(", ")
+                    while tags_list and len(f"{name} | {', '.join(tags_list)} | {app_id} | {url}".encode('utf-16')) > 2000:
+                        tags_list.pop()
+                    comment_text = f"{name} | {', '.join(tags_list)} | {app_id} | {url}"
+
+            tags.add(COMM(encoding=3, lang=tag_map["language"], desc="", text=comment_text))
 
             # Artwork
             if artwork_path and artwork_path.exists():
                 with open(artwork_path, "rb") as f:
                     tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Front Cover', data=f.read()))
 
-            audio.save()
+            if isinstance(audio, MP3):
+                audio.save(v2_version=3)
+            else:
+                audio.save()
+
         except Exception as e:
             logger.error(f"Failed to write tags to {file_path.name}: {e}")
+
+    @staticmethod
+    def read_tags(file_path: Path) -> Dict[str, Any]:
+        """Reads tags from an audio file and returns a standard tag map."""
+        from mutagen.id3 import ID3
+        from mutagen.aiff import AIFF
+        from mutagen.mp3 import MP3
+        
+        try:
+            audio = AIFF(file_path) if file_path.suffix == ".aif" else MP3(file_path)
+            tags = audio.tags
+            if tags is None: return {}
+            
+            def get_text(frame_id):
+                frame = tags.get(frame_id)
+                return str(frame.text[0]) if frame and frame.text else None
+
+            return {
+                "title": get_text("TIT2"),
+                "artist": get_text("TPE1"),
+                "album": get_text("TALB"),
+                "album_artist": get_text("TPE2"),
+                "genre": get_text("TCON"),
+                "year": get_text("TDRC"),
+                "track_number": get_text("TRCK"),
+                "disc_number": get_text("TPOS"),
+                "composer": get_text("TCOM"),
+                "grouping": get_text("TIT1"),
+                "comment": get_text("COMM::'Steam Metadata'") or get_text("COMM")
+            }
+        except Exception as e:
+            logger.error(f"Failed to read tags from {file_path.name}: {e}")
+            return {}
