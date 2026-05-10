@@ -8,21 +8,27 @@ logger = logging.getLogger("scout.packager")
 
 class PackageManager:
     @staticmethod
-    def save_local_package(app_id: int, status: str, album_name: str, source_dir: Path, logs: Dict[str, Any]):
+    def save_local_package(app_id: int, status: str, album_name: str, source_dir: Path, logs: Dict[str, Any], output_root: str):
         """
-        Creates a ZIP archive in the native WSL2 temp directory and moves it to the final output.
-        Atomic Move strategy to prevent corrupted files on Windows mounts.
+        Creates a ZIP archive, moves it to the target Windows output, and extracts it.
         """
+        from .utils import ensure_wsl_path
+        import subprocess
+        import os
+        
         try:
-            # 1. Prepare final destination
-            output_base = Path("output") / status
+            # 1. Prepare final destination (Windows side)
+            final_output_root = ensure_wsl_path(output_root)
+            output_base = final_output_root / status
             output_base.mkdir(parents=True, exist_ok=True)
             
-            # Sanitize filename
+            # Sanitize filename for ZIP
             safe_name = "".join([c if c.isalnum() or c in ".-_" else "_" for c in album_name])
-            final_zip_path = output_base / f"{app_id}_{safe_name}.zip"
+            zip_filename = f"{app_id}_{safe_name}.zip"
+            final_zip_path = output_base / zip_filename
+            extract_dir = output_base / f"{app_id}_{safe_name}"
 
-            # 2. Write log files into the source directory before zipping
+            # 2. Write log files into the source directory
             for log_name, log_content in logs.items():
                 if log_content:
                     log_file = source_dir / log_name
@@ -32,17 +38,66 @@ class PackageManager:
                     else:
                         log_file.write_text(str(log_content), encoding="utf-8")
 
-            # 3. Create ZIP in NATIVE temp directory first
+            # 3. Create ZIP in NATIVE temp directory
             temp_zip_base = source_dir.parent / f"bundle_{app_id}"
             archive_result = shutil.make_archive(str(temp_zip_base), 'zip', source_dir)
             temp_zip_file = Path(archive_result)
 
-            # 4. Atomic Move to final destination
+            # 4. Atomic Move to Windows destination
             shutil.move(str(temp_zip_file), str(final_zip_path))
             
-            logger.info(f"Local package saved: {final_zip_path}")
-            return final_zip_path
+            # 5. Extraction (Directly call Windows tar.exe from WSL)
+            def wsl_to_win(wsl_p: Path) -> str:
+                s = str(wsl_p)
+                if s.startswith("/mnt/"):
+                    parts = s.split("/")
+                    drive = parts[2].upper()
+                    rest = "\\".join(parts[3:])
+                    return f"{drive}:\\{rest}"
+                return s.replace("/", "\\")
+
+            win_zip_path = wsl_to_win(final_zip_path)
+            win_extract_dir = wsl_to_win(extract_dir)
+            
+            # Find tar.exe robustly
+            def find_win_exe(name: str, fallback_path: str) -> str:
+                exe = shutil.which(name)
+                if not exe:
+                    p = Path(fallback_path)
+                    if p.exists(): exe = str(p)
+                return exe
+
+            raw_tar_exe = find_win_exe("tar.exe", "/mnt/c/Windows/System32/tar.exe")
+
+            if not raw_tar_exe:
+                logger.error(f"tar.exe not found. ZIP remains at {final_zip_path}")
+                return None
+
+            if not final_zip_path.exists():
+                logger.error(f"ZIP file disappeared before extraction: {final_zip_path}")
+                return None
+
+            # Create destination directory in Python (WSL side can do this on /mnt/)
+            extract_dir.mkdir(parents=True, exist_ok=True)
+
+            # Execute Windows tar.exe directly
+            # Note: Win32 apps called from WSL expect Windows paths for their arguments
+            logger.debug(f"Executing Windows tar: {raw_tar_exe} -xf {win_zip_path} -C {win_extract_dir}")
+            result = subprocess.run([raw_tar_exe, "-xf", win_zip_path, "-C", win_extract_dir], capture_output=True)
+            
+            if result.returncode != 0:
+                try:
+                    err_msg = result.stderr.decode('cp932')
+                except:
+                    err_msg = result.stderr.decode('utf-8', errors='replace')
+                logger.error(f"Windows extraction failed for {app_id}: {err_msg.strip()}")
+                return None
+
+            # 6. Success: Remove the ZIP file
+            final_zip_path.unlink(missing_ok=True)
+            logger.info(f"Local package extracted to: {extract_dir}")
+            return extract_dir
             
         except Exception as e:
-            logger.error(f"Failed to save local package for {app_id}: {e}")
+            logger.error(f"Failed to save and extract package for {app_id}: {e}")
             return None

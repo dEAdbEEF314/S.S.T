@@ -95,11 +95,16 @@ class LLMOrganizer:
 ### 【判定の絶対ルール】
 - **ARCHIVE (Ratio 95:5以上)**: Identity Confidence == 100 かつ Integrity Quality >= 95
 - **REVIEW**: それ以外、または少しでも音楽的矛盾を感じる場合。確証がない場合は迷わず REVIEW としなさい。
+- **STEAM STORE FALLBACK**: MBZに候補がない場合でも、Steam公式のトラックリストとローカルの構成が完全に合致し、Identity Confidence 100% と判断できるなら ARCHIVE を許可する。
 
 ### ALBUM CONTEXT:
 - アルバム名: {steam_info.get('name')}
 - 開発者: {steam_info.get('developer')}
-- リリース年: {(steam_info.get('release_date') or '')[:4]}
+- リリース年: {re.search(r'(\d{{4}})', str(steam_info.get('release_date', ''))).group(1) if re.search(r'(\d{{4}})', str(steam_info.get('release_date', ''))) else 'Unknown'}
+
+### STEAM STORE DATA (OFFICIAL):
+- トラックリスト: {json.dumps(steam_info.get('store_tracklist', []), ensure_ascii=False)}
+- クレジット情報: {steam_info.get('store_credits', 'なし')}
 
 ### MUSICBRAINZ CANDIDATES:
 {json.dumps(mbz_candidates, indent=2, ensure_ascii=False)}
@@ -108,6 +113,7 @@ class LLMOrganizer:
 {json.dumps([{"id": tid, "duration": s[0].get("duration")} for tid, s in track_sources.items()], indent=2)}
 
 ### MANDATORY OUTPUT FORMAT (JSON ONLY):
+**注意：分析理由（reason）を含め、すべてのテキストは必ず「日本語」で出力してください。**
 {{
   "identity_confidence": number,
   "integrity_quality": number,
@@ -119,7 +125,9 @@ class LLMOrganizer:
     "canonical_album_artist": "...",
     "canonical_genre": "...",
     "canonical_year": "YYYY",
+    "canonical_label": "レーベル名（またはパブリッシャー）",
     "chosen_mbz_index": number | null
+
   }}
 }}
 """
@@ -151,10 +159,19 @@ class LLMOrganizer:
 精密なトラックマッピングを行いなさい。
 Identity: {json.dumps(global_identity, indent=2)}
 
+### STEAM STORE DATA (OFFICIAL):
+- トラックリスト: {json.dumps(steam_info.get('store_tracklist', []), ensure_ascii=False)}
+- クレジット情報: {steam_info.get('store_credits', 'なし')}
+
+### INSTRUCTION:
+1. クレジット情報の文章（例: "Track 1 by X"）を読み解き、対応するトラックの composer や artist に紐付けること。
+2. Steam公式トラックリストのタイトルとローカルを照合し、MBZよりもSteam公式を優先する場合（MBZが誤っている、またはSteamがより詳細な場合）はそれを利用しなさい。
+
 ### TRACKS TO MAP:
 {json.dumps(chunk_sources, indent=2, ensure_ascii=False)}
 
 ### MANDATORY OUTPUT FORMAT (JSON ONLY):
+**注意：判断理由（reason）を含め、すべてのテキストは必ず「日本語」で出力してください。**
 {{
   "track_instructions": {{
      "TRACK_ID": {{
