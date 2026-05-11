@@ -76,6 +76,38 @@ class LLMOrganizer:
         full_logs = []
         
         # --- Phase 1: Determine Global Identity (The "Soul") ---
+        # Formatting helpers for Markdown readability
+        def format_store_tracks(tracks):
+            if not tracks: return "なし"
+            md = "\n| Disc | No | Title | Duration (s) |\n|---|---|---|---|\n"
+            for t in tracks: md += f"| {t.get('disc','')} | {t.get('number','')} | {t.get('title','')} | {t.get('duration_s','')} |\n"
+            return md
+
+        def format_mbz_candidates(cands):
+            if not cands: return "なし"
+            md = "\n"
+            for i, c in enumerate(cands):
+                md += f"#### Candidate [{i}]: {c.get('album')} (Score: {c.get('score')})\n"
+                md += f"- **Artist**: {c.get('artist')}\n- **Year**: {c.get('year')}\n- **Label**: {c.get('label')}\n- **Tracks**: {c.get('track_count')} (Digital: {c.get('is_digital')})\n- **Evidence**: {', '.join(c.get('evidence', []))}\n"
+                md += "- **Tracklist Sample**:\n"
+                for t in c.get('tracks', [])[:5]:
+                    md += f"  - {t.get('position')}: {t.get('title')}\n"
+                if len(c.get('tracks', [])) > 5: md += "  - ...\n"
+                md += "\n"
+            return md
+
+        def format_local_summary(sources):
+            if not sources: return "なし"
+            md = "\n| Logical ID | Duration (s) |\n|---|---|\n"
+            for tid, s in sources.items():
+                dur = s[0].get('duration') if s else 'Unknown'
+                md += f"| {tid} | {dur} |\n"
+            return md
+
+        steam_tracks_json = json.dumps(steam_info.get('store_tracklist', []), ensure_ascii=False)
+        mbz_cands_json = json.dumps(mbz_candidates, indent=2, ensure_ascii=False)
+        local_tracks_json = json.dumps([{"id": tid, "duration": s[0].get("duration")} for tid, s in track_sources.items()], indent=2)
+
         global_id_prompt = f"""
 あなたは音楽メタデータ管理の権威ある【マスター・アーカイブ監査官】です。
 提供された情報源を分析し、この作品の「Identity（身元）」と「Integrity（品質）」を個別に評価してください。
@@ -103,17 +135,18 @@ class LLMOrganizer:
 - リリース年: {re.search(r'(\d{{4}})', str(steam_info.get('release_date', ''))).group(1) if re.search(r'(\d{{4}})', str(steam_info.get('release_date', ''))) else 'Unknown'}
 
 ### STEAM STORE DATA (OFFICIAL):
-- トラックリスト: {json.dumps(steam_info.get('store_tracklist', []), ensure_ascii=False)}
+- トラックリスト: {steam_tracks_json}
 - クレジット情報: {steam_info.get('store_credits', 'なし')}
 
 ### MUSICBRAINZ CANDIDATES:
-{json.dumps(mbz_candidates, indent=2, ensure_ascii=False)}
+{mbz_cands_json}
 
 ### LOCAL TRACK LIST SUMMARY:
-{json.dumps([{"id": tid, "duration": s[0].get("duration")} for tid, s in track_sources.items()], indent=2)}
+{local_tracks_json}
 
 ### MANDATORY OUTPUT FORMAT (JSON ONLY):
 **注意：分析理由（reason）を含め、すべてのテキストは必ず「日本語」で出力してください。**
+```json
 {{
   "identity_confidence": number,
   "integrity_quality": number,
@@ -130,8 +163,15 @@ class LLMOrganizer:
 
   }}
 }}
+```
 """
         global_res, global_log = self._call_llm(app_id, global_id_prompt)
+        
+        # Add human-readable version to the log
+        human_prompt = global_id_prompt.replace(steam_tracks_json, format_store_tracks(steam_info.get('store_tracklist', [])))
+        human_prompt = human_prompt.replace(mbz_cands_json, format_mbz_candidates(mbz_candidates))
+        human_prompt = human_prompt.replace(local_tracks_json, format_local_summary(track_sources))
+        global_log["human_prompt"] = human_prompt
         full_logs.append(global_log)
         
         if not global_res:
@@ -152,42 +192,49 @@ class LLMOrganizer:
         chunk_size = 10 if self.llm_backend == "OLLAMA" else 30
 
         for i in range(0, len(track_ids), chunk_size):
-            chunk_ids = track_ids[i:i + chunk_size]
-            chunk_sources = {tid: track_sources[tid] for tid in chunk_ids}
+            for chunk in chunked_items:
+                chunk_sources = {k: track_sources[k] for k in chunk}
+
+                chunk_json = json.dumps(chunk_sources, indent=2, ensure_ascii=False)
+                mapping_prompt = f"""
+            精密なトラックマッピングを行いなさい。
+            Identity: {json.dumps(global_identity, indent=2)}
+
+            ### STEAM STORE DATA (OFFICIAL):
+            - トラックリスト: {steam_tracks_json}
+            - クレジット情報: {steam_info.get('store_credits', 'なし')}
+
+            ### INSTRUCTION:
+            1. クレジット情報の文章（例: "Track 1 by X"）を読み解き、対応するトラックの composer や artist に紐付けること。
+            2. Steam公式トラックリストのタイトルとローカルを照合し、MBZよりもSteam公式を優先する場合（MBZが誤っている、またはSteamがより詳細な場合）はそれを利用しなさい。
+
+            ### TRACKS TO MAP:
+            {chunk_json}
+
+            ### MANDATORY OUTPUT FORMAT (JSON ONLY):
+            **注意：判断理由（reason）を含め、すべてのテキストは必ず「日本語」で出力してください。**
+            ```json
+            {{
+              "track_instructions": {{
+                 "TRACK_ID": {{
+                    "action": "use_mbz" | "use_local_tag" | "use_filename" | "needs_review",
+                    "mbz_track_index": number,
+                    "override_title": string | null,
+                    "reason": "判断理由（日本語）"
+                 }}
+              }}
+            }}
+            ```
+            """
+            res, log_data = self._call_llm(app_id, mapping_prompt)
+
+            human_mapping_prompt = mapping_prompt.replace(steam_tracks_json, format_store_tracks(steam_info.get('store_tracklist', [])))
+            human_mapping_prompt = human_mapping_prompt.replace(chunk_json, format_local_summary(chunk_sources))
+            log_data["human_prompt"] = human_mapping_prompt
+            full_logs.append(log_data)
             
-            mapping_prompt = f"""
-精密なトラックマッピングを行いなさい。
-Identity: {json.dumps(global_identity, indent=2)}
-
-### STEAM STORE DATA (OFFICIAL):
-- トラックリスト: {json.dumps(steam_info.get('store_tracklist', []), ensure_ascii=False)}
-- クレジット情報: {steam_info.get('store_credits', 'なし')}
-
-### INSTRUCTION:
-1. クレジット情報の文章（例: "Track 1 by X"）を読み解き、対応するトラックの composer や artist に紐付けること。
-2. Steam公式トラックリストのタイトルとローカルを照合し、MBZよりもSteam公式を優先する場合（MBZが誤っている、またはSteamがより詳細な場合）はそれを利用しなさい。
-
-### TRACKS TO MAP:
-{json.dumps(chunk_sources, indent=2, ensure_ascii=False)}
-
-### MANDATORY OUTPUT FORMAT (JSON ONLY):
-**注意：判断理由（reason）を含め、すべてのテキストは必ず「日本語」で出力してください。**
-{{
-  "track_instructions": {{
-     "TRACK_ID": {{
-        "action": "use_mbz" | "use_local_tag" | "use_filename" | "needs_review",
-        "mbz_track_index": number,
-        "override_title": string | null,
-        "reason": "判断理由（日本語）"
-     }}
-  }}
-}}
-"""
-            chunk_res, chunk_log = self._call_llm(app_id, mapping_prompt)
-            full_logs.append(chunk_log)
-            
-            if chunk_res and "track_instructions" in chunk_res:
-                instructions = chunk_res["track_instructions"]
+            if res and "track_instructions" in res:
+                instructions = res["track_instructions"]
                 for tid in instructions:
                     instructions[tid].update({
                         "TPE2": global_identity.get("canonical_album_artist"),

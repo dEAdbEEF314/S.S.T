@@ -33,10 +33,11 @@ class AudioTagger:
         # Basic command
         cmd = ["ffmpeg", "-y", "-i", str(source_path)]
         
+        # Enforce ID3v2.3 for both AIFF and MP3
         if tier == "lossless":
             cmd += ["-write_id3v2", "1", "-id3v2_version", "3"]
         else:
-            cmd += ["-codec:a", "libmp3lame", "-qscale:a", "2"]
+            cmd += ["-codec:a", "libmp3lame", "-qscale:a", "2", "-id3v2_version", "3"]
 
         cmd.append(str(target_path))
         
@@ -71,12 +72,11 @@ class AudioTagger:
             if tag_map.get("label"):
                 tags.add(TPUB(encoding=3, text=tag_map["label"]))
 
-            # Handle Year (TYER for ID3v2.3, TDRC for ID3v2.4)
+            # Handle Year (Strictly TYER for ID3v2.3)
+            # We delete TDRC first to prevent mutagen from auto-syncing/modernizing it.
+            tags.delall("TDRC")
             year_val = tag_map["year"][:4] if tag_map.get("year") else "0000"
-            if isinstance(audio, MP3):
-                tags.add(TYER(encoding=3, text=year_val))
-            else:
-                tags.add(TDRC(encoding=3, text=year_val))
+            tags.add(TYER(encoding=3, text=year_val))
 
             tags.add(TRCK(encoding=3, text=tag_map["track_number"]))
             tags.add(TPOS(encoding=3, text=tag_map["disc_number"]))
@@ -85,7 +85,7 @@ class AudioTagger:
 
             # Comment length adjustment (Prune tags unit by unit if too long)
             comment_text = tag_map["comment"]
-            if isinstance(audio, MP3) and len(comment_text.encode('utf-16')) > 2000:
+            if len(comment_text.encode('utf-16')) > 2000:
                 parts = comment_text.split(" | ")
                 if len(parts) >= 4:
                     name, tags_str, app_id, url = parts[0], parts[1], parts[2], parts[3]
@@ -101,10 +101,11 @@ class AudioTagger:
                 with open(artwork_path, "rb") as f:
                     tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Front Cover', data=f.read()))
 
-            if isinstance(audio, MP3):
-                audio.save(v2_version=3)
-            else:
-                audio.save()
+            # Force save as ID3v2.3
+            audio.save(v2_version=3)
+
+        except Exception as e:
+            logger.error(f"Failed to write tags to {file_path.name}: {e}")
 
         except Exception as e:
             logger.error(f"Failed to write tags to {file_path.name}: {e}")
@@ -131,7 +132,7 @@ class AudioTagger:
                 "album": get_text("TALB"),
                 "album_artist": get_text("TPE2"),
                 "genre": get_text("TCON"),
-                "year": get_text("TDRC"),
+                "year": get_text("TYER") or get_text("TDRC"),
                 "track_number": get_text("TRCK"),
                 "disc_number": get_text("TPOS"),
                 "composer": get_text("TCOM"),

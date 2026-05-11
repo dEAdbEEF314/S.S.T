@@ -102,8 +102,8 @@ S.S.T is a standalone CLI tool designed to identify Steam soundtracks with high 
 
 1.  **Clone the Repository**:
     ```bash
-    git clone https://github.com/your-repo/s-s-t.git
-    cd s-s-t
+    git clone https://github.com/dEAdbEEF314/S.S.T.git
+    cd S.S.T
     ```
 2.  **Setup Dependencies (WSL2 Recommended)**:
     Requires Python 3.12+ and `uv`.

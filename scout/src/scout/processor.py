@@ -189,9 +189,66 @@ class LocalProcessor:
             
             self._send_notifications(app_id, steam_meta.name, status, message, score, reason, llm_log, any_audio_failures)
             
-            log_bundle = {"llm_log.json": llm_log, "mbz_log.json": mbz_log, "metadata.json": summary_meta,
-                          "BASIS_for_CLASSIFICATION.md": self._generate_classification_basis(app_id, steam_meta, status, message, score, reason, len(processed_tracks_meta), llm_log, mbz_candidates)}
+            log_bundle = {
+                "mbz_log.json": mbz_log, 
+                "metadata.json": summary_meta,
+                "BASIS_for_CLASSIFICATION.md": self._generate_classification_basis(app_id, steam_meta, status, message, score, reason, len(processed_tracks_meta), llm_log, mbz_candidates)
+            }
+
+            # Human-readable LLM logs
+            p1_log = llm_log.get("phase1_log", {})
+            if p1_log.get("human_prompt"): log_bundle["LLM_PROMPT.md"] = p1_log["human_prompt"]
+            elif p1_log.get("prompt"): log_bundle["LLM_PROMPT.md"] = p1_log["prompt"] # Fallback
             
+            # Format LLM Response as Markdown
+            if "phase1_res" in llm_log:
+                res_data = llm_log["phase1_res"]
+                resp_md = f"# LLM Phase 1 Response\n\n"
+                resp_md += f"- **Identity Confidence**: {res_data.get('identity_confidence')}\n"
+                resp_md += f"- **Integrity Quality**: {res_data.get('integrity_quality')}\n"
+                resp_md += f"- **Strategy**: {res_data.get('strategy')}\n"
+                resp_md += f"- **Semantic Label**: {res_data.get('semantic_label')}\n"
+                resp_md += f"\n## Reason\n> {res_data.get('confidence_reason')}\n\n"
+                resp_md += "## Global Tags\n"
+                for k, v in res_data.get('global_tags', {}).items():
+                    resp_md += f"- **{k}**: {v}\n"
+                
+                # Check for track instructions (Phase 2)
+                if "phase2_logs" in llm_log and llm_log["phase2_logs"]:
+                    resp_md += "\n# Track Mapping Instructions\n\n| Track ID | Action | MBZ Index | Override Title | Reason |\n|---|---|---|---|---|\n"
+                    # Combine all chunks
+                    for c_log in llm_log["phase2_logs"]:
+                        try:
+                            parsed = json.loads(c_log.get("response", "{}"))
+                            instrs = parsed.get("track_instructions", {})
+                            for tid, t_data in instrs.items():
+                                resp_md += f"| {tid} | {t_data.get('action')} | {t_data.get('mbz_track_index')} | {t_data.get('override_title')} | {t_data.get('reason')} |\n"
+                        except: pass
+                log_bundle["LLM_RESPONSE.md"] = resp_md
+            elif p1_log.get("response"): 
+                log_bundle["LLM_RESPONSE.md"] = p1_log["response"] # Fallback
+            
+            # Human-readable Metadata
+            meta_md = f"# Metadata Summary: {steam_meta.name}\n\n"
+            meta_md += f"- **AppID**: {app_id}\n- **Status**: {status}\n- **Processed At**: {summary_meta.get('processed_at')}\n\n"
+            meta_md += "## Track Tags (ID3v2.3 mapped)\n| Disc/Track | Title | Artist | Album Artist | Genre | Label (TPUB) | Year (TYER) | Grouping (TIT1) | Comment (COMM) | Composer | Language |\n|---|---|---|---|---|---|---|---|---|---|---|\n"
+            for t in summary_meta.get('tracks', []):
+                tg = t.get('tags', {})
+                meta_md += f"| {tg.get('disc_number','')} - {tg.get('track_number','')} | {tg.get('title','')} | {tg.get('artist','')} | {tg.get('album_artist','')} | {tg.get('genre','')} | {tg.get('label','')} | {tg.get('year','')} | {tg.get('grouping','')} | {tg.get('comment','')} | {tg.get('composer','')} | {tg.get('language','')} |\n"
+            log_bundle["METADATA.md"] = meta_md
+            
+            # Human-readable MBZ Log
+            if mbz_log:
+                mbz_md = f"# MusicBrainz Identification Log\n\n"
+                cands = mbz_log.get('ranked_candidates', [])
+                mbz_md += f"- **Target Name**: {mbz_log.get('target_name', steam_meta.name)}\n- **Candidates Found**: {len(cands)}\n\n"
+                for c in cands:
+                    mbz_md += f"## {c.get('album')} (Score: {c.get('score')})\n"
+                    mbz_md += f"- **MBID**: {c.get('mbid')}\n- **Evidence**: {', '.join(c.get('evidence', []))}\n\n"
+                if not cands:
+                    mbz_md += "No candidates found.\n"
+                log_bundle["MBZ_LOG.md"] = mbz_md
+
             if not processed_tracks_meta and status != "skip":
                 logger.warning(f"[{app_id}] No tracks were processed successfully. Check logs for failures.")
             
