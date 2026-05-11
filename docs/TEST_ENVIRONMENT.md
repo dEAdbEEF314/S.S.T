@@ -1,61 +1,33 @@
-# Test Environment Specification (Local-only Architecture)
+# S.S.T Test Environment Specification
 
-## Overview
-This document describes the environment and infrastructure used for testing the S.S.T (Steam Soundtrack Tagger) system. The system now operates in a "Local-only (Edge Processing)" mode, where audio processing, tagging, and LLM consolidation happen directly on the machine with access to the Steam library.
+This document defines the standard test environment for validating S.S.T's standalone CLI logic and API integrations.
 
-## Infrastructure Dependencies
-The system relies on the following external services:
+## 1. Core Stack
+- **OS**: WSL2 (Ubuntu 22.04+)
+- **Runtime**: Python 3.12+ managed by `uv`.
+- **Media Engine**: FFmpeg (must be available in WSL `PATH`).
+- **Database**: SQLite 3.
 
-- **Storage (S3/SeaweedFS)**: `http://swfs-s3.outergods.lan`
-  - Bucket: `sst-data`
-  - Used for processed archives (`archive/`) and review queue (`review/`). The `ingest/` prefix is deprecated.
-- **AI / LLM**: `https://generativelanguage.googleapis.com/v1beta/openai` (Gemini API).
-  - Used for metadata consolidation and "The Organizer" logic.
-  - Requires `LLM_API_KEY` in the `.env` file.
+## 2. Infrastructure (Local Docker)
+For the "Ultimate Data Mode", a local PICS bridge must be active:
+- **Container**: `steamcmd/api:latest`
+- **Exposed Port**: `8080` (mapped to internal `8000`).
+- **Endpoint**: `http://localhost:8080/v1/info/{AppID}`
 
-## Component Configuration
-The system is consolidated into two primary interfaces:
+## 3. Data Sources (Validation Targets)
+Tests should be run against these representative AppIDs:
+1.  **1027880** (A Dance of Fire and Ice OST): Modern PICS tracklist + Direct MBZ links.
+2.  **1113510** (Hellsinker): Deep directory structure + Legacy/Manual Review case.
+3.  **1167720** (Artifact Adventure): Mixed quality formats (AIFF/MP3) for deduplication testing.
 
-### 1. Scout (Local Processor)
-- **Role**: Scans Steam library, adopts optimal audio files, converts formats locally (WSL2), consolidates metadata via LLM, tags files, and uploads finalized results to S3.
-- **Config**: `.env` (Consolidated)
-- **Primary Execution**: `cd scout && uv run -m scout.main`
+## 4. Environment Variables (.env)
+A valid test environment MUST have:
+- `STEAM_WEB_API_KEY`: Active key for `IStoreBrowseService`.
+- `STEAM_PICS_BRIDGE_URL`: Set to `http://localhost:8080/v1/info/`.
+- `LLM_BACKEND`: `GEMINI` or `OLLAMA` (local).
 
-### 2. UI Dashboard (Docker)
-- **Role**: Provides real-time monitoring of archived albums, metadata inspection, and ZIP downloads.
-- **Config**: `.env` (Consolidated)
-- **URL**: `http://localhost:8000`
-
----
-
-## Local Production Testing Procedure
-
-The production testing is performed directly in the workspace root.
-
-### 1. Environment Preparation
-All commands should be executed from the workspace root: `/home/sexyroot/AI_Base/WorkSpace/S.S.T/`
-
-Ensure dependencies are up to date using `uv`:
-```bash
-# From workspace root
-uv sync
-```
-
-### 2. Configuration
-Ensure the `.env` file is present in the workspace root and contains all necessary credentials for S3 and LLM. 
-The system will use `SST_WORKING_DIR` (e.g., `/home/sexyroot/sst-work`) to perform copy/conversion operations without touching the Steam library.
-
-### 3. Execution
-To process soundtracks and verify the tagging logic:
-
-```bash
-# Run the local processor
-export $(grep -v '^#' .env | xargs)
-cd scout
-uv run -m scout.main --limit 5
-```
-
-### 4. Verification
-- **Web UI**: Access `http://localhost:8000` and check the "Archive" tab.
-- **S3 Filer**: Verify that `archive/{app_id}/` contains only one audio file per track (AIFF or MP3) and the `metadata.json`.
-- **ZIP Download**: Download the ZIP from the UI and verify tags using external tools like Mp3tag.
+## 5. Verification Checklist
+- [ ] Automatic ZIP extraction on Windows (via native `tar.exe`).
+- [ ] Correct ID3v2.3 tagging for MP3.
+- [ ] Clean temporary buffer removal.
+- [ ] PICS data persistence in SQLite `steam_store_data`.

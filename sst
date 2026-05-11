@@ -21,7 +21,7 @@ show_help() {
     echo "Usage: ./sst [options]"
     echo ""
     echo "Basic Options:"
-    echo "      --all          Process all unprocessed soundtracks (Explicit required)."
+    echo "      --all          Process all unprocessed soundtracks (Requires 3 confirmations)."
     echo "  -n, --limit N      Process N unprocessed soundtracks."
     echo "  -f, --force        Force re-processing of already completed albums."
     echo "      --appid ID     Process only a specific Steam AppID."

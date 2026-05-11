@@ -1,7 +1,6 @@
-FROM qwen2.5:7b
+FROM qwen3.5:9b
 
 # --- 推論パラメータ ---
-# 決定論的挙動（温度0）で精度を最大化
 PARAMETER temperature 0
 PARAMETER num_ctx 32768
 PARAMETER num_predict 4096

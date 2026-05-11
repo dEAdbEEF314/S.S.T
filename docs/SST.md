@@ -14,20 +14,26 @@ This is the **Single Source of Truth** for the S.S.T project. Any past documenta
 ## 2. Metadata Sovereignty (The "LOCKED TRUTH")
 Specific information is considered "Deterministic" and cannot be modified by LLMs or heuristics.
 
-### 2.1 Steam API Data (LOCKED)
-The following fields from the Steam Store API are absolute truths:
-- **Album Title**: `steam_meta.name`
-- **Artist (Album-level)**: `steam_meta.developer` + `steam_meta.publisher`
-- **Release Year**: `steam_meta.release_date[:4]`
-- **Steam IDs**: `app_id`, `parent_app_id`
-- **Comment/Grouping Metadata**: Must reference the **Parent Game** details. If `parent_app_id` is missing, fallback to using the soundtrack's own AppID and Name.
+### 2.1 Steam API Data (LOCKED - 3-Tier Architecture)
+To maximize data depth while ensuring reliability, the system uses a 3-tier API fetch strategy (Zero Scraping):
+- **Tier 1 (Official Store API)**: Retrieves localized Album Title, Genres, and Release Date.
+- **Tier 2 (Self-hosted PICS Bridge)**: Retrieves structured Tracklists, multi-language Credits, and Label information directly from Steam's internal PICS database.
+- **Tier 3 (Steam Web API)**: Retrieves high-fidelity User Tags (popular tags) using an official API key.
 
-### 2.2 Hybrid Scoring System
-To ensure absolute reliability, the system employs a two-stage evaluation process:
+The following fields from these APIs are absolute truths:
+- **Album Title**: `steam_meta.name`
+- **Artist (Album-level)**: `steam_meta.developer`, `steam_meta.publisher`
+- **Release Year**: Extracted via 4-digit regex from `steam_meta.release_date`.
+- **Steam IDs**: `app_id`, `parent_app_id`
+- **Comment Metadata**: Must reference the **Parent Game** details including its popular tags.
+
+### 2.2 Hybrid Scoring & Decision System
+To ensure absolute reliability, the system employs a three-stage evaluation process:
 
 #### Stage 1: Python Mathematical Sieve (Calculated in `mbz.py`)
 Python calculates a deterministic score for each MusicBrainz candidate based on physical evidence:
 - **AppID Match (+500)**: Direct Steam AppID link in `url-rels`.
+- **SteamDB Match (+500)**: Direct SteamDB link for the AppID in `url-rels`.
 - **Parent AppID Match (+300)**: Link to the parent game AppID in `url-rels`.
 - **Bandcamp Bonus (+100)**: Official Bandcamp link in `url-rels`.
 - **Title Similarity (0 to +100)**: Highest `SequenceMatcher` score against Steam Name or Local Tags.
@@ -40,6 +46,11 @@ The LLM acts as the final arbiter on a pre-sorted shortlist (Top 3-5 candidates)
 - **Tag Hygiene**: Identifies "Dirty Tags" or other subtle anomalies.
 - **Final Judgment**: Assigns the final rank (S, A, B, or C).
 
+#### Stage 3: Deterministic Fast-Track (LLM Bypass)
+The system automatically promotes an album to `ARCHIVE` without an LLM query if:
+1. A **Direct Link** (Steam or SteamDB) is found in MusicBrainz.
+2. The **Track Count** matches perfectly across MBZ, PICS, and Local files.
+
 ### 2.3 Gate-based Scoring System
 LLM confidence scores must adhere to a strict threshold:
 - **Rank S (100%)**: Perfect match between Steam, MBZ, and Local Tags. -> **ARCHIVE**
@@ -47,21 +58,17 @@ LLM confidence scores must adhere to a strict threshold:
 - **Rank B (80-90%)**: Any minor discrepancy, track count mismatch, or "Dirty Tags". -> **REVIEW**
 - **Rank C (< 80%)**: Conflict or insufficient evidence. -> **REVIEW**
 
-### 2.3 Steam API Access Optimization
-- **Targeted Fetching**: The system MUST utilize the Steam API Key and `@data/userdata.json` to identify relevant AppIDs (Wishlists, Library, etc.).
-- **Minimal Footprint**: Brute-force scanning of the Store API is strictly forbidden. Use user app lists to target and fetch metadata for confirmed soundtracks or parent games with the absolute minimum number of API requests required.
-
 ---
 
 ## 3. Audio & Packaging Integrity
 ### 3.1 Native Buffering Strategy
-To prevent I/O jitter errors from Windows mounts (`/mnt/d`):
-1.  **Gather**: Copy raw source files to WSL2 native filesystem (`/tmp/sst-work`).
-2.  **Transform**: Execute FFmpeg on local files (Strict ID3v2.3, AIFF/MP3 320k).
+To prevent I/O jitter and ensure clean output:
+1.  **Buffer**: Copy raw source files to a dedicated WSL2 buffer (`/tmp/sst-work/buffer_*`) outside the output tree.
+2.  **Transform**: Execute FFmpeg locally. **MP3 files are strictly forced to ID3v2.3** for hardware compatibility.
 3.  **Validate**: Any FFmpeg warning/error triggers **Forced REVIEW**.
 
-### 3.2 Atomic Move
-ZIP files must be generated in the WSL2 native filesystem and moved to the Windows mount ONLY when the compression is 100% complete and verified.
+### 3.2 Deployment & Extraction
+Soundtracks are first packaged as ZIPs for safe transfer, then automatically extracted on the Windows host using native `tar.exe` called from WSL. This preserves file integrity across filesystems.
 
 ---
 
@@ -74,21 +81,27 @@ ZIP files must be generated in the WSL2 native filesystem and moved to the Windo
 ---
 
 ## 5. Tagging Format Standard
-- **Separators**: Use `; ` (Semicolon + Space) for multi-value fields.
+- **Separators**: Use `, ` (Comma + Space) for multi-value fields.
 - **Language Tag (TLAN)**: Use ISO 639-2 (e.g., `jpn`).
 - **Field Mapping**:
     - `TPE1` (Artist): MusicBrainz Credit (Best) or Developer (Fallback).
-    - `TPE2` (Album Artist): Developer; Publisher.
+    - `TPE2` (Album Artist): Developer, Publisher.
     - `TALB` (Album): Steam Album Name (Locked).
-    - `COMM` (Comment): Parent Game Name; AppID; Store URL.
+    - `TPUB` (Label): Official PICS Label or MBZ Label. Fallback to Publisher.
+    - `COMM` (Comment): [Parent Name], [Popular Tags], [AppID], [Store URL].
+      - *Note*: Tags are automatically pruned from the end to stay within the 2000-character limit for ID3v2.3.
 
 ---
 
 ## 6. System Execution Modes
-- **`production`**: Silent terminal (Progress bars only). Logs to file. High-throughput (CPU-optimized).
-- **`development`**: Detailed console logs. Error directories preserved for audit. Cache-bypass.
-- **`LLM_BACKEND`**:
-    - **`OLLAMA`**: Optimized for local Ollama instances. Uses native `/api/chat` for reliable parameter control (e.g., `num_ctx: 32768`).
-    - **`GEMINI`**: Optimized for Google AI Studio (Gemini 1.5 Pro/Flash).
-    - **`OPENAI_COMPATIBLE`**: General-purpose mode for LM Studio or OpenAI. Uses standard `/v1/chat/completions`.
+- **Default Mode**: `LOG_LEVEL=INFO`. Standard append logs.
+- **Debug Mode (`--dev`)**: Forces `LOG_LEVEL=DEBUG`. Generates unique timestamped logs (`SST_DEBUG_*.log`). Retains temporary work files on error.
+- **Critical Commands**: `--delete-db` and `--finalize` require a mandatory **3-step confirmation**.
 
+---
+
+## 7. Configuration (`.env`)
+Required variables for the "Ultimate Data Mode":
+- `STEAM_WEB_API_KEY`: For official tag retrieval.
+- `STEAM_LOGIN_SECURE`: For `userdata.json` personalized scan.
+- `STEAM_PICS_BRIDGE_URL`: Points to the local Docker PICS bridge.

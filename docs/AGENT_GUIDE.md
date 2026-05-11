@@ -9,230 +9,81 @@ This is an **execution contract**.
 
 # 🎯 Primary Objective
 
-Produce **correct, verifiable, spec-compliant outputs**.
-
-NOT:
-
-- fastest
-- most complete
-- most creative
+Produce **correct, verifiable, spec-compliant outputs** that adhere to the **"Absolute Trust"** policy.
 
 ---
 
 # 🧭 Execution Model
 
 You operate as:
+> A deterministic processing unit in a standalone CLI system.
 
-> A deterministic processing unit in a distributed system
-
-You are NOT:
-
-- a creative assistant
-- a guessing system
-- a best-effort generator
+You are NOT a creative assistant or a guessing system.
 
 ---
 
 # 📚 Mandatory Inputs
 
 Before any action, you MUST reference:
-
-- `docs/01_spec/io_spec.md`
-- `docs/02_execution/pipeline.md`
-- `docs/02_execution/identification_strategy.md`
-- `docs/03_ai/llm_strategy.md`
+- `docs/SST.md` (Core Architecture & Decision logic)
+- `docs/TAGGING_RULE.md` (Audio & Metadata standards)
+- `docs/DEPLOYMENT_GUIDE_jp.md` (Environment setup)
 
 ---
 
 # 🔒 Hard Constraints
 
 ## 1. No Hallucination
+If data is missing: **DO NOT GUESS**.
+- Fallback to another official source (PICS, Web API).
+- Reduce confidence.
+- Mandatory route to `REVIEW`.
 
-If data is missing:
-→ DO NOT GUESS
+## 2. Confidence-Gated Decisions (Absolute Trust)
+You MUST adhere to the gate-based scoring system:
+- **ARCHIVE**: Identity Confidence == 100 AND Integrity Quality >= 95.
+- **REVIEW**: Any score lower than above, or any presence of "Dirty Tags" (numbers mixed in titles) that don't match the source spec.
 
-Allowed actions:
+## 3. Mandatory Review Workflow
+1.  **System Action**: Move uncertain items to `review/` as extracted folders.
+2.  **User Action**: Correct metadata manually using tools like **MP3tag**.
+3.  **Finalization**: Use `./sst --finalize` to ingest corrected tags back into the database.
 
-- fallback to another source
-- reduce confidence
-- send to review
+## 4. Pipeline & Safety
+- **3-Step Confirmation**: Mandatory for `--delete-db` and `--finalize`.
+- **Fast-Track**: Bypass LLM ONLY if a direct MBZ link exists and track counts align perfectly across all sources.
+- **Buffer Separation**: All temporary processing must occur in `/tmp/sst-work/buffer_*` to prevent workspace pollution.
 
----
+## 5. Tagging Enforcement
+- **ID3v2.3**: Mandatory for MP3 files. Use `TYER` for years.
+- **Separators**: Always use comma + space (`, `).
+- **Pruning**: Automatically prune `COMM` tags from the end if they exceed ~2000 characters.
 
-## 2. Confidence-Gated Decisions
-
-You MUST compute confidence implicitly or explicitly.
-
-### Thresholds
-
-- ≥ 0.75 → Accept
-- 0.70–0.75 → Verify
-- < 0.70 → Fallback
-- < 0.55 → Review
-
-Never bypass thresholds.
-
----
-
-## 3. Mandatory Review Routing
-
-If ANY of the following:
-
-- conflicting metadata
-- low similarity
-- incomplete match
-- API inconsistency
-
-→ OUTPUT:
-
-```json
-{
-  "status": "review"
-}
-````
-
----
-
-## 4. Output Integrity
-
-Output MUST:
-
-* be valid JSON
-* match schema exactly
-* include all required fields
-
-Failure to comply = critical error
-
----
-
-## 5. Pipeline Obedience
-
-You MUST follow pipeline order:
-
-1. Identify
-2. Score
-3. Validate
-4. Normalize
-5. Tag
-6. Store
-
-No skipping steps unless explicitly allowed (fast-track).
-
----
-
-## 6. LLM Usage Rules
-
-When using LLM:
-
-* Compare dual providers if enabled
-* Calculate similarity
-* Apply confidence penalties on failure
-
-Never:
-
-* trust single output blindly
-* accept low similarity
-
----
-
-## 7. Fallback Strategy
-
-Order:
-
-1. Existing Audio Metadata (Validated)
-2. MusicBrainz
-3. Steam
-
-If all fail:
-→ Review
-
----
-
-## 8. AcoustID Usage
-
-* Skip if high confidence
-* Partial first
-* Full fallback if mismatch
-
----
-
-## 9. Error Handling
-
-On error:
-
-* classify error
-* retry if transient
-* otherwise → review
+## 6. Environment Management
+- **You MUST use `uv`** for all Python-related tasks.
+- Always use `uv run` for executing the system to ensure environment consistency.
 
 ---
 
 # 🧠 Decision Framework
 
 Every decision must answer:
-
-1. Is it supported by data?
-2. Does it meet threshold?
+1. Is it supported by **Official Steam PICS** or **MusicBrainz**?
+2. Does it meet the **100/95 threshold**?
 3. Is it reproducible?
 
-If ANY answer = no:
-→ Review
-
----
-
-# ⚠️ Forbidden Behaviors
-
-* Guessing missing metadata
-* Ignoring thresholds
-* Skipping validation
-* Producing partial output
-* Silent failure
+If ANY answer is no → **REVIEW**.
 
 ---
 
 # 🧪 Self-Validation Checklist
+* [ ] JSON valid & schema compliant.
+* [ ] ID3v2.3 compatibility checked.
+* [ ] No hallucination (Source-backed only).
+* [ ] All 3-tier API data considered.
 
-Before output:
-
-* [ ] JSON valid
-* [ ] Spec compliant
-* [ ] Confidence evaluated
-* [ ] No hallucination
-* [ ] All required fields present
-
-If any unchecked:
-→ DO NOT OUTPUT → FIX or REVIEW
-
----
-
-# 🧱 Output Template (Strict)
-
-```json
-{
-  "app_id": "...",
-  "file_refs": [],
-  "status": "success | review",
-  "resolved": {},
-  "tag_result": {},
-  "candidate_count": 0,
-  "storage": {}
-}
-```
-
----
-
-## 10. Environment Management
-
-* **You MUST use `uv`** for any Python-related environment or dependency management.
-* Never use `pip` or `venv` directly.
-* Use `uv run` for executing scripts to ensure environment consistency.
-
-If uncertain:
-
-> YOU MUST FAIL SAFELY
-
-Safe failure = `review`
+If any unchecked → **FIX or REVIEW**.
 
 ---
 
 # End of Document
-
