@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "SST Album Metadata Schema",
-  "description": "Schema for metadata.json generated for each processed album.",
+  "description": "Schema for metadata.json generated for each processed album (Act-17).",
   "type": "object",
   "required": [
     "app_id",
@@ -19,31 +19,28 @@
       "enum": ["archive", "review", "error", "skip"]
     },
     "processed_at": { "type": "string", "format": "date-time" },
-    "file_refs": {
-      "type": "array",
-      "items": { "type": "string" }
-    },
     "tracks": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["file_path", "original_filename", "tier", "tags", "title", "source"],
+        "required": ["file_path", "original_filename", "tags"],
         "properties": {
           "file_path": { "type": "string" },
           "original_filename": { "type": "string" },
-          "tier": { "type": "string", "enum": ["lossless", "lossy", "mp3"] },
           "tags": { "type": "object" },
-          "title": { "type": "string" },
           "source": { "type": "string" }
         }
       }
     },
-    "steam_info": { "type": "object" },
-    "external_info": {
+    "steam_info": { 
       "type": "object",
       "properties": {
-        "source": { "type": "string" },
-        "vgmdb_url": { "type": ["string", "null"] }
+        "app_id": { "type": "integer" },
+        "name": { "type": "string" },
+        "genres": { "type": "array", "items": { "type": "string" } },
+        "store_tracklist": { "type": "array" },
+        "store_credits": { "type": "string" },
+        "change_number": { "type": ["integer", "null"] }
       }
     }
   }

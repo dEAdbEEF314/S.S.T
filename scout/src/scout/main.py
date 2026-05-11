@@ -179,6 +179,15 @@ def fetch_steam_userdata(config: Config, console: Console):
     except Exception as e:
         console.print(f"[yellow]! Failed to fetch Steam userdata: {e}[/yellow]")
 
+def handle_all_confirm(console: Console):
+    console.print(f"[bold red]!!! WARNING: STARTING FULL LIBRARY PROCESSING !!![/bold red]")
+    console.print("[dim]This may take a long time and significant LLM tokens.[/dim]")
+    # 3-Step Confirmation
+    if not Confirm.ask("[Step 1/3] Process ALL unprocessed soundtracks?", console=console): return False
+    if input("[Step 2/3] Type 'YES' to proceed: ") != 'YES': return False
+    if input("[Step 3/3] Type 'START' to begin: ") != 'START': return False
+    return True
+
 def main():
     parser = argparse.ArgumentParser(description="SST Scout")
     parser.add_argument("--all", action="store_true", help="Process all unprocessed soundtracks")
@@ -209,6 +218,8 @@ def main():
     
     db = DatabaseManager(Path(config.sst_db_path))
     if args.finalize: return handle_finalize(config, db, console)
+    if args.all:
+        if not handle_all_confirm(console): return
 
     log_file = setup_logging(config, console, is_dev=args.dev)
     logger.info(f"SST starting. Log level: {config.log_level}. File: {log_file}")
@@ -241,7 +252,5 @@ def main():
     
     render_summary_table(results, config.user_language, console)
 
-if __name__ == "__main__":
-    main()
 if __name__ == "__main__":
     main()

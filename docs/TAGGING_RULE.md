@@ -11,62 +11,62 @@ SST groups audio files found in a Steam soundtrack directory by their logical tr
 - **Lossy High (Tier 2)**: OGG, AAC, M4A.
 - **MP3 (Tier 3)**: Standard MP3 files.
 
-If multiple formats exist for the same track, the format with the highest tier is chosen for conversion/tagging.
+### 1.2 Deduplication Logic
+The system collapse duplicates by stripping common quality suffixes (e.g., `(AIFF)`, `[FLAC]`, `(MP3)`) from filename stems. If multiple formats exist for the same track, the format with the highest tier is chosen.
 
 ## 2. Metadata Identification Logic
 
-### 2.1 Hybrid Consolidation (Act-11)
-The system uses a hybrid approach combining deterministic programmatic logic and LLM-based reasoning.
+### 2.1 3-Tier API Consolidation
+The system uses three structured data sources before resorting to LLM reasoning:
+1. **Tier 1 (Official Store API)**: Basic localized info (Name, Genre).
+2. **Tier 2 (PICS Bridge)**: Structured Tracklists and Credits directly from Steam's database.
+3. **Tier 3 (Steam Web API)**: User-defined popular tags.
 
-1.  **Programmatic Pre-processing**:
-    - **Local Cross-Validation**: If tags in different formats (e.g., MP3 and FLAC) match perfectly, they are marked as "Strong Evidence."
-    - **MusicBrainz Scoring**: Candidates are ranked by title similarity, digital media status, and track count alignment.
-2.  **LLM Consolidation**:
-    - An entire album is processed in a single LLM request (All-in-One).
-    - The LLM resolves conflicts between Steam, MusicBrainz, and Local Tags based on evidence weights.
+### 2.2 MusicBrainz Candidate Ranking
+MBZ candidates are scored based on physical evidence:
+- **AppID Match (+500)**: Direct Steam AppID link in `url-rels`.
+- **SteamDB Match (+500)**: Direct SteamDB link for the AppID in `url-rels`.
+- **Parent AppID Match (+300)**: Link to the parent game AppID in `url-rels`.
+- **Structural Alignment (+50)**: Exact track count match.
+- **Tracklist Fingerprint (+200)**: Average title similarity > 80%.
 
-### 2.2 MusicBrainz Candidate Ranking (Rules a-f)
-MBZ candidates are scored based on:
-- **a. Title Match**: Album title matches Steam name (+40).
-- **b. Format**: "Digital Media" preferred (+50).
-- **c. Context**: No "Bandcamp" in title (+20).
-- **d. Track Count**: Exact match with local files (+40).
-- **e. Date**: Matches Steam release date (+40).
-- **f. Parent Date**: Matches parent game release date (+30).
+### 2.3 Deterministic Fast-Track
+If a **Direct Link** is found and the **Track Count** matches perfectly across MBZ, Steam PICS, and Local files, the system promotes the album to `ARCHIVE` automatically, bypassing the LLM.
 
 ## 3. ID3v2.3 Tagging Standards
 
-To ensure compatibility across Windows and various media players, the following strict formats are enforced.
+To ensure maximum compatibility with hardware (e.g., DJ gear) and Windows, the following standards are enforced.
 
 ### 3.1 Field Mapping & Formats
 | ID3 Frame | Field | Format / Rule |
 | :--- | :--- | :--- |
 | **TIT2** | Title | Consolidated track title. No "Unknown". |
-| **TPE1** | Artist | Main composers or performers. |
-| **TALB** | Album | Official Steam album title. |
-| **TPE2** | Album Artist | `[Developer] | [Publisher]`. |
-| **TCON** | Genre | Prefixed: `STEAM VGM, [Genre]`. |
-| **TDRC** | Year | Release Year (YYYY). |
-| **TRCK** | Track Number | Single integer (e.g., `1`, `16`). No `n/N`. |
-| **TPOS** | Disc Number | `n/N` format (e.g., `1/1`). Forced to `1/1` for single-disc. |
-| **TIT1** | Grouping | `[Game Name] | Steam`. |
-| **COMM** | Comment | `[Game Title] | [Tags] | [AppID] | [Store URL]`. |
-| **TLAN** | Language | ISO 639-2 code (e.g., `jpn`, `eng`). |
+| **TPE1** | Artist | Main composers/performers from MBZ or Steam. |
+| **TALB** | Album | Official Steam album title (Locked). |
+| **TPE2** | Album Artist | `[Developer], [Publisher]`. |
+| **TCON** | Genre | Prefixed: `STEAM VGM, [All Genres]`. |
+| **TPUB** | Label | Official PICS Label or MBZ Label. |
+| **TYER** | Year | Release Year (YYYY). *Note: MP3 uses TYER for v2.3.* |
+| **TRCK** | Track Number | Single integer (e.g., `1`, `16`). |
+| **TPOS** | Disc Number | `n/N` format (e.g., `1/1`). |
+| **TIT1** | Grouping | `[Game Name], Steam`. |
+| **COMM** | Comment | `[Game Name], [Tags], [AppID], [Store URL]`. |
+| **TLAN** | Language | ISO 639-2 code (e.g., `jpn`). |
 
 ### 3.2 Technical Requirements
-- **Encoding**: UTF-16 with BOM (encoding=1) for all text frames.
-- **Artwork**: Exactly 500x500 PNG. Square images are force-resized; non-square images are padded with black.
+- **Strict ID3v2.3**: MP3 files are force-saved in v2.3 format.
+- **Comment Pruning**: Tags in the `COMM` field are automatically removed from the end if the total length exceeds ~2000 characters to prevent ID3v2.3 limit violations.
 
 ## 4. Routing & Validation (Archive vs. Review)
 
 ### 4.1 Archive (Success)
 Albums reach `archive/` only if:
-- LLM confidence score is **80 or higher**.
-- No fields contain "Unknown".
-- Track numbers are not "0".
+- LLM confidence score is **100** (or Fast-Tracked).
+- Integrity Quality is **95 or higher**.
+- No "Dirty Tags" (track numbers mixed into titles) exist.
 
 ### 4.2 Review (Manual Check)
 Albums are moved to `review/` if:
-- LLM confidence is low (< 80).
-- Mandatory metadata is missing.
-- Severe conflicts between local files and MusicBrainz are found.
+- Any doubt in identity (Score < 100) or quality (Quality < 95).
+- Audio failures or FFmpeg warnings are detected.
+- User review is manually requested by the LLM.

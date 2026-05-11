@@ -17,7 +17,11 @@ scout/.venv/
 # All local databases, caches, and user-specific data
 data/
 *.db
-*.json
+# Only ignore JSON files in data and logs, keeping schemas and configs
+data/*.json
+logs/*.json
+scout_cache.json
+llm_usage_*.json
 !data/README.md
 
 # ── Logs ──────────────────────────────────────────────────────────────────────
@@ -76,8 +80,8 @@ Thumbs.db
 
 # ── AI Tooling (Internal skills and instructions) ───────────────────────────
 .gemini/
-skills/
-.github/copilot-instructions.md
+# Note: .github/copilot-instructions.md is tracked, so no longer ignored here
+# skills/ is kept as ignored if it contains local-only custom skills
 
 # ── Legacy / Obsolete ─────────────────────────────────────────────────────────
 legacy/

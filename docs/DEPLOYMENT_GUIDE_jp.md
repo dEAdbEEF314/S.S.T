@@ -1,74 +1,74 @@
-# S.S.T 分散デプロイガイド (UI 同居版)
+# S.S.T スタンドアロン・デプロイガイド (Ultimate Data Mode)
 
-このドキュメントでは、本番テスト用にS.S.Tの各コンポーネントを分散デプロイする方法を説明します。**Server A (Windows PC) で UI をホストする構成**です。
+このドキュメントでは、S.S.T をローカル環境（WSL2 + Windows）で最大限のパフォーマンスと精度で動作させるためのセットアップ方法を説明します。
 
 ## 1. アーキテクチャ概要
 
-- **Server C (中央管理)**: Core (Prefect Server) および S3互換ストレージをホストします。
-- **Server B (ワーカー)**: 水平にスケールし、楽曲の特定やタグ付けタスクを処理します。
-- **Server A (エッジ/UI)**: **Windows PC**。Steamライブラリをスキャンし、さらに**ユーザーが操作するUI**を提供します。
+現在の S.S.T は、複雑なサーバー構成を必要としない **スタンドアロン CLI ツール** です。
+情報の最大化と Cloudflare 制限の回避のため、以下の 2 つを併用する「究極データ取得モード」を推奨します。
+
+- **S.S.T 本体 (WSL2)**: Python 3.12 + `uv` で動作するメインプログラム。
+- **PICS Bridge (Local Docker)**: Steam 内部データベースから直接情報を引き出すためのローカルブリッジ。
 
 ## 2. 前提条件
 
-- 全てのサーバーに Docker / Docker Compose がインストールされていること（Windows は Docker Desktop + WSL2 推奨）。
-- ノード間の疎通確認（Prefect: 4200, S3: 8333, UI: 8000）。
+- **WSL2 (Ubuntu等)**: Python 3.12 および `uv` がインストールされていること。
+- **Docker Desktop**: Windows 側でインストールされ、WSL2 連携が有効であること。
+- **Steam Web API Key**: [こちら](https://steamcommunity.com/dev/apikey)から取得してください。
 
 ---
 
-## 3. Server C: 中央管理 (Core)
+## 3. ステップ 1: PICS Bridge の起動 (Docker)
 
-### ステップ 1: 環境設定
-`.env.core.example` を `.env.core` にコピーし、S3等の設定を行います。
+外部のキャッシュサーバーを介さず、自分の PC から直接 Steam データを取得するために、以下のコマンドをターミナルで実行してください。
+
 ```bash
-cp .env.core.example .env.core
+docker run --name sst-pics-bridge -d -p 8080:8000 steamcmd/api:latest
 ```
 
-### ステップ 2: 起動
+- これにより、`http://localhost:8080/v1/info/` で PICS データが取得可能になります。
+- Windows の Docker Desktop 画面で `sst-pics-bridge` が実行中であることを確認してください。
+
+---
+
+## 4. ステップ 2: S.S.T の環境設定 (.env)
+
+プロジェクト直下の `.env` ファイルに、取得したキーや設定を記述します。
+
 ```bash
-docker-compose -f docker-compose.core.yml up -d
+# Steam Web API Key (必須)
+STEAM_WEB_API_KEY=あなたのAPIキー
+
+# PICS Bridge URL (デフォルトで http://localhost:8080/v1/info/)
+STEAM_PICS_BRIDGE_URL=http://localhost:8080/v1/info/
+
+# Steam dynamicstore クッキー (任意: 所有権チェック用)
+# ブラウザのデベロッパーツールで store.steampowered.com の steamLoginSecure の値をコピー
+STEAM_LOGIN_SECURE=あなたのセキュアクッキー
 ```
 
 ---
 
-## 4. Server B: 処理ユニット (Worker)
+## 5. ステップ 3: 実行
 
-### ステップ 1: 環境設定
-`.env.worker.example` を `.env.worker` にコピーし、**Server C の IP** を指定します。
+初回実行時、または大規模な処理を開始する際は、以下のコマンドを使用します。
 
-### ステップ 2: 起動
+### 依存関係の同期 (初回のみ)
 ```bash
-docker-compose -f docker-compose.worker.yml up -d
+cd scout && uv sync
 ```
+
+### 全件処理の実行
+```bash
+./sst --all
+```
+
+- **進捗確認**: 別のターミナルで `./sst --tail` を実行すると、リアルタイムに詳細ログを監視できます。
+- **デバッグ**: `./sst --appid <ID> --dev` を使用すると、特定の AppID に対して詳細なデバッグ情報を出力します。
 
 ---
 
-## 5. Server A: エッジ & UI (Scout & UI)
+## 6. メンテナンス
 
-この PC はあなたのメイン PC (Windows) を想定しています。
-
-### ステップ 1: 環境設定
-`.env.scout.example` を `.env.scout` にコピーし、以下を設定します。
-- `STEAM_LIBRARY_PATH`: 例 `E:/SteamLibrary` (Docker経由でマウントされます)
-- `S3_ENDPOINT_URL`, `PREFECT_API_URL`: **Server C の IP** を指定
-
-### ステップ 2: UI の起動
-UI を常駐させます。ブラウザで `http://localhost:8000` を開くことができるようになります。
-```bash
-docker-compose -f docker-compose.scout.yml up -d ui
-```
-
-### ステップ 3: スカウト（スキャン）の実行
-スキャンを行いたいタイミングで実行します。
-```bash
-docker-compose -f docker-compose.scout.yml run --rm scout uv run -m scout.main
-```
-- 初回実行時に `scout_cache.json` がカレントディレクトリに作成されます。
-- 2回目以降、サウンドトラック以外のアプリや取得済みのメタデータはキャッシュから読み込まれ、スキャンが大幅に高速化されます。
-- 強制的に再スキャン（API再取得）したい場合は、コマンドの末尾に `--force` を追加してください。
-
----
-
-## 6. 動作確認
-
-1. **管理画面**: `http://<SERVER_C_IP>:4200` でワークフローの動きを確認。
-2. **S.S.T UI**: `http://localhost:8000` (Server A) で楽曲のブラウズとダウンロードが可能。
+- **DBのリセット**: `./sst --delete-db` （3 段階の確認が入ります）
+- **レビューの確定**: 人間が MP3tag 等で修正した後、`./sst --finalize` を実行して DB を更新します。
