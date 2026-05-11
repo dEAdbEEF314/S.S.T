@@ -192,6 +192,7 @@ class LocalProcessor:
             log_bundle = {
                 "mbz_log.json": mbz_log, 
                 "metadata.json": summary_meta,
+                "llm_log.json": llm_log,
                 "BASIS_for_CLASSIFICATION.md": self._generate_classification_basis(app_id, steam_meta, status, message, score, reason, len(processed_tracks_meta), llm_log, mbz_candidates)
             }
 
@@ -425,9 +426,16 @@ class LocalProcessor:
             # Clean stem for grouping: remove leading numbers and common suffixes like (AIFF), (MP3), [FLAC]
             stem = f.stem
             stem = re.sub(r'^(\d+[\s.-]+)+', '', stem)
-            stem = re.sub(r'[\s(\[]+(aiff|mp3|flac|wav|lossless|high-res)[\s)\]]+$', '', stem, flags=re.IGNORECASE)
+            # Tier 1 Normalization: Suffix removal
+            stem = re.sub(r'[\s(\[]+(aiff|mp3|flac|wav|lossless|high-res|ost|soundtrack|official)[\s)\]]+$', '', stem, flags=re.IGNORECASE)
+            # Tier 2 Normalization: Aggressive cleaning (removing non-alphanumeric and extra spaces)
+            stem = re.sub(r'[^a-zA-Z0-9]', ' ', stem)
+            stem = " ".join(stem.split()).lower()
+            # Tier 3 Normalization: Common misspelling and numbering alignment
+            stem = stem.replace("artifical", "artificial")
+            stem = re.sub(r'\s*0+(\d+)', r' \1', stem) # Remove leading zeros in numbers (01 -> 1)
 
-            key = (disc, stem.strip().lower())
+            key = (disc, stem.strip())
             if key not in groups: groups[key] = []
             groups[key].append({"path": f, "meta": meta, "duration": self._get_duration(f), "format": f.suffix.lower().lstrip('.'),
                                 "filename_track": int(t_num.group(1)) if t_num else None})

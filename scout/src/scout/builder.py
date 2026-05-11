@@ -83,8 +83,13 @@ class MetadataBuilder:
         # 4. Comment/Grouping logic (Parent Game Reference)
         target_name = steam_meta.parent_name or steam_meta.name
         target_appid = steam_meta.parent_app_id or app_id
+        
+        # Use parent_tags as they are usually richer community tags (Topic 10)
         target_tags = steam_meta.parent_tags if steam_meta.parent_tags else steam_meta.tags
+        joined_tags = ", ".join(target_tags) if target_tags else ""
+        
         target_url = f"https://store.steampowered.com/app/{target_appid}"
+        res_comment = f"{target_name}, {joined_tags}, {target_appid}, {target_url}"
         
         # 5. Label Fallback (Topic 6)
         res_label = global_identity.get("canonical_label")
@@ -107,11 +112,11 @@ class MetadataBuilder:
             "genre": final_genre,
             "label": res_label,
             "grouping": f"{target_name}, Steam",
-            "comment": f"{target_name}, {', '.join(target_tags)}, {target_appid}, {target_url}",
+            "comment": res_comment,
             "composer": instr.get("TCOM", steam_meta.developer or "Unknown"),
             "year": res_year,
             "track_number": str(res_track).split('/')[0].strip(),
-            "disc_number": res_disc if "/" in str(res_disc) else f"{res_disc}/1",
+            "disc_number": str(res_disc) if "/" in str(res_disc) else f"{res_disc}/1",
             "language": user_language_639_2,
             "mbid": mbz_candidates[0].get("mbid") if mbz_candidates else None,
             "steam_appid": app_id

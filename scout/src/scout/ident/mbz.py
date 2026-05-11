@@ -86,6 +86,12 @@ class MusicBrainzIdentifier:
                     score += 100
                     evidence_notes.append("BANDCAMP_LINK")
 
+            # Deduplicate evidence notes early
+            unique_notes = []
+            for n in evidence_notes:
+                if n not in unique_notes: unique_notes.append(n)
+            evidence_notes = unique_notes
+
             # --- Label Info Extraction ---
             labels = []
             for li in release_data.get('label-info-list', []):
