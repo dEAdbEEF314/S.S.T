@@ -31,11 +31,14 @@ class PackageManager:
             # 2. Write log files into the source directory
             for log_name, log_content in logs.items():
                 if log_content:
-                    log_file = source_dir / log_name
                     if log_name.endswith(".json"):
+                        json_dir = source_dir / "json"
+                        json_dir.mkdir(exist_ok=True)
+                        log_file = json_dir / log_name
                         with open(log_file, "w", encoding="utf-8") as f:
                             json.dump(log_content, f, indent=2, ensure_ascii=False)
                     else:
+                        log_file = source_dir / log_name
                         log_file.write_text(str(log_content), encoding="utf-8")
 
             # 3. Create ZIP in NATIVE temp directory
