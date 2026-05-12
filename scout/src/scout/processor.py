@@ -27,7 +27,8 @@ class LocalProcessor:
         self.llm = LLMOrganizer(
             api_key=config.llm_api_key, base_url=config.llm_base_url, model=config.llm_model,
             rpm=config.llm_limit_rpm, tpm=config.llm_limit_tpm, rpd=config.llm_limit_rpd,
-            user_language=config.user_language, llm_backend=config.llm_backend
+            user_language=config.user_language, llm_backend=config.llm_backend,
+            draft_model=getattr(config, "llm_draft_model", None)
         )
         self.working_dir = Path(config.sst_working_dir)
 
@@ -84,6 +85,27 @@ class LocalProcessor:
             
         return True, final_map, global_id
 
+    def _auto_select_model(self, track_count: int) -> int:
+        """Dynamically switches LLM model and returns optimal context size."""
+        if self.config.llm_backend != "OLLAMA":
+            return 8192
+
+        if track_count <= 50:
+            target_model = self.config.llm_model_small
+            target_ctx = 8192
+        elif track_count <= 100:
+            target_model = self.config.llm_model_medium
+            target_ctx = 16384
+        else:
+            target_model = self.config.llm_model_large
+            target_ctx = 32768
+
+        if self.llm.model != target_model:
+            logger.info(f"Routing to model: {target_model} (tracks: {track_count})")
+            self.llm.model = target_model
+        
+        return target_ctx
+
     def process_album(self, app_id: int, install_dir: Path, steam_meta: SteamMetadata, on_track_complete: Optional[callable] = None) -> LocalProcessResult:
         logger.info(f"[{app_id}] --- Processing {steam_meta.name} ---")
         
@@ -93,6 +115,10 @@ class LocalProcessor:
                 return LocalProcessResult(app_id=app_id, status="skip", album_name=steam_meta.name, message="No audio", confidence_score=0)
 
             track_groups = self._group_by_logical_track(all_files)
+            
+            # Adaptive Routing based on track count
+            num_ctx = self._auto_select_model(len(track_groups))
+            
             local_baseline = self._extract_local_baseline(track_groups)
 
             # 1. Evidence Gathering
@@ -117,7 +143,7 @@ class LocalProcessor:
                     "fast_track": True
                 }
             else:
-                final_metadata, llm_log = self.llm.consolidate_metadata(app_id, steam_meta.model_dump(), track_sources, mbz_candidates)
+                final_metadata, llm_log = self.llm.consolidate_metadata(app_id, steam_meta.model_dump(), track_sources, mbz_candidates, num_ctx=num_ctx)
                 p1_res = llm_log.get("phase1_res", {})
                 global_identity = p1_res.get("global_tags", {})
 

@@ -35,6 +35,7 @@ S.S.T is a **Local-only Edge Processor**. All heavy lifting—including audio co
 ## 🏗️ Getting Started
 
 ### 1. Prerequisites
+-   **LLM Inference Environment**: Refer to `Models/LLM_setup.sh` to set up the environment using Docker and `llama-server` (recommended for handling large contexts with 16GB VRAM).
 -   Ensure `.env` is configured (see `.env.example`).
 -   Install dependencies using `uv`:
     ```bash

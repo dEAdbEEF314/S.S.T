@@ -24,7 +24,7 @@ Tests should be run against these representative AppIDs:
 A valid test environment MUST have:
 - `STEAM_WEB_API_KEY`: Active key for `IStoreBrowseService`.
 - `STEAM_PICS_BRIDGE_URL`: Set to `http://localhost:8080/v1/info/`.
-- `LLM_BACKEND`: `GEMINI` or `OLLAMA` (local).
+- `LLM_BACKEND`: `GEMINI`, `OLLAMA` (Legacy), or `OPENAI_COMPATIBLE` (Recommended for local Docker llama-server).
 
 ## 5. Verification Checklist
 - [ ] Automatic ZIP extraction on Windows (via native `tar.exe`).
