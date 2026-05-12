@@ -64,15 +64,17 @@ class LLMOrganizer:
                  model: str = "gemini-1.5-pro", 
                  rpm: int = 15, tpm: int = 10000000, rpd: int = 1500,
                  user_language: str = "ja",
-                 llm_backend: str = "GEMINI"):
+                 llm_backend: str = "GEMINI",
+                 draft_model: Optional[str] = None):
         self.base_url = base_url.rstrip('/')
         self.api_key = api_key
         self.model = model
+        self.draft_model = draft_model
         self.user_language = user_language
         self.llm_backend = llm_backend.upper()
         self.limiter = DistributedRateLimiter(rpm, tpm, rpd)
 
-    def consolidate_metadata(self, app_id: int, steam_info: Dict[str, Any], track_sources: Dict[str, List[Dict[str, Any]]], mbz_candidates: List[Dict[str, Any]]) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+    def consolidate_metadata(self, app_id: int, steam_info: Dict[str, Any], track_sources: Dict[str, List[Dict[str, Any]]], mbz_candidates: List[Dict[str, Any]], num_ctx: Optional[int] = None) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
         full_logs = []
         
         # --- Phase 1: Determine Global Identity (The "Soul") ---
@@ -165,7 +167,7 @@ class LLMOrganizer:
 }}
 ```
 """
-        global_res, global_log = self._call_llm(app_id, global_id_prompt)
+        global_res, global_log = self._call_llm(app_id, global_id_prompt, num_ctx=num_ctx)
         
         # Add human-readable version to the log
         human_prompt = global_id_prompt.replace(steam_tracks_json, format_store_tracks(steam_info.get('store_tracklist', [])))
@@ -192,11 +194,11 @@ class LLMOrganizer:
         chunk_size = 10 if self.llm_backend == "OLLAMA" else 30
 
         for i in range(0, len(track_ids), chunk_size):
-            for chunk in chunked_items:
-                chunk_sources = {k: track_sources[k] for k in chunk}
+            chunk = track_ids[i:i + chunk_size]
+            chunk_sources = {k: track_sources[k] for k in chunk}
 
-                chunk_json = json.dumps(chunk_sources, indent=2, ensure_ascii=False)
-                mapping_prompt = f"""
+            chunk_json = json.dumps(chunk_sources, indent=2, ensure_ascii=False)
+            mapping_prompt = f"""
             精密なトラックマッピングを行いなさい。
             Identity: {json.dumps(global_identity, indent=2)}
 
@@ -226,7 +228,7 @@ class LLMOrganizer:
             }}
             ```
             """
-            res, log_data = self._call_llm(app_id, mapping_prompt)
+            res, log_data = self._call_llm(app_id, mapping_prompt, num_ctx=num_ctx)
 
             human_mapping_prompt = mapping_prompt.replace(steam_tracks_json, format_store_tracks(steam_info.get('store_tracklist', [])))
             human_mapping_prompt = human_mapping_prompt.replace(chunk_json, format_local_summary(chunk_sources))
@@ -250,10 +252,10 @@ class LLMOrganizer:
 
         return all_instructions, {"phase1_res": global_res, "phase1_log": global_log, "chunks": full_logs}
 
-    def _call_llm(self, app_id: int, prompt: str) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+    def _call_llm(self, app_id: int, prompt: str, num_ctx: Optional[int] = None) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
         messages = [{"role": "user", "content": prompt}]
         log_entry = {"timestamp": datetime.utcnow().isoformat(), "prompt": prompt, "response": None, "error": None}
-        
+
         logger.debug(f"[{app_id}] --- [LLM PROMPT START] ---\n{prompt}\n--- [LLM PROMPT END] ---")
 
         if self.llm_backend not in ["OLLAMA"] and not self.limiter.acquire(messages):
@@ -262,17 +264,24 @@ class LLMOrganizer:
 
         max_retries = 3
         retry_delay = 5
-        
+
         if self.llm_backend == "OLLAMA":
             url = f"{self.base_url}/api/chat"
+            options = {"temperature": 0.0}
+            if num_ctx:
+                options["num_ctx"] = num_ctx
             payload = {
                 "model": self.model, "messages": messages, "stream": False, "format": "json",
-                "options": {"num_ctx": 32768, "num_predict": 8192, "temperature": 0.0}
+                "options": options
             }
+            if self.draft_model:
+                payload["draft_model"] = self.draft_model
             headers = {"Content-Type": "application/json"}
         else:
             url = f"{self.base_url}/v1beta/openai/chat/completions" if self.llm_backend == "GEMINI" else f"{self.base_url}/v1/chat/completions"
             payload = {"model": self.model, "messages": messages, "temperature": 0.0, "response_format": {"type": "json_object"}}
+            if num_ctx:
+                payload["num_ctx"] = num_ctx # Ollama's OpenAI endpoint supports this
             headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
 
         for attempt in range(max_retries + 1):

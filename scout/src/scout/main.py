@@ -44,7 +44,15 @@ class Config(BaseSettings):
     llm_limit_rpm: int = 15
     llm_limit_tpm: int = 10000000
     llm_limit_rpd: int = 1500
+    llm_draft_model: Optional[str] = None
+    max_parallel_albums: int = 2
     max_encoding_tasks: int = 4
+    
+    # Adaptive LLM Router Settings
+    llm_model_small: str = "qwen2.5:7b-sst"
+    llm_model_medium: str = "qwen3.5-9b-sst"
+    llm_model_large: str = "phi-4:14b"  # 16GB VRAMでの大型用想定
+    
     mbz_app_name: str = "SST-Scout"
     mbz_app_version: str = "1.0.0"
     mbz_contact: str = "contact@example.lan"

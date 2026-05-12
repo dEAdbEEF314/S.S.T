@@ -20,18 +20,36 @@ class JobRunner:
         self.console = console
 
     def run(self, soundtracks: List[dict]) -> List[LocalProcessResult]:
-        """Orchestrates the parallel processing of soundtracks with rich progress bars."""
+        """Orchestrates the parallel processing of soundtracks with adaptive routing."""
         results: List[LocalProcessResult] = []
         start_time = datetime.now()
 
-        # Calculate workers
-        cpu_count = multiprocessing.cpu_count()
-        if self.config.llm_backend == "OLLAMA":
-            max_album_workers = min(cpu_count, 4)
-        else:
-            max_album_workers = max(1, min(int(self.config.llm_limit_rpm * 0.7), cpu_count * 2, 10))
+        # Determine track counts for sorting and categorization
+        logger.info("Scanning track counts for adaptive routing...")
+        for ost in soundtracks:
+            install_dir = Path(ost["install_dir"])
+            # Estimate track count by counting audio files
+            audio_files = self.processor._list_audio_files(install_dir)
+            ost["_track_count"] = len(audio_files)
 
-        logger.info(f"Runner starting with {max_album_workers} workers.")
+        # Sort soundtracks by track count to process small ones first
+        soundtracks.sort(key=lambda x: x["_track_count"])
+
+        # Group by tiers to minimize model switching overhead
+        tiers = {
+            "SMALL (<=50)": [s for s in soundtracks if s["_track_count"] <= 50],
+            "MEDIUM (51-100)": [s for s in soundtracks if 50 < s["_track_count"] <= 100],
+            "LARGE (>100)": [s for s in soundtracks if s["_track_count"] > 100]
+        }
+
+        max_album_workers = self.config.max_parallel_albums
+        if self.config.llm_backend not in ["OLLAMA", "OPENAI_COMPATIBLE"]:
+            # For cloud APIs, respect the config but allow slightly more if the rate limit allows, capped at a safe number
+            cpu_count = multiprocessing.cpu_count()
+            cloud_workers = min(int(self.config.llm_limit_rpm * 0.5), cpu_count, 5)
+            max_album_workers = max(max_album_workers, cloud_workers)
+
+        logger.info(f"Runner starting with {max_album_workers} workers. Using Adaptive Routing.")
 
         def _process_single_album(ost, progress, overall_task):
             app_id = ost["app_id"]
@@ -67,8 +85,23 @@ class JobRunner:
                 console=self.console, expand=True
             ) as progress:
                 overall_task = progress.add_task("[bold blue]Overall Progress", total=len(soundtracks))
-                with ThreadPoolExecutor(max_workers=max_album_workers) as executor:
-                    list(executor.map(lambda ost: _process_single_album(ost, progress, overall_task), soundtracks))
+                
+                for tier_name, tier_soundtracks in tiers.items():
+                    if not tier_soundtracks:
+                        continue
+                    
+                    # For Medium/Large, we must restrict to 1 worker to allow full VRAM for context
+                    tier_workers = max_album_workers if "SMALL" in tier_name else 1
+                    
+                    logger.info(f"--- Starting {tier_name} Tier ({len(tier_soundtracks)} albums) with {tier_workers} workers ---")
+                    with ThreadPoolExecutor(max_workers=tier_workers) as executor:
+                        list(executor.map(lambda ost: _process_single_album(ost, progress, overall_task), tier_soundtracks))
+                    
+                    # Cool-down period between tiers to allow VRAM to clear
+                    if self.config.llm_backend == "OLLAMA" and len(tier_soundtracks) > 0:
+                        logger.info(f"Cooling down after {tier_name} tier...")
+                        import time
+                        time.sleep(5)
         finally:
             self.console.show_cursor(True)
 

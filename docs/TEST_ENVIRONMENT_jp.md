@@ -24,7 +24,7 @@
 有効なテスト環境には以下が必須です：
 - `STEAM_WEB_API_KEY`: `IStoreBrowseService` 用のアクティブなキー。
 - `STEAM_PICS_BRIDGE_URL`: `http://localhost:8080/v1/info/` に設定。
-- `LLM_BACKEND`: `GEMINI` または `OLLAMA` (ローカル)。
+- `LLM_BACKEND`: `GEMINI`, `OLLAMA` (非推奨), または `OPENAI_COMPATIBLE` (Docker llama-server を使用する場合に推奨)。
 
 ## 5. 検証チェックリスト
 - [ ] Windows 側での自動 ZIP 展開（ネイティブ `tar.exe` 経由）。

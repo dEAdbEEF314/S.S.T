@@ -1,7 +1,9 @@
-FROM qwen2.5:14b
+FROM gemma4:e4b
 
 # --- 推論パラメータ ---
-# 決定論的挙動（温度0）で精度を最大化
+# MTPドラフター（アシスタント）の指定
+PARAMETER assistant gemma-4-E4B-it-assistant
+
 PARAMETER temperature 0
 PARAMETER num_ctx 8192
 PARAMETER num_predict 2048

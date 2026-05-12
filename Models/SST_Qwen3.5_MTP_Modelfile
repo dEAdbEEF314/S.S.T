@@ -1,7 +1,6 @@
-FROM qwen2.5:14b
+FROM qwen3.5-9b-sst
+DRAFT qwen2.5:1.5b
 
-# --- 推論パラメータ ---
-# 決定論的挙動（温度0）で精度を最大化
 PARAMETER temperature 0
 PARAMETER num_ctx 8192
 PARAMETER num_predict 2048
@@ -9,7 +8,6 @@ PARAMETER repeat_penalty 1.1
 PARAMETER top_k 40
 PARAMETER top_p 0.9
 
-# --- システム・アイデンティティ ---
 SYSTEM """
 あなたは音楽メタデータ管理の権威ある【マスター・アーカイブ監査官】です。
 提供された情報源（Steam PICS, MusicBrainz, Local Tags）を分析し、作品の「Identity（身元）」と「Integrity（品質）」を極めて厳格に評価してください。

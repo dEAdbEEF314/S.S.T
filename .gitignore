@@ -92,3 +92,7 @@ package.json
 package-lock.json
 capture_llm_detail.py
 run_production_test.py
+Handover_Document_act-16_20260512.md
+
+# ── Local LLM Blobs ──────────────────────────────────────────────────────────
+Models/blobs/
