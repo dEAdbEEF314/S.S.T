@@ -65,13 +65,15 @@ class LLMOrganizer:
                  rpm: int = 15, tpm: int = 10000000, rpd: int = 1500,
                  user_language: str = "ja",
                  llm_backend: str = "GEMINI",
-                 draft_model: Optional[str] = None):
+                 draft_model: Optional[str] = None,
+                 metadata_source_priority: str = "MBZ,STEAM_PICS,STEAM_STORE,STEAM_TAGS,EMBEDDED"):
         self.base_url = base_url.rstrip('/')
         self.api_key = api_key
         self.model = model
         self.draft_model = draft_model
         self.user_language = user_language
         self.llm_backend = llm_backend.upper()
+        self.metadata_source_priority = metadata_source_priority
         self.limiter = DistributedRateLimiter(rpm, tpm, rpd)
 
     def consolidate_metadata(self, app_id: int, steam_info: Dict[str, Any], track_sources: Dict[str, List[Dict[str, Any]]], mbz_candidates: List[Dict[str, Any]], num_ctx: Optional[int] = None) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
@@ -114,9 +116,18 @@ class LLMOrganizer:
 あなたは音楽メタデータ管理の権威ある【マスター・アーカイブ監査官】です。
 提供された情報源を分析し、この作品の「Identity（身元）」と「Integrity（品質）」を個別に評価してください。
 
-### 【重要：Dirty Tags（仕様）の解釈】
-- MBZ側の公式トラック名にも番号（例: "01. Name"）がある場合、それは「汚染」ではなく「仕様（Spec）」です。
-- MBZ側とローカル側で**共通して番号が含まれている**なら、その番号付けは正当なものとして扱いなさい。
+### 【重要：メタデータ信頼順位（Constitution）】
+ユーザーはこのシステムの運用において、以下の順序で情報を信頼するよう指定しています。
+優先順位：{self.metadata_source_priority}
+
+この順位は「矛盾が生じた際にどちらを正解とするか」の絶対的な指針です。
+ただし、上位のソースに「01 - Title」のようにトラック番号が含まれている場合、下位のクリーンなソース（Titleのみ）と比較して、純粋な曲名のみを抽出（クリーニング）する知的な判断を期待します。
+
+### 【重要：Dirty Tags（仕様）の解釈と強制クリーニング】
+- **最優先命令**: 本システムは「DJ機材での視認性」を絶対視します。タイトルの先頭に「01 - 」や「01. 」のようなトラック番号が含まれている場合、**たとえそれがMusicBrainzやSteam Storeの公式な名称であっても、必ず除去（クリーニング）してください。**
+- システムのバリデーション・ロジック（正規表現：`^(\d+)([\s.-]+)`）に抵触するタイトルは、例外なく「Dirty Tags」として検知され、アーカイブが棄却されます。
+- あなたの任務は、複数のソースを比較し、最も「純粋な曲名（番号なし）」を導き出すことです。上位ソースが汚れている場合は、下位のクリーンなソース（またはファイル名から番号を除いたもの）を採用するか、自身でクリーニングを行ってください。
+- もしタイトルが「01 - Title」となっているなら、必ず「Title」として出力しなさい。これが守られない場合、あなたの推論結果はシステムによって「品質不良」として棄却されます。
 
 ### 【監査基準】
 1. **Identity Confidence (0-100)**: 
@@ -147,13 +158,13 @@ class LLMOrganizer:
 {local_tracks_json}
 
 ### MANDATORY OUTPUT FORMAT (JSON ONLY):
-**注意：分析理由（reason）を含め、すべてのテキストは必ず「日本語」で出力してください。**
+**注意：分析理由（reason）は正確性を期すため必ず「英語」で出力してください。それ以外のフィールドは日本語を使用してください。**
 ```json
 {{
   "identity_confidence": number,
   "integrity_quality": number,
   "archive_vs_review_ratio": {{"archive": number, "review": number}},
-  "confidence_reason": "詳細な類似性分析と判断理由（日本語）",
+  "confidence_reason": "Detailed similarity analysis and reasoning (English)",
   "strategy": "MBZ_BASED" | "LOCAL_BASED" | "HYBRID" | "REVIEW_REQUIRED",
   "semantic_label": "日本語 40文字以内",
   "global_tags": {{
@@ -161,8 +172,8 @@ class LLMOrganizer:
     "canonical_genre": "...",
     "canonical_year": "YYYY",
     "canonical_label": "レーベル名（またはパブリッシャー）",
-    "chosen_mbz_index": number | null
-
+    "chosen_mbz_index": number | null,
+    "mbz_choice_reason": "English reason why this candidate was chosen over others"
   }}
 }}
 ```
@@ -208,13 +219,16 @@ class LLMOrganizer:
 
             ### INSTRUCTION:
             1. クレジット情報の文章（例: "Track 1 by X"）を読み解き、対応するトラックの composer や artist に紐付けること。
-            2. Steam公式トラックリストのタイトルとローカルを照合し、MBZよりもSteam公式を優先する場合（MBZが誤っている、またはSteamがより詳細な場合）はそれを利用しなさい。
+            2. Steam公式トラックリストのタイトルとローカルを照合し、優先順位（{self.metadata_source_priority}）に基づき、最も信頼できるソースを利用しなさい。
+            3. **タイトルクリーニング（絶対命令）**: いかなるソースを採用する場合でも、タイトルの先頭に「01. 」や「1- 」のようなトラック番号が含まれている場合は、必ずそれを除去してください。
+               - 必要に応じて `override_title` を使用し、純粋な曲名のみを出力しなさい。
+               - 例：「01. Beginning」→「Beginning」
 
             ### TRACKS TO MAP:
             {chunk_json}
 
             ### MANDATORY OUTPUT FORMAT (JSON ONLY):
-            **注意：判断理由（reason）を含め、すべてのテキストは必ず「日本語」で出力してください。**
+            **注意：判断理由（reason）は正確性を期すため必ず「英語」で出力してください。**
             ```json
             {{
               "track_instructions": {{
@@ -222,7 +236,7 @@ class LLMOrganizer:
                     "action": "use_mbz" | "use_local_tag" | "use_filename" | "needs_review",
                     "mbz_track_index": number,
                     "override_title": string | null,
-                    "reason": "判断理由（日本語）"
+                    "reason": "Reasoning for the decision (English)"
                  }}
               }}
             }}
