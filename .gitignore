@@ -22,12 +22,14 @@ data/*.json
 logs/*.json
 scout_cache.json
 llm_usage_*.json
+analysis_result*.json
 !data/README.md
 
 # ── Logs ──────────────────────────────────────────────────────────────────────
 # All logs produced by the system or libraries
 logs/
 *.log
+test_100.log
 docs/scout_debug.txt
 docs/scout_error.txt
 docs/scout_debug.log
@@ -36,9 +38,11 @@ docs/scout_error.log
 # ── Output & Packages ────────────────────────────────────────────────────────
 # Final processed soundtracks and archives
 output/
+scout/output/
 upload/
 ui_verification/
 *.zip
+test.mp3
 
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/

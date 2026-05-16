@@ -157,10 +157,13 @@ class MusicBrainzIdentifier:
                     if any(SequenceMatcher(None, lt, mt['title'].lower()).ratio() > 0.85 for mt in mb_tracks_data):
                         matches += 1
                 
-                match_ratio = matches / len(local_tracks)
-                if match_ratio >= 0.8:
-                    score += 200
-                    evidence_notes.append(f"FINGERPRINT_MATCH({int(match_ratio*100)}%)")
+                # Fair comparison: how much of the MBZ album is matched? (Topic 12)
+                # This handles cases where local might have more tracks (duplicates, bonus) than MBZ.
+                if len(mb_tracks_data) > 0:
+                    match_ratio = matches / len(mb_tracks_data)
+                    if match_ratio >= 0.8:
+                        score += 200
+                        evidence_notes.append(f"FINGERPRINT_MATCH({int(match_ratio*100)}%)")
 
             scored_candidates.append({
                 "mbid": mbid,
