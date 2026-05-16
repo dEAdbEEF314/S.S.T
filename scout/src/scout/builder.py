@@ -7,6 +7,30 @@ logger = logging.getLogger("scout.builder")
 
 class MetadataBuilder:
     @staticmethod
+    def _clean_title_logic(title: str, track_number: Optional[str] = None) -> str:
+        if not title: return ""
+        
+        # Check for leading track numbers like "01. ", "1 - ", etc.
+        match = re.match(r'^(\d+)([\s.-]+)', title)
+        if match:
+            # SAFETY: Check for decimals (e.g. "14.3 Billion Years")
+            # If it's a dot followed by a digit, it's likely a decimal, not a separator.
+            if match.group(2) == '.' and match.end() < len(title) and title[match.end()].isdigit():
+                return title.strip()
+
+            if track_number:
+                prefixed_num = match.group(1).lstrip('0') or '0'
+                clean_track_num = str(track_number).lstrip('0') or '0'
+                
+                # Only remove if it matches the actual track number (likely redundant)
+                if prefixed_num == clean_track_num:
+                    cleaned = title[match.end():].strip()
+                    logger.debug(f"Cleaned redundant track number prefix: '{title}' -> '{cleaned}'")
+                    return cleaned
+        
+        return title.strip()
+
+    @staticmethod
     def build_tag_map(
         app_id: int, 
         disc: int, 
@@ -33,13 +57,15 @@ class MetadataBuilder:
         # 1. Resolve Identity
         if action == "use_mbz" and mbz_candidates:
             try:
-                mbz_idx = instr.get("chosen_mbz_index", 0)
-                if mbz_idx == -1: mbz_idx = 0
-                
+                mbz_idx = instr.get("chosen_mbz_index")
+                if mbz_idx is None or mbz_idx == -1: mbz_idx = 0
+
                 mbz_album = mbz_candidates[mbz_idx]
-                t_idx = instr.get("mbz_track_index", 0)
-                
-                if t_idx is not None and t_idx < len(mbz_album.get("tracks", [])):
+                t_idx = instr.get("mbz_track_index")
+                if t_idx is None: t_idx = 0
+
+                if t_idx < len(mbz_album.get("tracks", [])):
+
                     mbz_track = mbz_album["tracks"][t_idx]
                     if isinstance(mbz_track, dict):
                         res_title = mbz_track.get("title", res_title)
@@ -67,6 +93,10 @@ class MetadataBuilder:
         # 2. Apply Overrides (LLM Correction)
         if instr.get("override_title"): res_title = instr["override_title"]
         if instr.get("override_track"): res_track = str(instr["override_track"])
+
+        # 3. Final System-level Cleaning (The "Safety Net")
+        # Even if LLM fails or sources are dirty, we enforce the 'No leading numbers' rule ONLY if it matches the track.
+        res_title = MetadataBuilder._clean_title_logic(res_title, res_track)
 
         # 3. Genre logic
         all_genres = steam_meta.genres if steam_meta.genres else []

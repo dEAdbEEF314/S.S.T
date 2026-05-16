@@ -68,7 +68,17 @@ def setup_logging(config: Config, console: Console, is_dev: bool = False):
     log_level_str = "DEBUG" if is_dev else config.log_level.upper()
     numeric_level = getattr(logging, log_level_str, logging.INFO)
     
-    handlers = [RichHandler(level=numeric_level, console=console, rich_tracebacks=True, markup=True, show_path=False)]
+    # Standard format with timestamps
+    log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    
+    handlers = [RichHandler(
+        level=numeric_level, 
+        console=console, 
+        rich_tracebacks=True, 
+        markup=True, 
+        show_path=False,
+        omit_repeated_times=False
+    )]
     
     log_dir = Path("logs")
     log_dir.mkdir(exist_ok=True)
@@ -80,10 +90,15 @@ def setup_logging(config: Config, console: Console, is_dev: bool = False):
         # Standard daily append log
         log_file = log_dir / f"SST_{datetime.now().strftime('%Y%m%d')}.log"
 
+    file_handler = logging.FileHandler(log_file, encoding='utf-8')
+    file_handler.setFormatter(logging.Formatter(log_format))
+    handlers.append(file_handler)
     
-    handlers.append(logging.FileHandler(log_file, encoding='utf-8'))
-    
-    logging.basicConfig(level=numeric_level, handlers=handlers, force=True)
+    logging.basicConfig(
+        level=numeric_level, 
+        handlers=handlers, 
+        force=True
+    )
     for lib in ["urllib3", "PIL", "musicbrainzngs", "requests", "mutagen"]: logging.getLogger(lib).setLevel(logging.ERROR)
     return log_file
 
@@ -224,41 +239,70 @@ def main():
 
     if args.reset_db: return handle_db_reset(Path(config.sst_db_path), console)
     
-    db = DatabaseManager(Path(config.sst_db_path))
-    if args.finalize: return handle_finalize(config, db, console)
-    if args.all:
-        if not handle_all_confirm(console): return
+    # --- Singleton Lock ---
+    lock_file = Path("data/sst.lock")
+    if not args.finalize: # Finalize is quick and often manual
+        if lock_file.exists():
+            # Check if the process is actually running (simple PID check could be added, but for now just block)
+            console.print(f"[bold red]❌ Error: Another instance of S.S.T is already running.[/bold red]")
+            console.print(f"[dim]If you are sure it's not running, delete {lock_file} manually.[/dim]")
+            return
+        lock_file.touch()
 
-    log_file = setup_logging(config, console, is_dev=args.dev)
-    logger.info(f"SST starting. Log level: {config.log_level}. File: {log_file}")
+    try:
+        db = DatabaseManager(Path(config.sst_db_path))
+        if args.finalize: return handle_finalize(config, db, console)
+        if args.all:
+            if not handle_all_confirm(console): return
 
-    scanner = SteamScanner(
-        install_path=config.steam_install_path, 
-        db=db,
-        bridge_url=config.steam_pics_bridge_url,
-        api_key=config.steam_web_api_key,
-        override_library_path=config.steam_library_path,
-        cache_path="data/scout_cache.json", 
-        language=config.steam_language_full
-    )
-    processor = LocalProcessor(config, db)
-    runner = JobRunner(config, processor, console)
+        log_file = setup_logging(config, console, is_dev=args.dev)
+        logger.info(f"SST starting. Log level: {config.log_level}. File: {log_file}")
 
-    soundtracks = scanner.find_soundtracks(force=args.force, limit=args.limit, is_processed_callback=db.is_already_processed, target_appid=args.appid)
-    if not soundtracks: return logger.info("No soundtracks found.")
+        scanner = SteamScanner(
+            install_path=config.steam_install_path, 
+            db=db,
+            bridge_url=config.steam_pics_bridge_url,
+            api_key=config.steam_web_api_key,
+            override_library_path=config.steam_library_path,
+            cache_path="data/scout_cache.json", 
+            language=config.steam_language_full
+        )
+        processor = LocalProcessor(config, db)
+        runner = JobRunner(config, processor, console)
 
-    start_time = datetime.now()
-    results = runner.run(soundtracks)
-    duration_str = str(datetime.now() - start_time).split('.')[0]
+        soundtracks = scanner.find_soundtracks(force=args.force, limit=args.limit, is_processed_callback=db.is_already_processed, target_appid=args.appid)
+        if not soundtracks: return logger.info("No soundtracks found.")
 
-    console.print(f"\n[bold blue]🏁 Complete! Total Time: {duration_str}[/bold blue]\n")
-    
-    # Notify completion
-    reviews = [r for r in results if r.status == "review"]
-    summary_str = f"Processed {len(results)} albums. {len(reviews)} need review."
-    processor.notifier.notify_completion("Run Complete", summary_str, [{"name": "Success", "value": str(len(results)-len(reviews)), "inline": True}, {"name": "Review", "value": str(len(reviews)), "inline": True}])
-    
-    render_summary_table(results, config.user_language, console)
+        start_time = datetime.now()
+        results = runner.run(soundtracks)
+        duration_str = str(datetime.now() - start_time).split('.')[0]
+
+        console.print(f"\n[bold blue]🏁 Complete! Total Time: {duration_str}[/bold blue]\n")
+        
+        # Notify completion
+        archives = [r for r in results if r.status == "archive"]
+        reviews = [r for r in results if r.status == "review"]
+        skips = [r for r in results if r.status == "skip"]
+        errors = [r for r in results if r.status == "error"]
+        
+        summary_str = f"S.S.T finished processing {len(results)} albums in {duration_str}."
+        fields = [
+            {"name": "📁 Total", "value": str(len(results)), "inline": True},
+            {"name": "🛡️ Archive", "value": str(len(archives)), "inline": True},
+            {"name": "🔍 Review", "value": str(len(reviews)), "inline": True},
+            {"name": "⏩ Skip", "value": str(len(skips)), "inline": True},
+            {"name": "❌ Error", "value": str(len(errors)), "inline": True},
+        ]
+        processor.notifier.notify_completion("Batch Run Complete", summary_str, fields)
+        
+        render_summary_table(results, config.user_language, console)
+
+    except Exception as e:
+        logger.error(f"Critical system failure: {e}", exc_info=True)
+        console.print(f"[bold red]Critical Error: {e}[/bold red]")
+    finally:
+        if not args.finalize and lock_file.exists():
+            lock_file.unlink()
 
 if __name__ == "__main__":
     main()
