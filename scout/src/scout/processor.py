@@ -232,6 +232,16 @@ class LocalProcessor:
 
             # Human-readable LLM logs
             p1_log = llm_log.get("phase1_log", {})
+            
+            def md_escape(text):
+                if text is None: return "-"
+                return str(text).replace("|", "\\|").replace("\n", "<br>")
+
+            def md_blockquote(text):
+                if not text: return "> -"
+                lines = str(text).strip().split("\n")
+                return "\n".join([f"> {line}" for line in lines])
+
             if p1_log.get("human_prompt"): log_bundle["LLM_PROMPT.md"] = p1_log["human_prompt"]
             elif p1_log.get("prompt"): log_bundle["LLM_PROMPT.md"] = p1_log["prompt"] # Fallback
             
@@ -243,11 +253,11 @@ class LocalProcessor:
                 resp_md += f"| Identity Confidence | {res_data.get('identity_confidence')} |\n"
                 resp_md += f"| Integrity Quality | {res_data.get('integrity_quality')} |\n"
                 resp_md += f"| Strategy | `{res_data.get('strategy')}` |\n"
-                resp_md += f"| Semantic Label | {res_data.get('semantic_label')} |\n"
-                resp_md += f"\n## Judgment Reasoning\n> {res_data.get('confidence_reason')}\n\n"
+                resp_md += f"| Semantic Label | {md_escape(res_data.get('semantic_label'))} |\n"
+                resp_md += f"\n## Judgment Reasoning\n{md_blockquote(res_data.get('confidence_reason'))}\n\n"
                 resp_md += "## Global Tags Applied\n"
                 for k, v in res_data.get('global_tags', {}).items():
-                    resp_md += f"- **{k}**: {v}\n"
+                    resp_md += f"- **{k}**: {md_escape(v)}\n"
                 
                 # Check for track instructions (Phase 2)
                 if "phase2_logs" in llm_log and llm_log["phase2_logs"]:
@@ -261,7 +271,7 @@ class LocalProcessor:
                                 action = t_data.get('action', 'N/A')
                                 # Highlight interesting actions
                                 if action in ["OVERRIDE", "MAP"]: action = f"**{action}**"
-                                resp_md += f"| {tid} | {action} | {t_data.get('mbz_track_index', '-')} | {t_data.get('override_title', '-')} | {t_data.get('reason', '-')} |\n"
+                                resp_md += f"| {md_escape(tid)} | {action} | {md_escape(t_data.get('mbz_track_index', '-'))} | {md_escape(t_data.get('override_title', '-'))} | {md_escape(t_data.get('reason', '-'))} |\n"
                         except: pass
                 log_bundle["LLM_RESPONSE.md"] = resp_md
             elif p1_log.get("response"): 
@@ -277,19 +287,19 @@ class LocalProcessor:
             meta_md += "|---|---|---|---|---|---|---|\n"
             for t in summary_meta.get('tracks', []):
                 tg = t.get('tags', {})
-                meta_md += f"| {tg.get('disc_number','1')}-{tg.get('track_number','')} | {tg.get('title','')} | {tg.get('artist','')} | {tg.get('album_artist','')} | {tg.get('genre','')} | {tg.get('year','')} | {tg.get('comment','')} |\n"
+                meta_md += f"| {md_escape(tg.get('disc_number','1'))}-{md_escape(tg.get('track_number',''))} | {md_escape(tg.get('title',''))} | {md_escape(tg.get('artist',''))} | {md_escape(tg.get('album_artist',''))} | {md_escape(tg.get('genre',''))} | {md_escape(tg.get('year',''))} | {md_escape(tg.get('comment',''))} |\n"
             log_bundle["METADATA.md"] = meta_md
             
             # Human-readable MBZ Log
             if mbz_log:
                 mbz_md = f"# MusicBrainz Identification Log: {steam_meta.name}\n\n"
                 cands = mbz_log.get('ranked_candidates', [])
-                mbz_md += f"- **Target Search Name**: {mbz_log.get('target_name', steam_meta.name)}\n"
+                mbz_md += f"- **Target Search Name**: {md_escape(mbz_log.get('target_name', steam_meta.name))}\n"
                 mbz_md += f"- **Candidates Found**: {len(cands)}\n\n"
                 for c in cands:
-                    mbz_md += f"## {c.get('album')} (Score: {c.get('score')})\n"
+                    mbz_md += f"## {md_escape(c.get('album'))} (Score: {c.get('score')})\n"
                     mbz_md += f"- **MBID**: [{c.get('mbid')}](https://musicbrainz.org/release/{c.get('mbid')})\n"
-                    mbz_md += f"- **Evidence**: {', '.join(c.get('evidence', []))}\n\n"
+                    mbz_md += f"- **Evidence**: {', '.join([md_escape(e) for e in c.get('evidence', [])])}\n\n"
                 if not cands:
                     mbz_md += "No candidates found matching the search criteria.\n"
                 log_bundle["MBZ_LOG.md"] = mbz_md
@@ -665,12 +675,21 @@ class LocalProcessor:
         ratio = p1_res.get("archive_vs_review_ratio", {"archive": 0, "review": 0})
         is_fast = llm_log.get("fast_track", False)
         
+        def md_escape(text):
+            if text is None: return "-"
+            return str(text).replace("|", "\\|").replace("\n", "<br>")
+
+        def md_blockquote(text):
+            if not text: return "> -"
+            lines = str(text).strip().split("\n")
+            return "\n".join([f"> {line}" for line in lines])
+
         status_emoji = "🛡️ ARCHIVE" if status == "archive" else "🔍 REVIEW REQUIRED"
         
         candidate_md = ""
         if mbz_candidates:
             for c in mbz_candidates[:5]:
-                candidate_md += f"- **{c.get('album')}** (Score: {c.get('score')})\n  - {c.get('mbid_url')}\n"
+                candidate_md += f"- **{md_escape(c.get('album'))}** (Score: {c.get('score')})\n  - {c.get('mbid_url')}\n"
         else:
             candidate_md = "- No matching MusicBrainz candidates found."
 
@@ -697,15 +716,15 @@ class LocalProcessor:
   - Identity Confidence: `{id_conf}/100` (Req: 100 for Archive)
   - Integrity Quality: `{quality}/100` (Req: 95 for Archive)
 - **Judgment Ratio**: Archive `{ratio.get('archive', 0)}%` / Review `{ratio.get('review', 0)}%`
-- **System Decision Reason**: {message}
+- **System Decision Reason**: {md_escape(message)}
 - **Tracks Processed**: {count}
 {action_required}
 ## 🔍 LLM Reasoning & Strategy
-> {display_reason}
+{md_blockquote(display_reason)}
 
 ## 🔗 External References
 - **Steam Store**: https://store.steampowered.com/app/{app_id}
-- **Parent Game**: {steam_meta.parent_name or 'N/A'} (AppID: {steam_meta.parent_app_id or 'N/A'})
+- **Parent Game**: {md_escape(steam_meta.parent_name) or 'N/A'} (AppID: {steam_meta.parent_app_id or 'N/A'})
 
 ## 🎼 MusicBrainz Candidates (Top 5)
 {candidate_md}
