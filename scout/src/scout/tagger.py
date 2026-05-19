@@ -83,8 +83,10 @@ class AudioTagger:
             tags.add(TCOM(encoding=3, text=tag_map["composer"]))
             tags.add(TIT1(encoding=3, text=tag_map["grouping"]))
 
-            # Comment length adjustment (Prune tags unit by unit if too long)
+            # Comment logic: Consolidate into a single frame to prevent duplication in tools like MP3tag
             comment_text = tag_map["comment"]
+            
+            # Prune if too long for ID3 standards (though encoding=3/UTF-8 is flexible)
             if len(comment_text.encode('utf-16')) > 2000:
                 parts = comment_text.split(" | ")
                 if len(parts) >= 4:
@@ -94,6 +96,9 @@ class AudioTagger:
                         tags_list.pop()
                     comment_text = f"{name} | {', '.join(tags_list)} | {app_id} | {url}"
 
+            # Remove ALL existing COMM frames to ensure a clean state
+            tags.delall("COMM")
+            # Add the single consolidated comment
             tags.add(COMM(encoding=3, lang=tag_map["language"], desc="", text=comment_text))
 
             # Artwork

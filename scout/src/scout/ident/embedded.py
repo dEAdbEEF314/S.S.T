@@ -28,12 +28,22 @@ class EmbeddedMetadataExtractor:
                 "album": audio.get("album", [None])[0],
                 "track_number": audio.get("tracknumber", [None])[0],
                 "year": audio.get("date", [None])[0],
+                "comment": audio.get("comment", [None])[0],
                 "has_artwork": False
             }
 
-            # Check for artwork (APIC in ID3 or other formats)
+            # Check for artwork and additional tags (APIC/COMM in ID3 or other formats)
             try:
                 full_audio = File(file_path)
+                if not metadata.get("comment") and full_audio and full_audio.tags:
+                    # Search for COMM frames if easy mode missed it (common in ID3)
+                    for key in full_audio.tags.keys():
+                        if key.startswith("COMM"):
+                            comm_frame = full_audio.tags[key]
+                            if hasattr(comm_frame, "text") and comm_frame.text:
+                                metadata["comment"] = str(comm_frame.text[0])
+                                break
+
                 if hasattr(full_audio, 'pictures') and full_audio.pictures:
                     metadata["has_artwork"] = True
                 elif isinstance(full_audio, ID3):

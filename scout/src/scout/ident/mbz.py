@@ -63,28 +63,45 @@ class MusicBrainzIdentifier:
             evidence_notes = []
 
             # --- Tier 1: Deterministic Evidence ---
+            seen_evidence = set()
             relations = release_data.get('url-relation-list', [])
             for rel in relations:
                 url = rel.get('target', '')
-                # Steam Store Link
-                if app_id and f"store.steampowered.com/app/{app_id}" in url:
-                    score += 500
-                    evidence_notes.append("DIRECT_STEAM_LINK")
-                elif parent_app_id and f"store.steampowered.com/app/{parent_app_id}" in url:
-                    score += 300
-                    evidence_notes.append("PARENT_STEAM_LINK")
                 
-                # SteamDB Link (Topic 8)
+                # 1. Direct Steam Link
+                if app_id and f"store.steampowered.com/app/{app_id}" in url:
+                    if "DIRECT_STEAM_LINK" not in seen_evidence:
+                        score += 500
+                        evidence_notes.append("DIRECT_STEAM_LINK")
+                        seen_evidence.add("DIRECT_STEAM_LINK")
+                
+                # 2. Parent Steam Link
+                elif parent_app_id and f"store.steampowered.com/app/{parent_app_id}" in url:
+                    if "PARENT_STEAM_LINK" not in seen_evidence:
+                        score += 300
+                        evidence_notes.append("PARENT_STEAM_LINK")
+                        seen_evidence.add("PARENT_STEAM_LINK")
+                
+                # 3. Direct SteamDB Link
                 if app_id and f"steamdb.info/app/{app_id}" in url:
-                    score += 500
-                    evidence_notes.append("DIRECT_STEAMDB_LINK")
+                    if "DIRECT_STEAMDB_LINK" not in seen_evidence:
+                        score += 500
+                        evidence_notes.append("DIRECT_STEAMDB_LINK")
+                        seen_evidence.add("DIRECT_STEAMDB_LINK")
+                
+                # 4. Parent SteamDB Link
                 elif parent_app_id and f"steamdb.info/app/{parent_app_id}" in url:
-                    score += 300
-                    evidence_notes.append("PARENT_STEAMDB_LINK")
+                    if "PARENT_STEAMDB_LINK" not in seen_evidence:
+                        score += 300
+                        evidence_notes.append("PARENT_STEAMDB_LINK")
+                        seen_evidence.add("PARENT_STEAMDB_LINK")
 
+                # Bandcamp (Once per domain to avoid multi-link inflation)
                 if "bandcamp.com" in url:
-                    score += 100
-                    evidence_notes.append("BANDCAMP_LINK")
+                    if "BANDCAMP_LINK" not in seen_evidence:
+                        score += 100
+                        evidence_notes.append("BANDCAMP_LINK")
+                        seen_evidence.add("BANDCAMP_LINK")
 
             # Deduplicate evidence notes early
             unique_notes = []
@@ -119,7 +136,8 @@ class MusicBrainzIdentifier:
                 evidence_notes.append("TRACK_COUNT_MATCH")
             elif mb_tracks > 0:
                 diff = abs(mb_tracks - expected_track_count)
-                penalty = min(50, diff * 10)
+                # Stronger penalty for mismatch to prevent false positives in "data void" areas
+                penalty = min(300, diff * 20)
                 score -= penalty
                 evidence_notes.append(f"TRACK_COUNT_DIFF(-{penalty})")
 
@@ -137,7 +155,10 @@ class MusicBrainzIdentifier:
                     score += 20
                     evidence_notes.append("DATE_MATCH")
                 else:
-                    score -= min(20, abs(mb_y - comp_y) * 5)
+                    year_diff = abs(mb_y - comp_y)
+                    penalty = min(100, year_diff * 20)
+                    score -= penalty
+                    evidence_notes.append(f"DATE_MISMATCH(-{penalty})")
 
             # --- Tracklist Fingerprint ---
             mb_tracks_data = []

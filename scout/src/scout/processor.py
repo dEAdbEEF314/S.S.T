@@ -474,17 +474,22 @@ class LocalProcessor:
         p1_res = llm_log.get("phase1_res", {})
         global_tags = p1_res.get("global_tags", {})
         chosen_idx = global_tags.get("chosen_mbz_index")
+        chosen_id = global_tags.get("chosen_mbz_id")
         mbz_choice_reason = global_tags.get("mbz_choice_reason")
 
         # MBZ Candidates HTML
         mbz_html = ""
         if mbz_candidates:
             for i, c in enumerate(mbz_candidates[:5]):
-                chosen_badge = ' <span class="badge" style="background:#238636;">⭐ CHOSEN</span>' if i == chosen_idx else ''
+                is_chosen = (i == chosen_idx) or (c.get('mbid') == chosen_id)
+                chosen_badge = ' <span class="badge" style="background:#238636;">⭐ CHOSEN</span>' if is_chosen else ''
+                card_style = ' style="border: 2px solid var(--accent-green); background: #1a2332; padding: 10px; border-radius: 6px; margin-bottom: 5px;"' if is_chosen else ''
+                
                 mbz_html += f"""
-                <div class="mbz-card">
+                <div class="mbz-card"{card_style}>
                     <strong>{c.get('album')}</strong> <span class="badge">Score: {c.get('score')}</span>{chosen_badge}<br>
-                    <a href="https://musicbrainz.org/release/{c.get('mbid')}" target="_blank">{c.get('mbid')}</a>
+                    <code style="font-size: 0.85rem; color: var(--accent-yellow);">{c.get('mbid')}</code><br>
+                    <a href="https://musicbrainz.org/release/{c.get('mbid')}" target="_blank">View on MusicBrainz ↗</a>
                 </div>"""
             if mbz_choice_reason:
                 mbz_html += f'<div class="reason-box" style="margin-top:10px;"><strong>LLM MBZ Choice Reason:</strong><br>{mbz_choice_reason}</div>'
@@ -506,7 +511,8 @@ class LocalProcessor:
                     matrix_rows += f"<tr><td>{source}</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td></tr>"
                 else:
                     for i, c in enumerate(mbz_candidates[:5]):
-                        row_style = ' style="background-color: #1a2332; font-weight: bold;"' if i == chosen_idx else ''
+                        is_chosen = (i == chosen_idx) or (c.get('mbid') == chosen_id)
+                        row_style = ' style="background-color: #1a2332; font-weight: bold; border-left: 4px solid var(--accent-green);"' if is_chosen else ''
                         matrix_rows += f"<tr{row_style}><td>{source} (Candidate {i} - Score: {c.get('score')})</td><td>{c.get('album')}</td><td>{c.get('artist')}</td><td>{c.get('track_count')}</td><td>{c.get('year')}</td></tr>"
             elif source in ["STEAM_TAGS", "EMBEDDED"]:
                 matrix_rows += f"<tr><td>{source}</td><td>(Per-track data)</td><td>N/A</td><td>N/A</td><td>N/A</td></tr>"

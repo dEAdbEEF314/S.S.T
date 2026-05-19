@@ -87,8 +87,8 @@ class MetadataBuilder:
                     break
             res_title = local_tags.get("title", res_title)
             res_artist = local_tags.get("artist", res_artist)
-            res_track = str(local_tags.get("track_number", res_track))
-            res_disc = str(local_tags.get("disc_number", res_disc))
+            res_track = local_tags.get("track_number", res_track)
+            res_disc = local_tags.get("disc_number", res_disc)
 
         # 2. Apply Overrides (LLM Correction)
         if instr.get("override_title"): res_title = instr["override_title"]
@@ -119,7 +119,20 @@ class MetadataBuilder:
         joined_tags = ", ".join(target_tags) if target_tags else ""
         
         target_url = f"https://store.steampowered.com/app/{target_appid}"
-        res_comment = f"{target_name}, {joined_tags}, {target_appid}, {target_url}"
+        new_info = f"{target_name}, {joined_tags}, {target_appid}, {target_url}"
+
+        # Merge with existing comment (Topic: Separator Change)
+        tid = f"{disc}_{clean_title}"
+        existing_comment = ""
+        for s in track_sources.get(tid, []):
+            if s["type"] == "embedded_merged":
+                existing_comment = s.get("tags", {}).get("comment", "")
+                break
+        
+        if existing_comment and str(existing_comment).strip():
+            res_comment = f"{existing_comment}, {new_info}"
+        else:
+            res_comment = new_info
         
         # 5. Label Fallback (Topic 6)
         res_label = global_identity.get("canonical_label")
