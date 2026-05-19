@@ -100,3 +100,4 @@ Handover_Document_*.md
 
 # ── Local LLM Blobs ──────────────────────────────────────────────────────────
 Models/blobs/
+.aider*

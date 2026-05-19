@@ -173,6 +173,7 @@ class LLMOrganizer:
     "canonical_year": "YYYY",
     "canonical_label": "レーベル名（またはパブリッシャー）",
     "chosen_mbz_index": number | null,
+    "chosen_mbz_id": "MusicBrainz Release ID | null",
     "mbz_choice_reason": "English reason why this candidate was chosen over others"
   }}
 }}
