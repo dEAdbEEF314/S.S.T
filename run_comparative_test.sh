@@ -37,8 +37,7 @@ if [ "$loaded" = true ]; then
   echo "✅ Model loaded successfully. Starting tests..."
   for appid in "${appids[@]}"; do
     echo "  - Processing AppID $appid..."
-    cd scout && export PYTHONPATH="${BASE_DIR}/scout/src" && uv run python -m scout.main --appid "$appid" --dev --force
-    cd ..
+    export PYTHONPATH="${BASE_DIR}/src" && uv run python -m scout.main --appid "$appid" --dev --force
   done
 else
   echo "⏭️ Skipping $model_id"
