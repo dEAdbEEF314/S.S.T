@@ -26,6 +26,7 @@ class SteamScanner:
         self.cache_path = Path(cache_path)
         self.language = language
         self.cache = self._load_cache()
+        self.tag_map = self._load_tag_map()
         
         # 1. Discover all libraries
         self.library_paths = self._discover_all_libraries(override_library_path)
@@ -55,6 +56,16 @@ class SteamScanner:
                 json.dump(self.cache, f, indent=2, ensure_ascii=False)
         except Exception as e:
             logger.error(f"Failed to save cache: {e}")
+
+    def _load_tag_map(self) -> dict:
+        tag_file = Path("data/steam_tags.json")
+        if tag_file.exists():
+            try:
+                with open(tag_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.error(f"Failed to load tag map: {e}")
+        return {}
 
     def _discover_all_libraries(self, override_path: Optional[str]) -> List[Path]:
         libs = SteamLibraryDiscovery.discover(self.install_path)
@@ -179,7 +190,14 @@ class SteamScanner:
         enriched = self.cache.get("enriched", {}).get(cache_key, {})
         metadata.update(enriched)
 
-        # 2. Ensure Tracklist/Credits/PICS data are fetched (Phase 1)
+        # 2. Extract tags from local appinfo (Topic: Local Tags)
+        if not metadata.get("tags") and "store_tags" in common:
+            tag_ids = common["store_tags"]
+            if isinstance(tag_ids, dict):
+                # store_tags in appinfo is like {'0': 492, '1': 1621...}
+                metadata["tags"] = [self.tag_map.get(str(tid)) for tid in tag_ids.values() if self.tag_map.get(str(tid))]
+
+        # 3. Ensure Tracklist/Credits/PICS data are fetched (Phase 1)
         if not metadata.get("store_tracklist"):
             web_data = self._fetch_web_enrichment(app_id)
             if web_data:
@@ -193,7 +211,7 @@ class SteamScanner:
         if not metadata.get("genres"):
             genres_data = common.get("genres", {})
             if isinstance(genres_data, dict):
-                metadata["genres"] = [g.get("name") for g in genres_data.values() if isinstance(g, dict) and "name" in g]
+                metadata["genres"] = [g.get("description") or g.get("name") for g in genres_data.values() if isinstance(g, dict) and (g.get("description") or g.get("name"))]
             if metadata["genres"]: metadata["genre"] = metadata["genres"][0]
 
         # Release Date & Artwork (Local fallbacks)
@@ -204,21 +222,31 @@ class SteamScanner:
             if common.get("logo"):
                 metadata["header_image_url"] = f"https://cdn.akamai.steamstatic.com/steam/apps/{app_id}/header.jpg"
 
-        # 3. Handle Parent Enrichment
+        # 4. Handle Parent Enrichment
         if metadata.get("parent_app_id"):
             pid = int(metadata["parent_app_id"])
             p_cache_key = str(pid)
+            
+            # Try local appinfo for parent tags first (much faster)
+            p_appinfo = self.appinfo_dict.get(pid, {}).get("common", {})
+            if "store_tags" in p_appinfo:
+                p_tag_ids = p_appinfo["store_tags"]
+                if isinstance(p_tag_ids, dict):
+                    metadata["parent_tags"] = [self.tag_map.get(str(tid)) for tid in p_tag_ids.values() if self.tag_map.get(str(tid))]
+
             if p_cache_key in self.cache.get("enriched", {}):
                 p_enriched = self.cache["enriched"][p_cache_key]
                 metadata["parent_name"] = p_enriched.get("name")
-                metadata["parent_tags"] = p_enriched.get("tags", [])
+                if not metadata.get("parent_tags"):
+                    metadata["parent_tags"] = p_enriched.get("tags", [])
                 metadata["parent_genres"] = p_enriched.get("genres", [])
                 metadata["parent_genre"] = metadata["parent_genres"][0] if metadata["parent_genres"] else None
             else:
                 p_web = self._fetch_web_enrichment(pid)
                 if p_web:
                     metadata["parent_name"] = p_web.get("name")
-                    metadata["parent_tags"] = p_web.get("tags", [])
+                    if not metadata.get("parent_tags"):
+                        metadata["parent_tags"] = p_web.get("tags", [])
                     metadata["parent_genres"] = p_web.get("genres", [])
                     metadata["parent_genre"] = metadata["parent_genres"][0] if metadata["parent_genres"] else None
                     if "enriched" not in self.cache: self.cache["enriched"] = {}
@@ -226,9 +254,8 @@ class SteamScanner:
                     self._save_cache()
                 else:
                     # Local fallback for parent
-                    p_data = self.appinfo_dict.get(pid, {}).get("common", {})
-                    if p_data:
-                        metadata["parent_name"] = p_data.get("name")
+                    if not metadata.get("parent_name"):
+                        metadata["parent_name"] = p_appinfo.get("name")
 
         return metadata
 

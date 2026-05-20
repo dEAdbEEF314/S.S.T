@@ -116,7 +116,7 @@ class MetadataBuilder:
         
         # Use parent_tags as they are usually richer community tags (Topic 10)
         target_tags = steam_meta.parent_tags if steam_meta.parent_tags else steam_meta.tags
-        joined_tags = ", ".join(target_tags) if target_tags else ""
+        joined_tags = "; ".join(target_tags) if target_tags else ""
         
         target_url = f"https://store.steampowered.com/app/{target_appid}"
         new_info = f"{target_name}, {joined_tags}, {target_appid}, {target_url}"
