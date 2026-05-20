@@ -11,53 +11,9 @@ from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 import json_repair
 
+from .rate_limit import DistributedRateLimiter
+
 logger = logging.getLogger("scout.llm")
-
-class DistributedRateLimiter:
-    def __init__(self, rpm: int, tpm: int, rpd: int):
-        self.limit_rpm = rpm
-        self.limit_tpm = int(tpm * 0.9) if tpm > 0 else 10**9
-        self.limit_rpd = rpd
-        self.lock = threading.Lock()
-        self.request_times = collections.deque()
-        self.token_times = collections.deque() 
-        
-    def _get_usage_file(self):
-        log_dir = Path("logs")
-        log_dir.mkdir(exist_ok=True)
-        return log_dir / f"llm_usage_{datetime.now().strftime('%Y%m%d')}.json"
-
-    def _estimate_tokens(self, messages: List[Dict[str, str]]) -> int:
-        total_chars = sum(len(m.get("content", "")) for m in messages)
-        return max(1, total_chars // 3)
-
-    def acquire(self, messages: List[Dict[str, str]]) -> bool:
-        tokens = self._estimate_tokens(messages)
-        while True:
-            with self.lock:
-                now = time.time()
-                while self.request_times and self.request_times[0] < now - 60:
-                    self.request_times.popleft()
-                while self.token_times and self.token_times[0][0] < now - 60:
-                    self.token_times.popleft()
-                
-                req_count = len(self.request_times)
-                load_factor = req_count / self.limit_rpm if self.limit_rpm > 0 else 0
-                
-                if load_factor >= 0.9:
-                    wait = self.request_times[0] + 61.0 - now
-                elif load_factor >= 0.7:
-                    import random
-                    wait = 2.0 + random.uniform(0, 3.0)
-                elif sum(t[1] for t in self.token_times) + tokens > self.limit_tpm:
-                    if self.token_times:
-                        wait = self.token_times[0][0] + 61.0 - now
-                    else: return True
-                else:
-                    self.request_times.append(now)
-                    self.token_times.append((now, tokens))
-                    return True
-            time.sleep(max(0.1, wait))
 
 class LLMOrganizer:
     def __init__(self, api_key: str, base_url: str, 
@@ -125,7 +81,7 @@ class LLMOrganizer:
 
 ### 【重要：Dirty Tags（仕様）の解釈と強制クリーニング】
 - **最優先命令**: 本システムは「DJ機材での視認性」を絶対視します。タイトルの先頭に「01 - 」や「01. 」のようなトラック番号が含まれている場合、**たとえそれがMusicBrainzやSteam Storeの公式な名称であっても、必ず除去（クリーニング）してください。**
-- システムのバリデーション・ロジック（正規表現：`^(\d+)([\s.-]+)`）に抵触するタイトルは、例外なく「Dirty Tags」として検知され、アーカイブが棄却されます。
+- システムのバリデーション・ロジック（正規表現：`^(\\d+)([\\s.-]+)`）に抵触するタイトルは、例外なく「Dirty Tags」として検知され、アーカイブが棄却されます。
 - あなたの任務は、複数のソースを比較し、最も「純粋な曲名（番号なし）」を導き出すことです。上位ソースが汚れている場合は、下位のクリーンなソース（またはファイル名から番号を除いたもの）を採用するか、自身でクリーニングを行ってください。
 - もしタイトルが「01 - Title」となっているなら、必ず「Title」として出力しなさい。これが守られない場合、あなたの推論結果はシステムによって「品質不良」として棄却されます。
 
