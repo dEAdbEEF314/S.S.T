@@ -86,15 +86,21 @@ class AudioTagger:
             # Comment logic: Consolidate into a single frame to prevent duplication in tools like MP3tag
             comment_text = tag_map["comment"]
             
-            # Prune if too long for ID3 standards (though encoding=3/UTF-8 is flexible)
+            # Prune if too long for ID3 standards (ID3v2.3 limits are frame-based, but we target ~2000 bytes for safety)
+            # Standard format: "{album_name}, [{tag1}/ {tag2}/ ...], {appid}, {url}"
             if len(comment_text.encode('utf-16')) > 2000:
-                parts = comment_text.split(" | ")
-                if len(parts) >= 4:
-                    name, tags_str, app_id, url = parts[0], parts[1], parts[2], parts[3]
-                    tags_list = tags_str.split(", ")
-                    while tags_list and len(f"{name} | {', '.join(tags_list)} | {app_id} | {url}".encode('utf-16')) > 2000:
+                # Find the bracketed tags section: [... ]
+                match = re.search(r', \[(.*)\], \d+, https', comment_text)
+                if match:
+                    prefix = comment_text[:match.start(1)]
+                    tags_str = match.group(1)
+                    suffix = comment_text[match.end(1):]
+                    
+                    tags_list = tags_str.split("/ ")
+                    while tags_list and len(f"{prefix}{'/ '.join(tags_list)}{suffix}".encode('utf-16')) > 2000:
                         tags_list.pop()
-                    comment_text = f"{name} | {', '.join(tags_list)} | {app_id} | {url}"
+                    
+                    comment_text = f"{prefix}{'/ '.join(tags_list)}{suffix}"
 
             # Remove ALL existing COMM frames to ensure a clean state
             tags.delall("COMM")
