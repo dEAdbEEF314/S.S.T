@@ -50,7 +50,7 @@ S.S.T is a **Local-only Edge Processor**. All heavy lifting—including audio co
 ### 2. Run Processor
 ```bash
 # Execute using uv run
-uv run scout/src/scout/main.py --limit 10
+./sst --limit 10
 
 # Or use the wrapper script
 ./sst --limit 10

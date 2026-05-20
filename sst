@@ -6,7 +6,7 @@
 
 # --- Configuration ---
 MAIN_MODULE="scout.main"
-export PYTHONPATH="scout/src"
+export PYTHONPATH="src"
 
 # --- Colors ---
 RED='\033[0;31m'
@@ -125,8 +125,8 @@ fi
 
 # --- Helper function to run with uv ---
 run_uv() {
-    # We use --project scout to ensure it picks up the correct environment
-    uv run --project scout python -u "$@"
+    # We use uv run to execute within the root project environment
+    uv run python -u "$@"
 }
 
 # --- Exclusive Maintenance Modes ---
