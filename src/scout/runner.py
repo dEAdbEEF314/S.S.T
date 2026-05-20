@@ -10,6 +10,7 @@ from rich.console import Console
 
 from .models import SteamMetadata, LocalProcessResult
 from .processor import LocalProcessor
+from .track_grouper import TrackManager
 
 logger = logging.getLogger("scout.runner")
 
@@ -29,7 +30,7 @@ class JobRunner:
         for ost in soundtracks:
             install_dir = Path(ost["install_dir"])
             # Estimate track count by counting audio files
-            audio_files = self.processor._list_audio_files(install_dir)
+            audio_files = TrackManager.list_audio_files(install_dir)
             ost["_track_count"] = len(audio_files)
 
         # Sort soundtracks by track count to process small ones first
@@ -59,7 +60,7 @@ class JobRunner:
             # Use dict unpacking to ensure all fields from ost are included in SteamMetadata
             steam_meta = SteamMetadata(**ost)
 
-            all_files = self.processor._list_audio_files(install_dir)
+            all_files = TrackManager.list_audio_files(install_dir)
             progress.update(album_task, description=f"[yellow]Processing: {ost['name']}", total=len(all_files))
 
             result = self.processor.process_album(app_id, install_dir, steam_meta, on_track_complete=lambda: progress.advance(album_task))
