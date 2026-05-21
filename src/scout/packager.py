@@ -46,8 +46,13 @@ class PackageManager:
             archive_result = shutil.make_archive(str(temp_zip_base), 'zip', source_dir)
             temp_zip_file = Path(archive_result)
 
-            # 4. Atomic Move to Windows destination
-            shutil.move(str(temp_zip_file), str(final_zip_path))
+            # 4. Move to Windows destination (Handle WSL metadata issues)
+            try:
+                shutil.move(str(temp_zip_file), str(final_zip_path))
+            except OSError as move_err:
+                logger.debug(f"shutil.move failed ({move_err}), falling back to copyfile+unlink")
+                shutil.copyfile(str(temp_zip_file), str(final_zip_path))
+                temp_zip_file.unlink()
             
             # 5. Extraction (Directly call Windows tar.exe from WSL)
             def wsl_to_win(wsl_p: Path) -> str:
@@ -73,7 +78,8 @@ class PackageManager:
             raw_tar_exe = find_win_exe("tar.exe", "/mnt/c/Windows/System32/tar.exe")
 
             if not raw_tar_exe:
-                logger.error(f"tar.exe not found. ZIP remains at {final_zip_path}")
+                logger.error(f"tar.exe not found in PATH or standard location. ZIP package remains at: {final_zip_path}")
+                logger.warning("Please install or ensure tar.exe is available in your Windows system for automatic extraction.")
                 return None
 
             if not final_zip_path.exists():
@@ -93,12 +99,17 @@ class PackageManager:
                     err_msg = result.stderr.decode('cp932')
                 except:
                     err_msg = result.stderr.decode('utf-8', errors='replace')
-                logger.error(f"Windows extraction failed for {app_id}: {err_msg.strip()}")
+                logger.error(f"Windows extraction failed for {app_id} (Code: {result.returncode}): {err_msg.strip()}")
+                logger.warning(f"ZIP file preserved for manual extraction: {final_zip_path}")
                 return None
 
-            # 6. Success: Remove the ZIP file
-            final_zip_path.unlink(missing_ok=True)
-            logger.info(f"Local package extracted to: {extract_dir}")
+            # 6. Success: Remove the ZIP file (SPEC: Intermediate ZIP should be deleted after successful extraction)
+            try:
+                final_zip_path.unlink(missing_ok=True)
+                logger.info(f"Local package extracted and intermediate ZIP removed: {extract_dir}")
+            except Exception as unlink_err:
+                logger.warning(f"Failed to remove intermediate ZIP {final_zip_path}: {unlink_err}")
+                
             return extract_dir
             
         except Exception as e:
