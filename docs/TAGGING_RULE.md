@@ -1,147 +1,103 @@
-# SST 音源選択およびメタデータ・タグ付けルール
+# S.S.T (Steam Soundtrack Tagger) タグ付け・品質基準
 
-このドキュメントは、Steam Soundtrack Tagger (SST) における音源ファイルの選択、ティア分類、およびメタデータ・タグ付けの正式なロジックを定義します。
-
-## 1. ファイル選択とティア・ロジック
-
-SST は、Steam のサウンドトラック・ディレクトリで見つかったオーディオ・ファイルを論理トラックごとにグループ化し、利用可能な最高品質のバージョンを採用します。
-
-### 1.1 品質ティア (Quality Tiers)
-- **Lossless (ティア 1)**: FLAC, WAV, AIFF, ALAC
-- **Lossy High (ティア 2)**: OGG, AAC, M4A
-- **MP3 (ティア 3)**: 標準的な MP3 ファイル
-
-### 1.2 重複排除ロジック
-ファイル名から品質・フォーマットを示す接尾辞（例：`(AIFF)`, `[FLAC]`, `(MP3)`）を削除して比較し、同一トラックとして統合します。複数のフォーマットが存在する場合、最高品質のティアが優先されます。
-
-## 2. メタデータ同定ロジック
-
-### 2.1 3層 API 統合
-LLM 推論に頼る前に、以下の 3 つの構造化データソースを使用します：
-1. **階層1 (公式 Store API)**: 日本語の基礎情報（名称、ジャンル）。
-2. **階層2 (PICS Bridge)**: Steam 内部 DB から取得した正確なトラックリストとクレジット。
-3. **階層3 (Steam Web API)**: 公式のユーザー定義人気タグ。
-
-### 2.2 MusicBrainz 候補のランク付け
-物理的な証拠に基づいてスコアリングされます：
-- **AppID 一致 (+500点)**: MusicBrainz 内に Steam AppID への直接リンクがある。
-- **SteamDB 一致 (+500点)**: MusicBrainz 内に SteamDB への直接リンクがある。
-- **親 AppID 一致 (+300点)**: 親ゲームへのリンクがある。
-- **構造の一致 (+50点)**: トラック数の完全一致。
-- **トラックリスト指紋 (+200点)**: 曲名の平均類似度が 80% 超。
-
-### 2.3 決定論的ファストトラック
-直接リンクがあり、かつ「MBZ・Steam PICS・ローカル」の曲数が完璧に一致する場合、LLM をバイパスして自動的に `ARCHIVE` 判定を下します。
-
-## 3. ID3v2.3 タグ付け標準
-
-DJ機材や Windows との最大互換性を確保するため、以下の標準を適用します。
-
-### 3.1 フィールド・マッピングとフォーマット
-| ID3 フレーム | フィールド | フォーマット / ルール |
-| :--- | :--- | :--- |
-| **TIT2** | 曲名 | 統合された曲名。 |
-| **TPE1** | アーティスト | MBZ または Steam からの主要作曲家・演奏者。 |
-| **TALB** | アルバム名 | Steam 公式タイトル（Locked）。 |
-| **TPE2** | アルバムアーティスト | `[開発元], [パブリッシャー]` |
-| **TCON** | ジャンル | 接頭辞: `STEAM VGM, [全ジャンル]` |
-| **TPUB** | レーベル | 公式 PICS レーベル または MBZ レーベル。 |
-| **TYER** | 年 | 発売年 (YYYY)。 *注: MP3 は v2.3 のため TYER を使用。* |
-| **TRCK** | トラック番号 | 単一の整数 (例: `1`, `16`)。 |
-| **TPOS** | ディスク番号 | `n/N` 形式 (例: `1/1`)。 |
-| **TIT1** | グルーピング | `[ゲーム名], Steam` |
-| **COMM** | コメント | `[ゲーム名], [タグ], [AppID], [ストア URL]` |
-| **TLAN** | 言語 | ISO 639-2 コード (例: `jpn`) |
-
-### 3.2 技術的要件
-- **厳格な ID3v2.3**: MP3 ファイルは強制的に v2.3 フォーマットで保存されます。
-- **コメント欄の自動調整**: `COMM` フィールドが ID3v2.3 の制限（約2000文字）を超える場合、タグを末尾から一つずつ削除して収まるように自動調整します。
-
-## 4. 振り分けとバリデーション (Archive vs. Review)
-
-### 4.1 Archive (承認)
-以下の条件をすべて満たす必要があります：
-- LLM 自信度スコアが **100**（またはファストトラック適用）。
-- 整合性品質 (Integrity Quality) が **95点以上**。
-- "Dirty Tags"（曲名への番号混入）が存在しない。
-
-### 4.2 Review (要確認)
-以下の場合に `review/` へ送られます：
-- 同定確信度が 100 未満、または品質が 95 未満。
-- 音声変換エラー、または FFmpeg 警告が発生。
-- LLM により人間による確認が推奨された。
+このドキュメントは、S.S.T における音源選択、ティア分類、および ID3v2.3 タグ付けの技術標準を定義します。
 
 ---
 
-# SST Audio Selection and Metadata Tagging Rules
+## 1. 音源ファイルの品質基準 (Quality Tiers)
 
-This document defines the authoritative logic for audio file selection, tier classification, and metadata tagging for the Steam Soundtrack Tagger (SST).
+S.S.T は論理トラックごとに最高品質のファイルを自動選択（Adopt）します。
 
-## 1. File Selection & Tier Logic
+| ティア | カテゴリ | フォーマット | 最終出力形式 |
+| :--- | :--- | :--- | :--- |
+| **ティア 1** | **Lossless** | FLAC, WAV, AIFF, ALAC | **AIFF (.aif)** |
+| **ティア 2** | **Lossy High** | OGG, AAC, M4A | **MP3 (.mp3)** |
+| **ティア 3** | **Standard** | MP3 | **MP3 (.mp3)** |
 
-SST groups audio files found in a Steam soundtrack directory by their logical tracks and adopts the highest quality version available.
+### 1.1 重複排除ロジック
+ファイル名から `(AIFF)`, `[FLAC]` などの品質タグを除去して比較し、同一トラックとして統合します。複数のフォーマットが存在する場合、最高品質のティアが優先されます。
 
-### 1.1 Quality Tiers
-- **Lossless (Tier 1)**: FLAC, WAV, AIFF, ALAC.
-- **Lossy High (Tier 2)**: OGG, AAC, M4A.
-- **MP3 (Tier 3)**: Standard MP3 files.
+---
 
-### 1.2 Deduplication Logic
-The system collapse duplicates by stripping common quality suffixes (e.g., `(AIFF)`, `[FLAC]`, `(MP3)`) from filename stems. If multiple formats exist for the same track, the format with the highest tier is chosen.
+## 2. ID3v2.3 タグ付け標準
 
-## 2. Metadata Identification Logic
+DJ機材および Windows エクスプローラーとの最大互換性を確保するため、**ID3v2.3** 規格を強制します。
 
-### 2.1 3-Tier API Consolidation
-The system uses three structured data sources before resorting to LLM reasoning:
-1. **Tier 1 (Official Store API)**: Basic localized info (Name, Genre).
-2. **Tier 2 (PICS Bridge)**: Structured Tracklists and Credits directly from Steam's database.
-3. **Tier 3 (Steam Web API)**: User-defined popular tags.
-
-### 2.2 MusicBrainz Candidate Ranking
-MBZ candidates are scored based on physical evidence:
-- **AppID Match (+500)**: Direct Steam AppID link in `url-rels`.
-- **SteamDB Match (+500)**: Direct SteamDB link for the AppID in `url-rels`.
-- **Parent AppID Match (+300)**: Link to the parent game AppID in `url-rels`.
-- **Structural Alignment (+50)**: Exact track count match.
-- **Tracklist Fingerprint (+200)**: Average title similarity > 80%.
-
-### 2.3 Deterministic Fast-Track
-If a **Direct Link** is found and the **Track Count** matches perfectly across MBZ, Steam PICS, and Local files, the system promotes the album to `ARCHIVE` automatically, bypassing the LLM.
-
-## 3. ID3v2.3 Tagging Standards
-
-To ensure maximum compatibility with hardware (e.g., DJ gear) and Windows, the following standards are enforced.
-
-### 3.1 Field Mapping & Formats
-| ID3 Frame | Field | Format / Rule |
+| ID3 フレーム | フィールド | 内容 / フォーマットルール |
 | :--- | :--- | :--- |
-| **TIT2** | Title | Consolidated track title. No "Unknown". |
-| **TPE1** | Artist | Main composers/performers from MBZ or Steam. |
-| **TALB** | Album | Official Steam album title (Locked). |
-| **TPE2** | Album Artist | `[Developer], [Publisher]`. |
-| **TCON** | Genre | Prefixed: `STEAM VGM, [All Genres]`. |
-| **TPUB** | Label | Official PICS Label or MBZ Label. |
-| **TYER** | Year | Release Year (YYYY). *Note: MP3 uses TYER for v2.3.* |
-| **TRCK** | Track Number | Single integer (e.g., `1`, `16`). |
+| **TIT2** | 曲名 | LLM によりクリーニングされた純粋な曲名。 |
+| **TPE1** | アーティスト | MusicBrainz のクレジット（最優先）または Steam 開発元。 |
+| **TALB** | アルバム名 | Steam 公式タイトル（不変）。 |
+| **TPE2** | アルバムアーティスト | `開発元, 出版社` |
+| **TCON** | ジャンル | `STEAM VGM, [全ジャンル]` (カンマ区切り) |
+| **TPUB** | レーベル | 公式 PICS レーベル、MBZ レーベル、または `開発元, 出版社` |
+| **TYER** | 年 | 発売年 (YYYY)。*注: v2.3 のため TYER フレームを使用。* |
+| **TRCK** | トラック番号 | 単一の整数。 |
+| **TPOS** | ディスク番号 | `n/N` 形式 (例: `1/1`)。 |
+| **TIT1** | グルーピング | `[親ゲーム名], Steam` |
+| **COMM** | コメント | `親ゲーム名, [タグ1/ タグ2/ ...], AppID, ストア URL` |
+| **TLAN** | 言語 | ISO 639-2 コード (例: `jpn`) |
+| **APIC** | 埋め込み画像 | MusicBrainz または Steam ストアの Front Cover。 |
+
+---
+
+## 3. 実装要件
+
+- **セパレータ**:
+  - 一般的な複数値フィールド: `, ` (カンマ＋スペース)
+  - `COMM` タグ内のコミュニティタグ: `/ ` (スラッシュ＋スペース)
+- **文字数制限の動的調整**:
+  - `COMM` フィールドが約 2000バイトを超える場合、末尾から**タグ単位で自動削除**して制限内に収めます。
+
+---
+
+# S.S.T (Steam Soundtrack Tagger) Tagging & Quality Standards
+
+This document defines the technical standards for audio selection, tier classification, and ID3v2.3 tagging within S.S.T.
+
+---
+
+## 1. Audio Quality Tiers
+
+S.S.T automatically adopts the highest quality file for each logical track.
+
+| Tier | Category | Input Formats | Final Output Format |
+| :--- | :--- | :--- | :--- |
+| **Tier 1** | **Lossless** | FLAC, WAV, AIFF, ALAC | **AIFF (.aif)** |
+| **Tier 2** | **Lossy High** | OGG, AAC, M4A | **MP3 (.mp3)** |
+| **Tier 3** | **Standard** | MP3 | **MP3 (.mp3)** |
+
+### 1.1 Deduplication Logic
+The system merges tracks by stripping quality tags like `(AIFF)` or `[FLAC]` from filenames. If multiple formats exist for the same track, the highest tier is prioritized.
+
+---
+
+## 2. ID3v2.3 Tagging Standard
+
+To ensure maximum compatibility with DJ hardware and Windows Explorer, the **ID3v2.3** standard is strictly enforced.
+
+| ID3 Frame | Field | Content / Format Rule |
+| :--- | :--- | :--- |
+| **TIT2** | Title | Pure track title cleaned by LLM. |
+| **TPE1** | Artist | MusicBrainz credits (priority) or Steam developer. |
+| **TALB** | Album | Official Steam title (Locked). |
+| **TPE2** | Album Artist | `Developer, Publisher` |
+| **TCON** | Genre | `STEAM VGM, [All Genres]` (comma separated) |
+| **TPUB** | Label | Official PICS Label, MBZ Label, or `Developer, Publisher`. |
+| **TYER** | Year | Release Year (YYYY). *Note: Uses TYER frame for v2.3.* |
+| **TRCK** | Track Number | Single integer. |
 | **TPOS** | Disc Number | `n/N` format (e.g., `1/1`). |
-| **TIT1** | Grouping | `[Game Name], Steam`. |
-| **COMM** | Comment | `[Game Name], [Tags], [AppID], [Store URL]`. |
-| **TLAN** | Language | ISO 639-2 code (e.g., `jpn`). |
+| **TIT1** | Grouping | `[Parent Game Name], Steam` |
+| **COMM** | Comment | `Parent Name, [tag1/ tag2/ ...], AppID, Store URL` |
+| **TLAN** | Language | ISO 639-2 code (e.g., `jpn`) |
+| **APIC** | Artwork | Embedded front cover from MusicBrainz or Steam. |
 
-### 3.2 Technical Requirements
-- **Strict ID3v2.3**: MP3 files are force-saved in v2.3 format.
-- **Comment Pruning**: Tags in the `COMM` field are automatically removed from the end if the total length exceeds ~2000 characters to prevent ID3v2.3 limit violations.
+---
 
-## 4. Routing & Validation (Archive vs. Review)
+## 3. Implementation Requirements
 
-### 4.1 Archive (Success)
-Albums reach `archive/` only if:
-- LLM confidence score is **100** (or Fast-Tracked).
-- Integrity Quality is **95 or higher**.
-- No "Dirty Tags" (track numbers mixed into titles) exist.
-
-### 4.2 Review (Manual Check)
-Albums are moved to `review/` if:
-- Any doubt in identity (Score < 100) or quality (Quality < 95).
-- Audio failures or FFmpeg warnings are detected.
-- User review is manually requested by the LLM.
+- **Separators**:
+  - General multi-value fields: `, ` (Comma + Space)
+  - Community tags in `COMM`: `/ ` (Slash + Space)
+- **Dynamic Size Adjustment**:
+  - If the `COMM` field exceeds ~2000 bytes, community tags are **pruned from the end one-by-one** to fit within the limit.

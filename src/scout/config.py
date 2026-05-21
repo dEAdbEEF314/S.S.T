@@ -40,4 +40,4 @@ class Config(BaseSettings):
     discord_webhook_warning: Optional[str] = None
     discord_webhook_info: Optional[str] = None
     discord_webhook_completion: Optional[str] = None
-    metadata_source_priority: str = "MBZ,STEAM_PICS,STEAM_STORE,STEAM_TAGS,EMBEDDED"
+    metadata_source_priority: str = "STEAM_PICS,STEAM_STORE,MBZ,STEAM_TAGS,EMBEDDED"
