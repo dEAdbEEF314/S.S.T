@@ -55,7 +55,7 @@ STEAM_LOGIN_SECURE=あなたのセキュアクッキー
 
 ### 依存関係の同期 (初回のみ)
 ```bash
-cd scout && uv sync
+uv sync
 ```
 
 ### 全件処理の実行

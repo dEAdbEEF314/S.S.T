@@ -55,8 +55,8 @@
 
 ## 5. タグ付けの強制
 - **ID3v2.3**: MP3/AIFF ファイルには ID3v2.3 を強制する（年は `TYER` を使用）。
-- **セパレータ**: 常にカンマ＋スペース（`, `）を使用する。
-- **切り詰め**: `COMM` タグが 2000 文字を超える場合は、末尾からタグ単位で自動削除してサイズを調整する。
+- **セパレータ**: 基本的にカンマ＋スペース（`, `）を使用するが、`COMM` タグ内のコミュニティタグについてはスラッシュ＋スペース（`/ `）を使用し、全体を `[ ]` で囲む。
+- **切り詰め**: `COMM` タグが 2000 バイトを超える場合は、末尾からタグ単位で自動削除してサイズを調整する。
 
 ## 6. 環境管理
 - Python 関連のタスクには **必ず `uv` を使用**しなければなりません。
@@ -143,8 +143,8 @@ You MUST adhere to the gate-based scoring system:
 
 ## 5. Tagging Enforcement
 - **ID3v2.3**: Mandatory for MP3/AIFF files. Use `TYER` for years.
-- **Separators**: Always use comma + space (`, `).
-- **Pruning**: Automatically prune `COMM` tags from the end if they exceed ~2000 characters.
+- **Separators**: Generally use comma + space (`, `). However, use slash + space (`/ `) for community tags within the `COMM` field, and wrap the tags section in brackets `[ ]`.
+- **Pruning**: Automatically prune `COMM` tags from the end of the `[ ]` section if they exceed ~2000 bytes.
 
 ## 6. Environment Management
 - **You MUST use `uv`** for all Python-related tasks.
