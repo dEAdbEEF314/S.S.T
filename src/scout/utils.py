@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 def windows_to_wsl_path(win_path: str) -> Path:
-    """
+    r"""
     Converts a Windows-style path (C:\...) to a WSL2 mount path (/mnt/c/...).
     If the path is already a valid WSL path, it returns it as a Path object.
     """

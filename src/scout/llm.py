@@ -159,11 +159,15 @@ class LLMOrganizer:
         all_instructions = {}
         
         track_ids = list(track_sources.keys())
+        # Create a mapping of stable IDs (idx_N) to original logical IDs
+        stable_to_logical = {f"idx_{i}": tid for i, tid in enumerate(track_ids)}
+        logical_to_stable = {tid: sid for sid, tid in stable_to_logical.items()}
+        
         chunk_size = 10 if self.llm_backend == "OLLAMA" else 30
 
         for i in range(0, len(track_ids), chunk_size):
             chunk = track_ids[i:i + chunk_size]
-            chunk_sources = {k: track_sources[k] for k in chunk}
+            chunk_sources = {logical_to_stable[k]: track_sources[k] for k in chunk}
 
             chunk_json = json.dumps(chunk_sources, indent=2, ensure_ascii=False)
             mapping_prompt = f"""
@@ -180,8 +184,9 @@ class LLMOrganizer:
             3. **タイトルクリーニング（絶対命令）**: いかなるソースを採用する場合でも、タイトルの先頭に「01. 」や「1- 」のようなトラック番号が含まれている場合は、必ずそれを除去してください。
                - 必要に応じて `override_title` を使用し、純粋な曲名のみを出力しなさい。
                - 例：「01. Beginning」→「Beginning」
+            4. **トラック番号の補完**: ローカルのトラック番号が不明（0 または null）な場合、Steam公式トラックリストと曲名が一致するなら、その番号を `override_track` として出力しなさい。
 
-            ### TRACKS TO MAP:
+            ### TRACKS TO MAP (Keys are Stable IDs):
             {chunk_json}
 
             ### MANDATORY OUTPUT FORMAT (JSON ONLY):
@@ -189,10 +194,11 @@ class LLMOrganizer:
             ```json
             {{
               "track_instructions": {{
-                 "TRACK_ID": {{
+                 "STABLE_ID": {{
                     "action": "use_mbz" | "use_local_tag" | "use_filename" | "needs_review",
                     "mbz_track_index": number,
                     "override_title": string | null,
+                    "override_track": number | null,
                     "reason": "Reasoning for the decision (English)"
                  }}
               }}
@@ -201,15 +207,19 @@ class LLMOrganizer:
             """
             res, log_data = self._call_llm(app_id, mapping_prompt, num_ctx=num_ctx)
 
-            human_mapping_prompt = mapping_prompt.replace(steam_tracks_json, format_store_tracks(steam_info.get('store_tracklist', [])))
-            human_mapping_prompt = human_mapping_prompt.replace(chunk_json, format_local_summary(chunk_sources))
+            # Log human-readable version
+            human_mapping_prompt = mapping_prompt.replace(chunk_json, json.dumps({stable_to_logical[sid]: sources for sid, sources in chunk_sources.items()}, indent=2, ensure_ascii=False))
             log_data["human_prompt"] = human_mapping_prompt
             full_logs.append(log_data)
             
             if res and "track_instructions" in res:
                 instructions = res["track_instructions"]
-                for tid in instructions:
-                    instructions[tid].update({
+                for sid in instructions:
+                    tid = stable_to_logical.get(sid)
+                    if not tid: continue
+                    
+                    data = instructions[sid]
+                    data.update({
                         "TPE2": global_identity.get("canonical_album_artist"),
                         "TCON": global_identity.get("canonical_genre"),
                         "TDRC": global_identity.get("canonical_year"),
@@ -217,9 +227,10 @@ class LLMOrganizer:
                         "confidence_score": id_conf,
                         "strategy": strategy,
                         "semantic_label": global_res.get("semantic_label"),
-                        "chosen_mbz_index": global_identity.get("chosen_mbz_index", 0)
+                        "chosen_mbz_index": global_identity.get("chosen_mbz_index", 0),
+                        "override_track": data.get("override_track")
                     })
-                all_instructions.update(instructions)
+                    all_instructions[tid] = data
 
         return all_instructions, {"phase1_res": global_res, "phase1_log": global_log, "chunks": full_logs}
 
