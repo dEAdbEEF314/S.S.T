@@ -27,7 +27,24 @@ class LocalProcessor:
         self.config = config
         self.db = db
         self.notifier = NotificationManager(config)
-        self.mbz = MusicBrainzIdentifier(config.mbz_app_name, config.mbz_app_version, config.mbz_contact)
+        
+        mbz_scoring = {
+            "direct_steam_link": config.score_mbz_direct_steam_link,
+            "parent_steam_link": config.score_mbz_parent_steam_link,
+            "direct_steamdb_link": config.score_mbz_direct_steamdb_link,
+            "parent_steamdb_link": config.score_mbz_parent_steamdb_link,
+            "bandcamp_link": config.score_mbz_bandcamp_link,
+            "title_similarity_max": config.score_mbz_title_similarity_max,
+            "track_count_match": config.score_mbz_track_count_match,
+            "track_count_penalty_per_track": config.score_mbz_track_count_penalty_per_track,
+            "track_count_penalty_max": config.score_mbz_track_count_penalty_max,
+            "digital_format": config.score_mbz_digital_format,
+            "date_match": config.score_mbz_date_match,
+            "date_penalty_per_year": config.score_mbz_date_penalty_per_year,
+            "date_penalty_max": config.score_mbz_date_penalty_max,
+            "fingerprint_match": config.score_mbz_fingerprint_match
+        }
+        self.mbz = MusicBrainzIdentifier(config.mbz_app_name, config.mbz_app_version, config.mbz_contact, scoring_config=mbz_scoring)
         self.llm = LLMOrganizer(
             api_key=config.llm_api_key, base_url=config.llm_base_url, model=config.llm_model,
             rpm=config.llm_limit_rpm, tpm=config.llm_limit_tpm, rpd=config.llm_limit_rpd,

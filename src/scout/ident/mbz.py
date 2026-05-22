@@ -9,8 +9,24 @@ from difflib import SequenceMatcher
 logger = logging.getLogger("scout.ident.mbz")
 
 class MusicBrainzIdentifier:
-    def __init__(self, app_name: str, version: str, contact: str):
+    def __init__(self, app_name: str, version: str, contact: str, scoring_config: Optional[Dict[str, Any]] = None):
         musicbrainzngs.set_useragent(app_name, version, contact)
+        self.scores = scoring_config or {
+            "direct_steam_link": 500,
+            "parent_steam_link": 300,
+            "direct_steamdb_link": 500,
+            "parent_steamdb_link": 300,
+            "bandcamp_link": 100,
+            "title_similarity_max": 100,
+            "track_count_match": 50,
+            "track_count_penalty_per_track": 20,
+            "track_count_penalty_max": 300,
+            "digital_format": 30,
+            "date_match": 20,
+            "date_penalty_per_year": 20,
+            "date_penalty_max": 100,
+            "fingerprint_match": 200
+        }
 
     def _safe_year(self, date_str: Any) -> Optional[int]:
         """Safely extracts a 4-digit year from any string."""
@@ -71,35 +87,35 @@ class MusicBrainzIdentifier:
                 # 1. Direct Steam Link
                 if app_id and f"store.steampowered.com/app/{app_id}" in url:
                     if "DIRECT_STEAM_LINK" not in seen_evidence:
-                        score += 500
+                        score += self.scores.get("direct_steam_link", 500)
                         evidence_notes.append("DIRECT_STEAM_LINK")
                         seen_evidence.add("DIRECT_STEAM_LINK")
                 
                 # 2. Parent Steam Link
                 elif parent_app_id and f"store.steampowered.com/app/{parent_app_id}" in url:
                     if "PARENT_STEAM_LINK" not in seen_evidence:
-                        score += 300
+                        score += self.scores.get("parent_steam_link", 300)
                         evidence_notes.append("PARENT_STEAM_LINK")
                         seen_evidence.add("PARENT_STEAM_LINK")
                 
                 # 3. Direct SteamDB Link
                 if app_id and f"steamdb.info/app/{app_id}" in url:
                     if "DIRECT_STEAMDB_LINK" not in seen_evidence:
-                        score += 500
+                        score += self.scores.get("direct_steamdb_link", 500)
                         evidence_notes.append("DIRECT_STEAMDB_LINK")
                         seen_evidence.add("DIRECT_STEAMDB_LINK")
                 
                 # 4. Parent SteamDB Link
                 elif parent_app_id and f"steamdb.info/app/{parent_app_id}" in url:
                     if "PARENT_STEAMDB_LINK" not in seen_evidence:
-                        score += 300
+                        score += self.scores.get("parent_steamdb_link", 300)
                         evidence_notes.append("PARENT_STEAMDB_LINK")
                         seen_evidence.add("PARENT_STEAMDB_LINK")
 
                 # Bandcamp (Once per domain to avoid multi-link inflation)
                 if "bandcamp.com" in url:
                     if "BANDCAMP_LINK" not in seen_evidence:
-                        score += 100
+                        score += self.scores.get("bandcamp_link", 100)
                         evidence_notes.append("BANDCAMP_LINK")
                         seen_evidence.add("BANDCAMP_LINK")
 
@@ -123,7 +139,7 @@ class MusicBrainzIdentifier:
             if local_baseline and local_baseline.get("album"):
                 local_sim = SequenceMatcher(None, local_baseline["album"].lower(), title_text.lower()).ratio()
             
-            title_score = int(max(steam_sim, local_sim) * 100)
+            title_score = int(max(steam_sim, local_sim) * self.scores.get("title_similarity_max", 100))
             score += title_score
             evidence_notes.append(f"TITLE_SIM({title_score})")
 
@@ -132,19 +148,19 @@ class MusicBrainzIdentifier:
             except: mb_tracks = 0
             
             if mb_tracks == expected_track_count:
-                score += 50
+                score += self.scores.get("track_count_match", 50)
                 evidence_notes.append("TRACK_COUNT_MATCH")
             elif mb_tracks > 0:
                 diff = abs(mb_tracks - expected_track_count)
                 # Stronger penalty for mismatch to prevent false positives in "data void" areas
-                penalty = min(300, diff * 20)
+                penalty = min(self.scores.get("track_count_penalty_max", 300), diff * self.scores.get("track_count_penalty_per_track", 20))
                 score -= penalty
                 evidence_notes.append(f"TRACK_COUNT_DIFF(-{penalty})")
 
             # --- Tier 3: Corroborative ---
             is_digital = any(m.get('format') == 'Digital Media' for m in release_data.get('medium-list', []))
             if is_digital:
-                score += 30
+                score += self.scores.get("digital_format", 30)
                 evidence_notes.append("DIGITAL_FORMAT")
 
             mb_y = self._safe_year(release_data.get('date'))
@@ -152,11 +168,11 @@ class MusicBrainzIdentifier:
             
             if mb_y and comp_y:
                 if mb_y == comp_y:
-                    score += 20
+                    score += self.scores.get("date_match", 20)
                     evidence_notes.append("DATE_MATCH")
                 else:
                     year_diff = abs(mb_y - comp_y)
-                    penalty = min(100, year_diff * 20)
+                    penalty = min(self.scores.get("date_penalty_max", 100), year_diff * self.scores.get("date_penalty_per_year", 20))
                     score -= penalty
                     evidence_notes.append(f"DATE_MISMATCH(-{penalty})")
 
@@ -183,7 +199,7 @@ class MusicBrainzIdentifier:
                 if len(mb_tracks_data) > 0:
                     match_ratio = matches / len(mb_tracks_data)
                     if match_ratio >= 0.8:
-                        score += 200
+                        score += self.scores.get("fingerprint_match", 200)
                         evidence_notes.append(f"FINGERPRINT_MATCH({int(match_ratio*100)}%)")
 
             scored_candidates.append({
