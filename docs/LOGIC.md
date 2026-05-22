@@ -1,65 +1,114 @@
-# S.S.T (Steam Soundtrack Tagger) 判定ロジック詳細
+# S.S.T (Steam Soundtrack Tagger) 内部実装・判定ロジック仕様書
 
-このドキュメントは、S.S.T がどのようにしてメタデータを収集・評価し、最終的な `ARCHIVE` または `REVIEW` 判定を下すかの詳細な論理を定義します。
-
----
-
-## 1. MusicBrainz 候補のスコアリング (NWO Hybrid Scoring)
-
-MusicBrainz (MBZ) から取得した候補は、以下の物理的証拠に基づき Python ロジックによってスコアリングされ、上位 3〜5 件が LLM に提示されます。
-
-| 判定基準 | 加点 / 減点 | 詳細 |
-| :--- | :--- | :--- |
-| **AppID 一致** | **+500** | MBZ の `url-rels` 内に Steam AppID への直接リンクがある。 |
-| **SteamDB 一致** | **+500** | MBZ の `url-rels` 内に SteamDB への直接リンクがある。 |
-| **親 AppID 一致** | **+300** | 親ゲームへのリンクがある（DLCサントラ等の同定に有効）。 |
-| **Bandcamp 一致** | **+100** | 公式 Bandcamp リンクの存在。 |
-| **タイトル類似度** | **最大 +100** | Steam ストア名またはローカルタグに対する文字列類似度。 |
-| **トラック数一致** | **+50** | トラック数の完全一致。 |
-| **トラック数不一致** | **最大 -300** | 1曲の乖離につき 20点を減点。 |
-| **リリース年一致** | **+20** | Steam 登録年と MBZ 登録年の一致。 |
-| **リリース年不一致** | **最大 -100** | 1年の乖離につき 20点を減点。 |
-| **トラック指紋** | **+200** | 曲名の平均類似度が 80% を超える場合に付与。 |
+本書は、実際の Python ソースコードおよび設定ファイル (`.env.example`) から抽出された「実装の真実」を詳細に記述するものである。S.S.T がどのようにしてメタデータを収集・評価し、最終的な判定を下すのか、開発者が各モジュールの挙動を完全に理解するための究極のリファレンスとなることを目的とする。
 
 ---
 
-## 2. LLM による意味論的監査 (Phase 1 & 2)
+## 1. 構成管理と環境変数 (`config.py`, `.env`)
 
-LLM は単なるパーサーではなく、複数のソースを比較検討する「監査官」として機能します。
+システムの挙動は `src/scout/config.py` 内の `Config` クラス（Pydantic Settings）によって制御される。
 
-### 2.1 Phase 1: 作品の同定 (Global Identity)
-アルバム全体の身元（Identity）と品質（Integrity）を判定します。
-- **STABLE_ID**: トラックごとに不変のインデックス (`idx_0`, `idx_1`...) を使用し、LLM によるキーの「自動修復」によるマッピング崩れを防ぎます。
-- **決定論的ファストトラック**: 直接リンクがあり、かつ曲数が全ソースで一致する場合、LLM をバイパスして `ARCHIVE` 判定を下します。
+### 1.1 パス解決ロジック
+- **`STEAM_INSTALL_PATH`**: Windows形式 (`C:\...`) または WSL形式 (`/mnt/...`) を許容。内部で `utils.ensure_wsl_path` を通じて WSL ネイティブパスに正規化される。
+- **`SST_WORKING_DIR`**: デフォルト `/tmp/sst-work`。音声変換や一時バッファに使用される。
+- **`SST_OUTPUT_DIR`**: 最終成果物の出力先。内部に `archive/` および `review/` フォルダが自動生成される。
 
-### 2.2 Phase 2: トラックマッピングと補完
-個別のトラックに対してタグの内容を確定させます。
-- **`override_track`**: ローカルのトラック番号が欠損（0 または null）している場合、Steam ストアのリストから番号を抽出し、強制的に補完します。すべてのトラックが同じ番号を持つなどの異常メタデータを検知した場合は `null` にフォールバックします。
-- **`override_disc`**: 同様に、ローカルのディスク番号が欠損している場合やストア情報（PICS_API）から明らかにディスク番号が判明する場合に強制的に補完します。
-- **`override_title`**: タイトルの先頭にトラック番号が混入している場合、それを除去した「純粋な曲名」を生成します。
-
----
-
-## 3. システムによる最終検閲（ゲート方式）
-
-LLM が「100点」と判定しても、以下の物理的チェックに抵触した場合は強制的に `REVIEW` へ送られます。
-
-1. **Dirty Tags の残存**: タイトル先頭に数字が含まれ、かつそれが MBZ 側の公式タイトルと一致しない場合。
-2. **物理的欠損 (Track #0)**: 補完を試みてもトラック番号が `0` のまま残った場合。
-3. **重複トラック**: 同一ディスク番号内に同一のトラック番号が複数存在する場合（Duplicate Disc/Track pairs）。
-4. **信頼度閾値**:
-   - Identity Confidence < 100
-   - Integrity Quality < 95
-5. **音声警告**: FFmpeg による「invalid rice order」等の警告やエラー。
+### 1.2 メタデータ優先順位 (分離の三権分立)
+LLM（司法）への「憲法」として、以下の変数がプロンプトに注入される。
+- **`METADATA_SOURCE_PRIORITY`**: アルバム全体の同定に使用（デフォルト: `MBZ,STEAM_PICS,STEAM_STORE,STEAM_TAGS,EMBEDDED`）。
+- **個別タグ優先順位 (`PRIORITY_*`)**:
+    - `TIT2` (曲名): `FILE,EMBED,VDF,MBZ,PICS_API`
+    - `TPE1` (アーティスト): `EMBED,MBZ,PICS_API`
+    - `TRCK` (トラック番号): `PICS_API,MBZ,FILE,EMBED`
+    - `TPOS` (ディスク番号): `PICS_API,EMBED,MBZ`
+    - `TYER` (発売年): `EMBED,MBZ,WEB_API`
 
 ---
 
-## 4. 特殊なケースの処理
+## 2. ライブラリ走査と情報取得層 (`scanner.py`, `steam_vdf.py`)
 
-### 4.1 複数フォーマットの混在
+### 2.1 ライブラリ発見ロジック
+- **`SteamLibraryDiscovery.discover`**: `libraryfolders.vdf` をパースし、全ドライブの `path` を抽出。
+- **ACF走査**: 各ライブラリの `steamapps/appmanifest_{AppID}.acf` を取得し、`AppState` セクションから `name` および `installdir` を特定。
+- **パーソナライズ (`STEAM_LOGIN_SECURE`)**: クッキーが設定されている場合、`https://store.steampowered.com/dynamicstore/userdata/` から所有権情報を含む `userdata.json` を取得・更新する。
+
+### 2.2 3層 API 取得アルゴリズム (`_fetch_web_enrichment`)
+1.  **Tier 1 (Official Store API)**: `https://store.steampowered.com/api/appdetails?appids={app_id}&l={language}`
+2.  **Tier 2 (PICS Bridge via Docker)**: `http://localhost:8080/v1/info/{app_id}`
+    - 失敗時は指数バックオフ（2s, 4s, 8s）を伴う最大3回のリトライ。
+3.  **Tier 3 (Official Tags via Steam Web API)**: `IStoreBrowseService` 経由で 20件のタグを取得。
+
+---
+
+## 3. 音声解析と論理トラック統合層 (`track_grouper.py`)
+
+### 3.1 論理トラック統合アルゴリズム (`group_by_logical_track`)
+複数フォーマットを同一トラックとして統合するための正規化プロセス：
+1.  **Stem 抽出**: ファイル名から拡張子を除去。
+2.  **冗長番号除去**: `^(\d+[\s._-]+)+` で行頭の連番を削除。
+3.  **接尾辞除去**: `[\s(\[]+(aiff|mp3|flac|wav|lossless|high-res|ost|soundtrack|official)[\s)\]]+$` (IGNORECASE) を削除。
+4.  **文字列正規化**: `[^a-zA-Z0-9]` をスペース置換、小文字化、誤字補正 (`artifical` -> `artificial`)、数値正規化 (`01` -> `1`)。
+5.  **論理IDの決定**:
+    - グループ内のファイル間で、ファイル名から抽出されたトラック番号 (`^(\d+)`) が**2つ以上**存在する場合、`{norm_stem} {track_num}` というキーを生成してトラックを分離。
+    - それ以外は `{disc}_{norm_stem}` をキーとして統合。
+
+### 3.2 複数フォーマットの混在
 同一アルバム内に AIFF と MP3 等が混在する場合、以下の優先順位で 1 つのファイルのみを採用（Adopt）します。
 1. **Lossless**: FLAC, WAV, AIFF, ALAC
 2. **Lossy**: OGG, AAC, M4A, MP3
 
-### 4.2 コメント欄の動的調整
-ID3v2.3 の推奨制限（約2000バイト）を遵守するため、コミュニティタグが多すぎる場合は**末尾のタグから一つずつ削除**し、情報の断片化を最小限に抑えつつ制限内に収めます。
+---
+
+## 4. メタデータ同定と LLM 連携層 (`llm.py`, `ident/mbz.py`)
+
+### 4.1 MusicBrainz スコアリング (`mbz.py`) (NWO Hybrid Scoring)
+- **概要**: 候補の妥当性を物理的証拠に基づき数値化する。各配点は `.env` の `SCORE_MBZ_*` 変数で調整可能。
+- **加点項目 (デフォルト)**: `DIRECT_STEAM_LINK` (+500), `PARENT_STEAM_LINK` (+300), `DIRECT_STEAMDB_LINK` (+500), `PARENT_STEAMDB_LINK` (+300), `BANDCAMP_LINK` (+100), `FINGERPRINT_MATCH` (+200)。
+- **減点項目 (デフォルト)**: `TRACK_COUNT_DIFF` (1曲につき -20, 最大 -300), `DATE_MISMATCH` (1年につき -20, 最大 -100)。
+
+### 4.2 LLM による意味論的監査 (2フェーズ処理フロー)
+- **Phase 1 (Global Identity)**: アルバム全体の `identity_confidence` (閾値100) と `integrity_quality` (閾値95) を決定。
+  - **決定論的ファストトラック**: MBZの直接リンクがあり、かつ曲数が全ソースで一致する場合、LLM をバイパスして `ARCHIVE` 判定を下す。
+- **Phase 2 (Sequential Mapping)**:
+    - **STABLE_ID (`idx_N`)**: LLMによるキーの「勝手な修正」を防ぐため、論理IDではなく不変のインデックスを使用。
+    - **マッピング指示**: 
+      - `override_track`: トラック番号が不明な場合、ストアリストから補完。すべてが同じ番号などの異常メタデータ時は `null` にフォールバック。
+      - `override_disc`: ディスク番号が不明な場合に補完。
+      - `override_title`: トラック番号が混入している場合、除去した「純粋な曲名」を生成。
+
+---
+
+## 5. バリデーションと検閲層 (`validator.py`)
+
+### 5.1 物理検閲ゲート (`validate`)
+LLM の確信度に関わらず、以下の物理的チェックに抵触した場合は強制的に `REVIEW` へ送られます。
+1.  **Dirty/Conflicting Tags**: `^(\d+)([\s.-]+)` にマッチし、かつ小数点ではない、かつ実際のトラック番号と一致する、または `0` パディング/強いセパレータを伴う場合（MBZ公式タイトルがその形式である場合を除く）。
+2.  **物理的欠損 (Track #0)**: 補完を試みてもトラック番号が `0` または "Unknown" のまま残った場合。
+3.  **重複トラック**: 同一ディスク番号内に同一のトラック番号が複数存在する場合（Duplicate Disc/Track pairs）。
+4.  **信頼度閾値**:
+    - Identity Confidence < 100
+    - Integrity Quality < 95
+5.  **音声警告**: FFmpeg による「invalid rice order」や「Decoding error」等の警告やエラー。
+
+---
+
+## 6. タグ書き込みと変換層 (`tagger.py`, `builder.py`)
+
+### 6.1 ID3v2.3 仕様の強制
+- **FFmpeg 変換**: MP3 (`qscale:a 2`), AIFF (`-write_id3v2 1`)。
+- **Mutagen 書き込み**: `TDRC` (v2.4) を削除し、`TYER` (v2.3) を追加。`APIC` は Type `3` (Front Cover) 固定。
+- **`COMM` コメント欄の動的調整**: 
+  - `tags.delall("COMM")` で初期化後、親ゲーム情報を ` | ` で連結。
+  - ID3v2.3の推奨制限に準拠するため、UTF-16で 2000文字を超える場合は、情報の断片化を最小限に抑えつつ、末尾のタグ要素から `pop()` して調整する。
+
+---
+
+## 7. システム実行制御 (`runner.py`, `main.py`)
+
+### 7.1 Adaptive Routing
+- **ティア分け**: SMALL (<= 50, 並列実行), MEDIUM/LARGE (> 50, **並列数 1** 固定)。
+- **並列処理制限**: `MAX_PARALLEL_ALBUMS` (アルバム単位), `MAX_ENCODING_TASKS` (音声処理単位)。
+
+### 7.2 セーフティ・メカニズム
+- **シングルトン・ロック**: `data/sst.lock` による多重実行防止。
+- **ネイティブ・バッファリング**: 一時処理は `/tmp/sst-work/buffer_{AppID}_{RunID}` で行い、完了後に物理削除。
