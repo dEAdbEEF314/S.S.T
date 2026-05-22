@@ -1,11 +1,9 @@
-import os
 import vdf
 import logging
 import requests
 import time
 import json
-import re
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List, Optional, Dict, Any
 from pathlib import Path
 
 from .utils import ensure_wsl_path
@@ -124,7 +122,7 @@ class SteamScanner:
                 depots = app_state.get("InstalledDepots", {})
                 for d_id, d_data in depots.items():
                     try: potential_ids.append(int(d_id))
-                    except: pass
+                    except Exception: pass
                 
                 enriched = self._get_local_metadata(current_id)
                 if not enriched and not target_appid:

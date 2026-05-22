@@ -1,7 +1,7 @@
 import logging
 import requests
 import time
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any, List
 from datetime import datetime
 
 logger = logging.getLogger("scout.notify")

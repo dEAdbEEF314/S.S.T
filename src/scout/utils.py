@@ -1,8 +1,5 @@
 import re
-import os
-import subprocess
 from pathlib import Path
-from typing import Optional
 
 def windows_to_wsl_path(win_path: str) -> Path:
     r"""

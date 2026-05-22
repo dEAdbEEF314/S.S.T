@@ -1,6 +1,6 @@
 import logging
 import multiprocessing
-from typing import List, Optional, Any
+from typing import List, Any
 from pathlib import Path
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor

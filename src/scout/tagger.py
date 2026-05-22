@@ -1,7 +1,6 @@
-import os
 import subprocess
 import logging
-import shutil
+import re
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
 
@@ -18,7 +17,7 @@ class AudioTagger:
             with open(art_path, "wb") as f:
                 f.write(raw_data)
             return art_path
-        except: return None
+        except Exception: return None
 
     def convert_and_limit(self, source_path: Path, tier: str, subdir: str = "") -> Tuple[Path, bool]:
         """
@@ -52,16 +51,23 @@ class AudioTagger:
         return target_path, has_warnings
 
     def write_tags(self, file_path: Path, tag_map: Dict[str, Any], artwork_path: Optional[Path] = None):
-        from mutagen.id3 import ID3, TIT2, TPE1, TALB, TCON, TDRC, TRCK, TPOS, COMM, TPE2, TCOM, APIC, TIT1, TYER, TPUB
+        from mutagen.id3 import TIT2, TPE1, TALB, TCON, TRCK, TPOS, COMM, TPE2, TCOM, APIC, TIT1, TYER, TPUB
         from mutagen.aiff import AIFF
         from mutagen.mp3 import MP3
 
         try:
             audio = AIFF(file_path) if file_path.suffix == ".aif" else MP3(file_path)
-            if audio.tags is None: audio.add_tags()
+            
+            # CRITICAL: To ensure no cross-language leakage or redundant tags,
+            # we wipe all existing tags before writing our curated set.
+            if audio.tags is not None:
+                audio.delete()
+            
+            audio.add_tags()
             tags = audio.tags
 
-            # Standard Tags
+            # Standard Tags (Encoding 3 = UTF-16 or UTF-8 depending on ID3 version, 
+            # for ID3v2.3 it's generally UTF-16 with BOM)
             tags.add(TIT2(encoding=3, text=tag_map["title"]))
             tags.add(TPE1(encoding=3, text=tag_map["artist"]))
             tags.add(TALB(encoding=3, text=tag_map["album"]))
@@ -73,8 +79,6 @@ class AudioTagger:
                 tags.add(TPUB(encoding=3, text=tag_map["label"]))
 
             # Handle Year (Strictly TYER for ID3v2.3)
-            # We delete TDRC first to prevent mutagen from auto-syncing/modernizing it.
-            tags.delall("TDRC")
             year_val = tag_map["year"][:4] if tag_map.get("year") else "0000"
             tags.add(TYER(encoding=3, text=year_val))
 
@@ -83,28 +87,20 @@ class AudioTagger:
             tags.add(TCOM(encoding=3, text=tag_map["composer"]))
             tags.add(TIT1(encoding=3, text=tag_map["grouping"]))
 
-            # Comment logic: Consolidate into a single frame to prevent duplication in tools like MP3tag
+            # Comment logic
             comment_text = tag_map["comment"]
-            
-            # Prune if too long for ID3 standards (ID3v2.3 limits are frame-based, but we target ~2000 bytes for safety)
-            # Standard format: "{album_name}, [{tag1}/ {tag2}/ ...], {appid}, {url}"
             if len(comment_text.encode('utf-16')) > 2000:
-                # Find the bracketed tags section: [... ]
                 match = re.search(r', \[(.*)\], \d+, https', comment_text)
                 if match:
                     prefix = comment_text[:match.start(1)]
                     tags_str = match.group(1)
                     suffix = comment_text[match.end(1):]
-                    
                     tags_list = tags_str.split("/ ")
                     while tags_list and len(f"{prefix}{'/ '.join(tags_list)}{suffix}".encode('utf-16')) > 2000:
                         tags_list.pop()
-                    
                     comment_text = f"{prefix}{'/ '.join(tags_list)}{suffix}"
 
-            # Remove ALL existing COMM frames to ensure a clean state
-            tags.delall("COMM")
-            # Add the single consolidated comment
+            # Add the single consolidated comment in the specified user language
             tags.add(COMM(encoding=3, lang=tag_map["language"], desc="", text=comment_text))
 
             # Artwork
@@ -112,11 +108,8 @@ class AudioTagger:
                 with open(artwork_path, "rb") as f:
                     tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Front Cover', data=f.read()))
 
-            # Force save as ID3v2.3
+            # Force save as ID3v2.3 for maximum compatibility (including Windows Explorer)
             audio.save(v2_version=3)
-
-        except Exception as e:
-            logger.error(f"Failed to write tags to {file_path.name}: {e}")
 
         except Exception as e:
             logger.error(f"Failed to write tags to {file_path.name}: {e}")
@@ -124,7 +117,6 @@ class AudioTagger:
     @staticmethod
     def read_tags(file_path: Path) -> Dict[str, Any]:
         """Reads tags from an audio file and returns a standard tag map."""
-        from mutagen.id3 import ID3
         from mutagen.aiff import AIFF
         from mutagen.mp3 import MP3
         

@@ -1,13 +1,10 @@
-import os
 import json
 import requests
 import logging
 import argparse
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, List
-from dotenv import load_dotenv
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import List
 
 from rich.logging import RichHandler
 from rich.table import Table
@@ -163,7 +160,7 @@ def fetch_steam_userdata(config: Config, console: Console):
         console.print(f"[yellow]! Failed to fetch Steam userdata: {e}[/yellow]")
 
 def handle_all_confirm(console: Console):
-    console.print(f"[bold red]!!! WARNING: STARTING FULL LIBRARY PROCESSING !!![/bold red]")
+    console.print("[bold red]!!! WARNING: STARTING FULL LIBRARY PROCESSING !!![/bold red]")
     console.print("[dim]This may take a long time and significant LLM tokens.[/dim]")
     # 3-Step Confirmation
     if not Confirm.ask("[Step 1/3] Process ALL unprocessed soundtracks?", console=console): return False
@@ -204,7 +201,7 @@ def main():
     if not args.finalize: # Finalize is quick and often manual
         if lock_file.exists():
             # Check if the process is actually running (simple PID check could be added, but for now just block)
-            console.print(f"[bold red]❌ Error: Another instance of S.S.T is already running.[/bold red]")
+            console.print("[bold red]❌ Error: Another instance of S.S.T is already running.[/bold red]")
             console.print(f"[dim]If you are sure it's not running, delete {lock_file} manually.[/dim]")
             return
         lock_file.touch()

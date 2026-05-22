@@ -1,7 +1,7 @@
 import struct
 import logging
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 import vdf
 
 logger = logging.getLogger("scout.steam_vdf")

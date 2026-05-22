@@ -145,7 +145,7 @@ class MusicBrainzIdentifier:
 
             try:
                 mb_tracks = sum(int(m.get('track-count', 0)) for m in release_data.get('medium-list', []))
-            except: mb_tracks = 0
+            except Exception: mb_tracks = 0
             
             if mb_tracks == expected_track_count:
                 score += self.scores.get("track_count_match", 50)
@@ -226,5 +226,5 @@ class MusicBrainzIdentifier:
             images = musicbrainzngs.get_image_list(mbid)
             for img in images.get('images', []):
                 if img.get('front') and img.get('image'): return img.get('image')
-        except: pass
+        except Exception: pass
         return None
