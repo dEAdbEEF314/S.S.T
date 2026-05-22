@@ -31,6 +31,22 @@ class Config(BaseSettings):
     llm_model_medium: str = "qwen3.5-9b-sst"
     llm_model_large: str = "phi-4:14b"  # 16GB VRAMでの大型用想定
     
+    # MusicBrainz Scoring Settings
+    score_mbz_direct_steam_link: int = 500
+    score_mbz_parent_steam_link: int = 300
+    score_mbz_direct_steamdb_link: int = 500
+    score_mbz_parent_steamdb_link: int = 300
+    score_mbz_bandcamp_link: int = 100
+    score_mbz_title_similarity_max: int = 100
+    score_mbz_track_count_match: int = 50
+    score_mbz_track_count_penalty_per_track: int = 20
+    score_mbz_track_count_penalty_max: int = 300
+    score_mbz_digital_format: int = 30
+    score_mbz_date_match: int = 20
+    score_mbz_date_penalty_per_year: int = 20
+    score_mbz_date_penalty_max: int = 100
+    score_mbz_fingerprint_match: int = 200
+
     mbz_app_name: str = "SST-Scout"
     mbz_app_version: str = "1.0.0"
     mbz_contact: str = "contact@example.lan"
