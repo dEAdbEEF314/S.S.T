@@ -412,17 +412,17 @@ class SteamScanner:
     def _resolve_install_path(self, library_root: Path, manifest_dir: str, app_id: int) -> Path:
         """Determines the absolute installation path of a soundtrack."""
         if manifest_dir:
-            # 1. Check common/
-            path = library_root / "common" / manifest_dir
-            if path.exists(): return path
-            # 2. Check music/
+            # 1. Check music/ (Prioritize dedicated soundtrack folder)
             path = library_root / "music" / manifest_dir
             if path.exists(): return path
+            # 2. Check common/ (Standard game install folder)
+            path = library_root / "common" / manifest_dir
+            if path.exists(): return path
             
-        # 3. Last resort: check by AppID folder name in common or music
-        for sub in ["common", "music"]:
+        # 3. Last resort: check by AppID folder name in music or common
+        for sub in ["music", "common"]:
             path = library_root / sub / str(app_id)
             if path.exists(): return path
             
-        # 4. Fallback to common/manifest_dir even if not exist (for downstream skip)
-        return library_root / "common" / (manifest_dir or str(app_id))
+        # 4. Fallback to music/manifest_dir even if not exist (for downstream skip)
+        return library_root / "music" / (manifest_dir or str(app_id))

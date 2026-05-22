@@ -22,7 +22,14 @@ class LLMOrganizer:
                  user_language: str = "ja",
                  llm_backend: str = "GEMINI",
                  draft_model: Optional[str] = None,
-                 metadata_source_priority: str = "MBZ,STEAM_PICS,STEAM_STORE,STEAM_TAGS,EMBEDDED"):
+                 metadata_source_priority: str = "MBZ,STEAM_PICS,STEAM_STORE,STEAM_TAGS,EMBEDDED",
+                 priority_tit2: str = "FILE,EMBED,VDF,MBZ,PICS_API",
+                 priority_tpe1: str = "EMBED,MBZ,PICS_API",
+                 priority_trck: str = "EMBED,MBZ,PICS_API",
+                 priority_tpos: str = "PICS_API,EMBED,MBZ",
+                 priority_tyer: str = "EMBED,MBZ,WEB_API",
+                 priority_tpub: str = "MBZ,PICS_API",
+                 priority_apic: str = "EMBED,MBZ,PICS_API,WEB_API"):
         self.base_url = base_url.rstrip('/')
         self.api_key = api_key
         self.model = model
@@ -30,7 +37,15 @@ class LLMOrganizer:
         self.user_language = user_language
         self.llm_backend = llm_backend.upper()
         self.metadata_source_priority = metadata_source_priority
+        self.priority_tit2 = priority_tit2
+        self.priority_tpe1 = priority_tpe1
+        self.priority_trck = priority_trck
+        self.priority_tpos = priority_tpos
+        self.priority_tyer = priority_tyer
+        self.priority_tpub = priority_tpub
+        self.priority_apic = priority_apic
         self.limiter = DistributedRateLimiter(rpm, tpm, rpd)
+
 
     def consolidate_metadata(self, app_id: int, steam_info: Dict[str, Any], track_sources: Dict[str, List[Dict[str, Any]]], mbz_candidates: List[Dict[str, Any]], num_ctx: Optional[int] = None) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
         full_logs = []
@@ -74,9 +89,18 @@ class LLMOrganizer:
 
 ### 【重要：メタデータ信頼順位（Constitution）】
 ユーザーはこのシステムの運用において、以下の順序で情報を信頼するよう指定しています。
-優先順位：{self.metadata_source_priority}
+グローバル優先順位：{self.metadata_source_priority}
 
-この順位は「矛盾が生じた際にどちらを正解とするか」の絶対的な指針です。
+また、特定のフィールドにおいて矛盾や競合が生じた際は、以下の個別優先順位に従って決定しなさい：
+- 曲名 (TIT2): {self.priority_tit2}
+- アーティスト (TPE1): {self.priority_tpe1}
+- トラック番号 (TRCK): {self.priority_trck}
+- ディスク番号 (TPOS): {self.priority_tpos}
+- 発売年 (TYER): {self.priority_tyer}
+- レーベル (TPUB): {self.priority_tpub}
+- カバーアート (APIC): {self.priority_apic}
+
+これらの順位は「矛盾が生じた際にどちらを正解とするか」の絶対的な指針です。
 ただし、上位のソースに「01 - Title」のようにトラック番号が含まれている場合、下位のクリーンなソース（Titleのみ）と比較して、純粋な曲名のみを抽出（クリーニング）する知的な判断を期待します。
 
 ### 【重要：Dirty Tags（仕様）の解釈と強制クリーニング】
@@ -180,11 +204,15 @@ class LLMOrganizer:
 
             ### INSTRUCTION:
             1. クレジット情報の文章（例: "Track 1 by X"）を読み解き、対応するトラックの composer や artist に紐付けること。
-            2. Steam公式トラックリストのタイトルとローカルを照合し、優先順位（{self.metadata_source_priority}）に基づき、最も信頼できるソースを利用しなさい。
+            2. Steam公式トラックリストのタイトルとローカルを照合し、個別優先順位（曲名: {self.priority_tit2}, アーティスト: {self.priority_tpe1}, トラック番号: {self.priority_trck}, ディスク番号: {self.priority_tpos}）に基づき、最も信頼できるソースを利用しなさい。
             3. **タイトルクリーニング（絶対命令）**: いかなるソースを採用する場合でも、タイトルの先頭に「01. 」や「1- 」のようなトラック番号が含まれている場合は、必ずそれを除去してください。
                - 必要に応じて `override_title` を使用し、純粋な曲名のみを出力しなさい。
                - 例：「01. Beginning」→「Beginning」
-            4. **トラック番号の補完**: ローカルのトラック番号が不明（0 または null）な場合、Steam公式トラックリストと曲名が一致するなら、その番号を `override_track` として出力しなさい。
+            4. **トラック番号の補完と無効化**:
+               - ローカルのトラック番号が不明（0 または null）な場合、Steam公式トラックリストと曲名が一致するなら、その番号を `override_track` として出力しなさい。
+               - **警告**: 提供されたローカルタグの `track_number` がすべてのトラックで同じ（例：すべて "1"）など異常な状態である場合は、絶対に `override_track` を出力せず、必ず `null` にしてください。システムが自動的にファイル名から正確な番号を推論します。
+            5. **ディスク番号の補完**:
+               - ローカルのディスク番号が不明（あるいはすべて "1"）で、かつ Steam 公式トラックリストやコンテキストから明らかなディスク番号（例：Disc 2, 3等）が判明する場合は、その数値を `override_disc` に出力しなさい。判断がつかない場合は `null` にしてください。
 
             ### TRACKS TO MAP (Keys are Stable IDs):
             {chunk_json}
@@ -199,6 +227,7 @@ class LLMOrganizer:
                     "mbz_track_index": number,
                     "override_title": string | null,
                     "override_track": number | null,
+                    "override_disc": number | null,
                     "reason": "Reasoning for the decision (English)"
                  }}
               }}
@@ -228,7 +257,8 @@ class LLMOrganizer:
                         "strategy": strategy,
                         "semantic_label": global_res.get("semantic_label"),
                         "chosen_mbz_index": global_identity.get("chosen_mbz_index", 0),
-                        "override_track": data.get("override_track")
+                        "override_track": data.get("override_track"),
+                        "override_disc": data.get("override_disc")
                     })
                     all_instructions[tid] = data
 

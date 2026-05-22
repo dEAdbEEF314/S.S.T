@@ -41,64 +41,212 @@ class MetadataBuilder:
         mbz_candidates: List[Dict], 
         track_sources: Dict,
         user_language_639_2: str,
-        global_identity: Dict[str, Any] = {}
+        global_identity: Dict[str, Any] = {},
+        priorities: Optional[Dict[str, str]] = None,
+        total_discs: int = 1
     ) -> Dict[str, Any]:
         """
-        Constructs the ID3v2.3 tag map based on merged sources and SST.md definitions.
+        Constructs the ID3v2.3 tag map based on merged sources, SST.md definitions,
+        and user-defined metadata priorities.
         Ensures 'Locked Truth' from Steam is preserved.
         """
-        res_title = clean_title
-        res_artist = steam_meta.developer or "Unknown Artist"
-        res_track = str(adopted_info.get("filename_track") or 0)
-        res_disc = f"{disc}/1"
-        
-        action = instr.get("action", "use_local_tag")
-        
-        # 1. Resolve Identity
-        if action == "use_mbz" and mbz_candidates:
-            try:
-                mbz_idx = instr.get("chosen_mbz_index")
-                if mbz_idx is None or mbz_idx == -1: mbz_idx = 0
+        # Set default priorities if not passed
+        if priorities is None:
+            priorities = {
+                "TIT2": "FILE,EMBED,VDF,MBZ,PICS_API",
+                "TPE1": "EMBED,MBZ,PICS_API",
+                "TRCK": "EMBED,MBZ,PICS_API",
+                "TPOS": "PICS_API,EMBED,MBZ",
+                "TYER": "EMBED,MBZ,WEB_API",
+                "TPUB": "MBZ,PICS_API",
+            }
 
-                mbz_album = mbz_candidates[mbz_idx]
-                t_idx = instr.get("mbz_track_index")
-                if t_idx is None: t_idx = 0
+        # --- 1. Prepare Data Extractors ---
 
-                if t_idx < len(mbz_album.get("tracks", [])):
+        # EMBED (Media Embedded Data)
+        local_tags = {}
+        tid = f"{disc}_{clean_title}"
+        for s in track_sources.get(tid, []):
+            if s["type"] == "embedded_merged":
+                local_tags = s.get("tags", {})
+                break
 
-                    mbz_track = mbz_album["tracks"][t_idx]
-                    if isinstance(mbz_track, dict):
-                        res_title = mbz_track.get("title", res_title)
-                        res_track = str(mbz_track.get("position", res_track))
-                    else:
-                        res_title = str(mbz_track)
-                
-                res_artist = mbz_album.get("artist", res_artist)
-                res_disc = f"{mbz_album.get('disc_number', disc)}/{mbz_album.get('total_discs', 1)}"
-            except Exception as e:
-                logger.debug(f"[{app_id}] MBZ resolution failed for {clean_title}: {e}")
-        
-        elif action == "use_local_tag":
-            local_tags = {}
-            tid = f"{disc}_{clean_title}"
-            for s in track_sources.get(tid, []):
-                if s["type"] == "embedded_merged":
-                    local_tags = s.get("tags", {})
+        # MBZ (MusicBrainz Data)
+        mbz_album = None
+        mbz_track = None
+        mbz_idx = instr.get("chosen_mbz_index")
+        if mbz_idx is None or mbz_idx == -1: mbz_idx = 0
+        if mbz_candidates and mbz_idx < len(mbz_candidates):
+            mbz_album = mbz_candidates[mbz_idx]
+            t_idx = instr.get("mbz_track_index")
+            if t_idx is None: t_idx = 0
+            if t_idx < len(mbz_album.get("tracks", [])):
+                mbz_track = mbz_album["tracks"][t_idx]
+
+        # PICS_API (Steam PICS Tracks Data)
+        pics_track = None
+        # Remove leading numbers and separators from clean_title for fuzzy matching (same as track_grouper)
+        fuzzy_clean_title = re.sub(r'^(\d+[\s._-]+)+', '', clean_title)
+        fuzzy_clean_title = re.sub(r'\.[a-zA-Z0-9]+$', '', fuzzy_clean_title) # Remove extension if any
+        fuzzy_clean_title = re.sub(r'[^a-zA-Z0-9]', ' ', fuzzy_clean_title)
+        fuzzy_clean_title = " ".join(fuzzy_clean_title.split()).lower()
+
+        for t in steam_meta.store_tracklist:
+            t_title = t.get("title", "")
+            # Normalize store title in the same way TrackManager does for filenames
+            norm_t_title = re.sub(r'[^a-zA-Z0-9]', ' ', t_title)
+            norm_t_title = " ".join(norm_t_title.split()).lower()
+            
+            if norm_t_title == fuzzy_clean_title or fuzzy_clean_title.startswith(norm_t_title + " "):
+                pics_track = t
+                break
+        with open("/tmp/builder_debug.log", "a") as dbgf:
+            dbgf.write(f"\n--- {clean_title} ---\n")
+            dbgf.write(f"fuzzy_clean_title: {fuzzy_clean_title}\n")
+            if pics_track:
+                dbgf.write(f"Matched PICS: {pics_track.get('title')} (Disc {pics_track.get('disc')})\n")
+            else:
+                dbgf.write("Matched PICS: NONE\n")
+
+        # --- 2. Dynamic Priority Resolution with Fallback ---
+
+        # 2.1 TIT2 (曲名)
+        res_title = None
+        tit2_priority = priorities.get("TIT2", "FILE,EMBED,VDF,MBZ,PICS_API")
+        for src in tit2_priority.split(","):
+            src = src.strip().upper()
+            val = None
+            if src == "FILE" and adopted_info.get("path"):
+                val = adopted_info["path"].stem
+            elif src == "EMBED":
+                val = local_tags.get("title")
+            elif src == "VDF":
+                val = clean_title
+            elif src == "MBZ" and mbz_track:
+                val = mbz_track.get("title") if isinstance(mbz_track, dict) else str(mbz_track)
+            elif src == "PICS_API" and pics_track:
+                val = pics_track.get("title")
+            
+            if val and str(val).strip():
+                res_title = str(val).strip()
+                break
+        if not res_title:
+            res_title = clean_title
+
+        # 2.2 TPE1 (アーティスト)
+        res_artist = None
+        tpe1_priority = priorities.get("TPE1", "EMBED,MBZ,PICS_API")
+        for src in tpe1_priority.split(","):
+            src = src.strip().upper()
+            val = None
+            if src == "EMBED":
+                val = local_tags.get("artist")
+            elif src == "MBZ" and mbz_album:
+                val = mbz_album.get("artist")
+            elif src == "PICS_API":
+                # Extract artist from store_credits if available
+                if steam_meta.store_credits:
+                    match = re.search(r'Artist:\s*(.*)', steam_meta.store_credits, re.IGNORECASE)
+                    if match:
+                        val = match.group(1).strip()
+                if not val:
+                    val = steam_meta.developer
+            
+            if val and str(val).strip():
+                res_artist = str(val).strip()
+                break
+        if not res_artist:
+            res_artist = steam_meta.developer or "Various Artists"
+
+        # 2.3 TRCK (トラック番号)
+        res_track = None
+        trck_priority = priorities.get("TRCK", "EMBED,MBZ,PICS_API")
+        for src in trck_priority.split(","):
+            src = src.strip().upper()
+            val = None
+            if src == "FILE":
+                val = adopted_info.get("filename_track")
+            elif src == "EMBED":
+                val = local_tags.get("track_number")
+            elif src == "MBZ" and mbz_track:
+                val = mbz_track.get("position") if isinstance(mbz_track, dict) else None
+            elif src == "PICS_API" and pics_track:
+                val = pics_track.get("number")
+            
+            if val and str(val).strip() and str(val).strip() != "0":
+                res_track = str(val).strip()
+                break
+        if not res_track:
+            res_track = str(adopted_info.get("filename_track") or 0)
+
+        # 2.4 TPOS (ディスク番号)
+        res_disc = None
+        tpos_priority = priorities.get("TPOS", "PICS_API,EMBED,MBZ")
+        for src in tpos_priority.split(","):
+            src = src.strip().upper()
+            val = None
+            if src == "PICS_API" and pics_track:
+                val = pics_track.get("disc")
+            elif src == "EMBED":
+                val = local_tags.get("disc_number")
+            elif src == "MBZ" and mbz_album:
+                val = f"{mbz_album.get('disc_number', disc)}/{mbz_album.get('total_discs', 1)}"
+            
+            if val and str(val).strip():
+                res_disc = str(val).strip()
+                break
+        if not res_disc:
+            res_disc = f"{disc}/{total_discs}"
+
+        # 2.5 TYER (発売年)
+        res_year = None
+        tyer_priority = priorities.get("TYER", "EMBED,MBZ,WEB_API")
+        for src in tyer_priority.split(","):
+            src = src.strip().upper()
+            val = None
+            if src == "EMBED":
+                val = local_tags.get("year")
+            elif src == "MBZ" and mbz_album:
+                val = mbz_album.get("year")
+            elif src == "WEB_API":
+                val = steam_meta.release_date
+            
+            if val:
+                match = re.search(r'(\d{4})', str(val))
+                if match:
+                    res_year = match.group(1)
                     break
-            res_title = local_tags.get("title", res_title)
-            res_artist = local_tags.get("artist", res_artist)
-            res_track = local_tags.get("track_number", res_track)
-            res_disc = local_tags.get("disc_number", res_disc)
+        if not res_year:
+            raw_date = instr.get("TDRC") or steam_meta.release_date or ""
+            match = re.search(r'(\d{4})', str(raw_date))
+            res_year = match.group(1) if match else "0000"
 
-        # 2. Apply Overrides (LLM Correction)
+        # 2.6 TPUB (レーベル)
+        res_label = None
+        tpub_priority = priorities.get("TPUB", "MBZ,PICS_API")
+        for src in tpub_priority.split(","):
+            src = src.strip().upper()
+            val = None
+            if src == "MBZ" and mbz_album:
+                val = mbz_album.get("label")
+            elif src == "PICS_API":
+                val = steam_meta.label or global_identity.get("canonical_label") or steam_meta.publisher
+            
+            if val and str(val).strip():
+                res_label = str(val).strip()
+                break
+        if not res_label:
+            res_label = f"{steam_meta.developer or steam_meta.publisher}"
+
+        # --- 3. Apply Overrides (LLM Correction) ---
         if instr.get("override_title"): res_title = instr["override_title"]
         if instr.get("override_track"): res_track = str(instr["override_track"])
+        if instr.get("override_disc"): res_disc = str(instr["override_disc"])
 
-        # 3. Final System-level Cleaning (The "Safety Net")
-        # Even if LLM fails or sources are dirty, we enforce the 'No leading numbers' rule ONLY if it matches the track.
+        # --- 4. Final System-level Cleaning ---
         res_title = MetadataBuilder._clean_title_logic(res_title, res_track)
 
-        # 3. Genre logic
+        # --- 5. Genre Logic ---
         all_genres = steam_meta.genres if steam_meta.genres else []
         if not all_genres and steam_meta.parent_genres:
             all_genres = steam_meta.parent_genres
@@ -110,19 +258,17 @@ class MetadataBuilder:
             
         final_genre = f"STEAM VGM, {joined_genres}"
 
-        # 4. Comment/Grouping logic (Parent Game Reference)
+        # --- 6. Comment/Grouping Logic (Parent Game Reference) ---
         target_name = steam_meta.parent_name or steam_meta.name
         target_appid = steam_meta.parent_app_id or app_id
         
-        # Use parent_tags as they are usually richer community tags (Topic 10)
         target_tags = steam_meta.parent_tags if steam_meta.parent_tags else steam_meta.tags
         joined_tags = f"[{'/ '.join(target_tags)}]" if target_tags else ""
         
         target_url = f"https://store.steampowered.com/app/{target_appid}"
         new_info = f"{target_name}, {joined_tags}, {target_appid}, {target_url}"
 
-        # Merge with existing comment (Topic: Separator Change)
-        tid = f"{disc}_{clean_title}"
+        # Merge with existing comment
         existing_comment = ""
         for s in track_sources.get(tid, []):
             if s["type"] == "embedded_merged":
@@ -133,20 +279,8 @@ class MetadataBuilder:
             res_comment = f"{existing_comment}, {new_info}"
         else:
             res_comment = new_info
-        
-        # 5. Label Fallback (Topic 6)
-        res_label = global_identity.get("canonical_label")
-        if not res_label and mbz_candidates:
-            res_label = mbz_candidates[0].get("label")
-        if not res_label:
-            res_label = f"{steam_meta.developer or steam_meta.publisher}"
 
-        # 6. Year extraction (Topic 4/5)
-        raw_date = instr.get("TDRC") or steam_meta.release_date or ""
-        year_match = re.search(r'(\d{4})', str(raw_date))
-        res_year = year_match.group(1) if year_match else "0000"
-
-        # 7. Final Map Construction
+        # --- 7. Construct Final Map ---
         return {
             "title": (res_title or clean_title).strip(),
             "artist": res_artist.strip(),
@@ -159,8 +293,9 @@ class MetadataBuilder:
             "composer": instr.get("TCOM", steam_meta.developer or "Unknown"),
             "year": res_year,
             "track_number": str(res_track).split('/')[0].strip(),
-            "disc_number": str(res_disc) if "/" in str(res_disc) else f"{res_disc}/1",
+            "disc_number": str(res_disc) if "/" in str(res_disc) else f"{res_disc}/{total_discs}",
             "language": user_language_639_2,
             "mbid": mbz_candidates[0].get("mbid") if mbz_candidates else None,
             "steam_appid": app_id
         }
+
