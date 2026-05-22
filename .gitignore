@@ -77,6 +77,8 @@ node_modules/
 *.swp
 *.swo
 *~
+.antigravitycli/
+.pytest_cache/
 
 # ── OS Generated ──────────────────────────────────────────────────────────────
 .DS_Store
@@ -100,4 +102,5 @@ Handover_Document_*.md
 
 # ── Local LLM Blobs ──────────────────────────────────────────────────────────
 Models/blobs/
+Models/*.pdf
 .aider*
