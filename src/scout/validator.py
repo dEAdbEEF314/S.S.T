@@ -45,12 +45,23 @@ class ResultValidator:
                 if prefixed_num == clean_track_num: d_count += 1
                 elif has_leading_zero or has_strong_separator: d_count += 1
 
-        if z_count > 0 or u_count > 0 or d_count >= 1:
+        track_keys = []
+        has_duplicates = False
+        for t in tracks:
+            d_num = str(t["tags"].get("disc_number", "1")).split('/')[0]
+            t_num = str(t["tags"].get("track_number", "0")).split('/')[0]
+            key = (d_num, t_num)
+            if key in track_keys:
+                has_duplicates = True
+            track_keys.append(key)
+
+        if z_count > 0 or u_count > 0 or d_count >= 1 or has_duplicates:
             status = "review"
             issues = []
             if z_count > 0: issues.append(f"Track#0 x{z_count}")
             if u_count > 0: issues.append(f"Unknown Title x{u_count}")
             if d_count >= 1: issues.append(f"Dirty/Conflicting Tags x{int(d_count)}")
+            if has_duplicates: issues.append("Duplicate Disc/Track pairs")
             message = f"{label} [{', '.join(issues)}]"
 
         if id_conf < 100 or quality < 95:

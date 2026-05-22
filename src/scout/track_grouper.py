@@ -34,7 +34,7 @@ class TrackManager:
                 except: pass
 
             stem = f.stem
-            stem = re.sub(r'^(\d+[\s.-]+)+', '', stem)
+            stem = re.sub(r'^(\d+[\s._-]+)+', '', stem)
             stem = re.sub(r'[\s(\[]+(aiff|mp3|flac|wav|lossless|high-res|ost|soundtrack|official)[\s)\]]+$', '', stem, flags=re.IGNORECASE)
             stem = re.sub(r'[^a-zA-Z0-9]', ' ', stem)
             stem = " ".join(stem.split()).lower()
@@ -57,11 +57,10 @@ class TrackManager:
         for (disc, norm_stem), variants in temp_groups.items():
             t_nums = {v["t_num_val"] for v in variants if v["t_num_val"] is not None}
             if len(t_nums) <= 1:
-                final_track_id = list(t_nums)[0] if t_nums else norm_stem
-                groups[(disc, final_track_id)] = variants
+                groups[(disc, norm_stem)] = variants
             else:
                 for v in variants:
-                    final_track_id = v["t_num_val"] if v["t_num_val"] else f"{norm_stem}_unnum_{variants.index(v)}"
+                    final_track_id = f"{norm_stem} {v['t_num_val']}" if v["t_num_val"] else f"{norm_stem} unnum {variants.index(v)}"
                     key = (disc, final_track_id)
                     if key not in groups: groups[key] = []
                     groups[key].append(v)

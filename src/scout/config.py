@@ -41,3 +41,13 @@ class Config(BaseSettings):
     discord_webhook_info: Optional[str] = None
     discord_webhook_completion: Optional[str] = None
     metadata_source_priority: str = "STEAM_PICS,STEAM_STORE,MBZ,STEAM_TAGS,EMBEDDED"
+    
+    # Tag-specific metadata priorities
+    priority_tit2: str = "FILE,EMBED,VDF,MBZ,PICS_API"
+    priority_tpe1: str = "EMBED,MBZ,PICS_API"
+    priority_trck: str = "EMBED,MBZ,PICS_API"
+    priority_tpos: str = "PICS_API,EMBED,MBZ"
+    priority_tyer: str = "EMBED,MBZ,WEB_API"
+    priority_tpub: str = "MBZ,PICS_API"
+    priority_apic: str = "EMBED,MBZ,PICS_API,WEB_API"
+

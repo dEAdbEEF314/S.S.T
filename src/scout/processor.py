@@ -33,7 +33,14 @@ class LocalProcessor:
             rpm=config.llm_limit_rpm, tpm=config.llm_limit_tpm, rpd=config.llm_limit_rpd,
             user_language=config.user_language, llm_backend=config.llm_backend,
             draft_model=getattr(config, "llm_draft_model", None),
-            metadata_source_priority=config.metadata_source_priority
+            metadata_source_priority=config.metadata_source_priority,
+            priority_tit2=config.priority_tit2,
+            priority_tpe1=config.priority_tpe1,
+            priority_trck=config.priority_trck,
+            priority_tpos=config.priority_tpos,
+            priority_tyer=config.priority_tyer,
+            priority_tpub=config.priority_tpub,
+            priority_apic=config.priority_apic
         )
         self.working_dir = Path(config.sst_working_dir)
 
@@ -90,6 +97,9 @@ class LocalProcessor:
             all_files = TrackManager.list_audio_files(install_dir)
             if not all_files: return LocalProcessResult(app_id=app_id, status="skip", album_name=steam_meta.name, message="No audio", confidence_score=0)
             track_groups = TrackManager.group_by_logical_track(all_files)
+            max_local_disc = max((d for d, _ in track_groups.keys()), default=1) if track_groups else 1
+            max_store_disc = max((int(t.get("disc", 1)) for t in steam_meta.store_tracklist), default=1) if steam_meta.store_tracklist else 1
+            total_discs = max(max_local_disc, max_store_disc)
             num_ctx = self._auto_select_model(len(track_groups))
             local_baseline = TrackManager.extract_local_baseline(track_groups)
             mbz_candidates, mbz_log = self.mbz.search_release(steam_meta.name, len(track_groups), app_id=app_id, parent_app_id=steam_meta.parent_app_id, year=steam_meta.release_date[:4] if steam_meta.release_date else None, local_baseline=local_baseline)
@@ -115,7 +125,7 @@ class LocalProcessor:
             buffer_dir = self.working_dir / f"buffer_{app_id}_{run_id}"
             buffer_dir.mkdir(parents=True, exist_ok=True)
             tagger = AudioTagger(temp_output)
-            album_artwork = self._fetch_album_artwork(steam_meta, mbz_candidates)
+            album_artwork = self._fetch_album_artwork(steam_meta, mbz_candidates, track_groups)
             if album_artwork: album_artwork = tagger.process_artwork(album_artwork)
             any_audio_warnings, any_audio_failures = False, False
 
@@ -131,7 +141,19 @@ class LocalProcessor:
                     if has_warnings: any_audio_warnings = True
                     if local_source_path.exists(): local_source_path.unlink()
                     instr = final_metadata.get(f"{disc}_{clean_title}") or {"action": "use_local_tag"}
-                    tag_map = MetadataBuilder.build_tag_map(app_id, disc, clean_title, adopted_info, steam_meta, instr, mbz_candidates, track_sources, self.config.user_language_639_2, global_identity)
+                    priorities = {
+                        "TIT2": self.config.priority_tit2,
+                        "TPE1": self.config.priority_tpe1,
+                        "TRCK": self.config.priority_trck,
+                        "TPOS": self.config.priority_tpos,
+                        "TYER": self.config.priority_tyer,
+                        "TPUB": self.config.priority_tpub,
+                    }
+                    tag_map = MetadataBuilder.build_tag_map(
+                        app_id, disc, clean_title, adopted_info, steam_meta, instr, 
+                        mbz_candidates, track_sources, self.config.user_language_639_2, 
+                        global_identity, priorities=priorities, total_discs=total_discs
+                    )
                     track_art = TrackManager.get_best_artwork(track_groups[(disc, clean_title)])
                     tagger.write_tags(processed_path, tag_map, tagger.process_artwork(track_art) if track_art else album_artwork)
                     if on_track_complete: on_track_complete()
@@ -208,21 +230,50 @@ class LocalProcessor:
                 if not (is_debug and 'status' in locals() and status == "error"): shutil.rmtree(temp_output, ignore_errors=True)
             if 'buffer_dir' in locals() and buffer_dir.exists(): shutil.rmtree(buffer_dir, ignore_errors=True)
 
-    def _fetch_album_artwork(self, steam_meta: SteamMetadata, mbz_candidates: List[Dict]) -> Optional[bytes]:
+    def _fetch_album_artwork(self, steam_meta: SteamMetadata, mbz_candidates: List[Dict], track_groups: Dict = None) -> Optional[bytes]:
         import requests
-        if mbz_candidates:
-            url = self.mbz.get_release_artwork_url(mbz_candidates[0]["mbid"])
-            if url:
-                try:
-                    r = requests.get(url, timeout=15)
-                    if r.status_code == 200: return r.content
-                except: pass
-        if steam_meta.header_image_url:
-            try:
-                r = requests.get(steam_meta.header_image_url, timeout=15)
-                if r.status_code == 200: return r.content
-            except: pass
+        
+        apic_priority = self.config.priority_apic.split(",")
+        
+        for src in apic_priority:
+            src = src.strip().upper()
+            
+            if src == "EMBED" and track_groups:
+                # 1. Try to find embedded artwork from local files
+                for (disc, clean_title), files in track_groups.items():
+                    art = TrackManager.get_best_artwork(files)
+                    if art:
+                        logger.info(f"Adopted album artwork from EMBED source (track: {clean_title})")
+                        return art
+                        
+            elif src == "MBZ" and mbz_candidates:
+                # 2. Try MusicBrainz
+                url = self.mbz.get_release_artwork_url(mbz_candidates[0]["mbid"])
+                if url:
+                    try:
+                        r = requests.get(url, timeout=15)
+                        if r.status_code == 200:
+                            logger.info("Adopted album artwork from MBZ source")
+                            return r.content
+                    except Exception as e:
+                        logger.debug(f"Failed to fetch MBZ artwork: {e}")
+                        
+            elif src in ["PICS_API", "WEB_API"]:
+                # 3. Try Steam APIs (header image)
+                url = steam_meta.header_image_url
+                if not url and steam_meta.app_id:
+                    url = f"https://cdn.akamai.steamstatic.com/steam/apps/{steam_meta.app_id}/header.jpg"
+                if url:
+                    try:
+                        r = requests.get(url, timeout=15)
+                        if r.status_code == 200:
+                            logger.info(f"Adopted album artwork from {src} source")
+                            return r.content
+                    except Exception as e:
+                        logger.debug(f"Failed to fetch Steam artwork ({src}): {e}")
+                        
         return None
+
 
     def _send_notifications(self, app_id, name, status, message, score, reason, llm_log, any_audio_failures, track_count, mbz_candidates):
         p1_res = llm_log.get("phase1_res", {})
