@@ -2,11 +2,9 @@ import sqlite3
 import json
 import argparse
 from pathlib import Path
-from datetime import datetime
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
-from rich.text import Text
 
 console = Console()
 
@@ -73,7 +71,7 @@ def show_detail(db_path: Path, app_id: int):
     ))
 
     # Reasoning
-    console.print(f"\n[bold yellow]Analysis / Reasoning:[/bold yellow]")
+    console.print("\n[bold yellow]Analysis / Reasoning:[/bold yellow]")
     console.print(meta.get("confidence_reason", "N/A"))
 
     # Tracks with issues

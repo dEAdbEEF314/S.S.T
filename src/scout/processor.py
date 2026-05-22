@@ -72,24 +72,67 @@ class LocalProcessor:
         evidence = best.get("evidence", [])
         has_direct_link = any(e in evidence for e in ["DIRECT_STEAM_LINK", "DIRECT_STEAMDB_LINK"])
         if not has_direct_link: return False, None, None
+        
         local_count = len(track_groups)
         mbz_count = best.get("track_count", 0)
         pics_count = len(steam_meta.store_tracklist)
+        
+        # Disc Count Validation
+        max_local_disc = max((d for d, _ in track_groups.keys()), default=1)
+        max_mbz_disc = best.get("total_discs", 1)
+        # We also consider Steam Store's max disc if available
+        max_store_disc = max((int(t.get("disc", 1)) for t in steam_meta.store_tracklist), default=1) if steam_meta.store_tracklist else 1
+        
+        # SAFETY: All sources must agree on the track count and disc structure for fast-track
         if local_count != mbz_count: return False, None, None
         if pics_count > 0 and local_count != pics_count: return False, None, None
+        if max_local_disc != max_mbz_disc: return False, None, None
+        # Note: We allow store disc count to differ if it's 1, as Steam often flattens multi-disc albums.
+        # But if store says 3 discs and we have 1, or vice versa, it's safer to use LLM.
+        if max_store_disc > 1 and max_local_disc != max_store_disc: return False, None, None
+
         logger.info(f"[{app_id}] Fast-track enabled: Absolute evidence found.")
         global_id = {
             "canonical_album_artist": best.get("artist") or steam_meta.developer,
             "canonical_genre": steam_meta.genres[0] if steam_meta.genres else "Game Music",
-            "canonical_year": best.get("year") or (steam_meta.release_date[:4] if steam_meta.release_date else "0000"),
-            "canonical_label": best.get("label") or steam_meta.publisher,
+            "canonical_year": (steam_meta.release_date[:4] if steam_meta.release_date else None) or best.get("year") or "0000",
+            "canonical_label": best.get("label") or steam_meta.label or steam_meta.publisher,
             "chosen_mbz_index": 0
         }
+        
+        # Mapping: We MUST align local track_groups with MBZ tracks properly.
+        # Simple i mapping is dangerous if order differs.
         final_map = {}
-        sorted_keys = sorted(track_groups.keys())
-        for i, key in enumerate(sorted_keys):
-            tid = f"{key[0]}_{key[1]}"
-            final_map[tid] = {"action": "use_mbz", "mbz_track_index": i, "reason": "Fast-track: Perfect source alignment"}
+        mbz_tracks = best.get("tracks", [])
+        
+        # Pre-process mbz tracks for easier matching
+        norm_mbz = []
+        for t in mbz_tracks:
+            title = t.get("title", "").lower()
+            norm_mbz.append(re.sub(r'[^a-z0-9]', '', title))
+        
+        for key, variants in track_groups.items():
+            disc_num, clean_title = key
+            tid = f"{disc_num}_{clean_title}"
+            
+            # Use normalize title for matching
+            norm_local = re.sub(r'[^a-z0-9]', '', clean_title.lower())
+            
+            # Try to find match in MBZ by name
+            found_idx = -1
+            for idx, n_mbz in enumerate(norm_mbz):
+                if n_mbz == norm_local:
+                    found_idx = idx
+                    break
+            
+            if found_idx == -1:
+                # If name match fails, fallback to simple index ONLY IF counts are small and likely identical
+                # But safer to just fail fast-track
+                logger.warning(f"[{app_id}] Fast-track mapping failed for: {clean_title}")
+                return False, None, None
+            
+            final_map[tid] = {"action": "use_mbz", "mbz_track_index": found_idx, "reason": "Fast-track: Perfect source alignment"}
+            
         return True, final_map, global_id
 
     def _auto_select_model(self, track_count: int) -> int:
@@ -219,7 +262,7 @@ class LocalProcessor:
                                 action = t_data.get('action', 'N/A')
                                 if action in ["OVERRIDE", "MAP"]: action = f"**{action}**"
                                 resp_md += f"| {md_escape(tid)} | {action} | {md_escape(t_data.get('mbz_track_index', '-'))} | {md_escape(t_data.get('override_title', '-'))} | {md_escape(t_data.get('reason', '-'))} |\n"
-                        except: pass
+                        except Exception: pass
                 log_bundle["LLM_RESPONSE.md"] = resp_md
             
             meta_md = f"# Final Metadata Summary: {steam_meta.name}\n\n- **AppID**: [{app_id}](https://store.steampowered.com/app/{app_id})\n- **Status**: `{status.upper()}`\n- **Processed At**: {summary_meta.get('processed_at')}\n\n## Track Tags (ID3v2.3 Mapping)\n| # | Title | Artist | Album Artist | Genre | Year | Comment |\n|---|---|---|---|---|---|---|\n"

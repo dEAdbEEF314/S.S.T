@@ -190,13 +190,30 @@ class MetadataBuilder:
             elif src == "EMBED":
                 val = local_tags.get("disc_number")
             elif src == "MBZ" and mbz_album:
+                # MBZ already provides disc/total format usually
                 val = f"{mbz_album.get('disc_number', disc)}/{mbz_album.get('total_discs', 1)}"
             
-            if val and str(val).strip():
+            if val and str(val).strip() and str(val).strip() != "0":
                 res_disc = str(val).strip()
                 break
+        
+        # Determine logical total discs for the denominator
+        # We prefer max_local_disc for the denominator to ensure it's relative to the processed package
+        actual_total_discs = total_discs
+        if "/" in str(res_disc):
+            parts = str(res_disc).split("/")
+            res_disc = parts[0].strip()
+            # If denominator is 1 but we have more local discs, or vice versa, we might need to overwrite
+            # But generally we trust the source's denominator if it's explicit
+            if len(parts) > 1:
+                try:
+                    explicit_total = int(parts[1].strip())
+                    if explicit_total >= disc: # Sanity check
+                        actual_total_discs = explicit_total
+                except ValueError: pass
+
         if not res_disc:
-            res_disc = f"{disc}/{total_discs}"
+            res_disc = str(disc)
 
         # 2.5 TYER (発売年)
         res_year = None
@@ -204,12 +221,12 @@ class MetadataBuilder:
         for src in tyer_priority.split(","):
             src = src.strip().upper()
             val = None
-            if src == "EMBED":
-                val = local_tags.get("year")
+            if src == "WEB_API":
+                val = steam_meta.release_date
             elif src == "MBZ" and mbz_album:
                 val = mbz_album.get("year")
-            elif src == "WEB_API":
-                val = steam_meta.release_date
+            elif src == "EMBED":
+                val = local_tags.get("year")
             
             if val:
                 match = re.search(r'(\d{4})', str(val))
@@ -232,7 +249,8 @@ class MetadataBuilder:
             elif src == "PICS_API":
                 val = steam_meta.label or global_identity.get("canonical_label") or steam_meta.publisher
             
-            if val and str(val).strip():
+            # Filter out invalid placeholders like '無' (common in some localized Steam data)
+            if val and str(val).strip() and str(val).strip() not in ["無", "none", "Unknown", "N/A"]:
                 res_label = str(val).strip()
                 break
         if not res_label:
@@ -293,7 +311,7 @@ class MetadataBuilder:
             "composer": instr.get("TCOM", steam_meta.developer or "Unknown"),
             "year": res_year,
             "track_number": str(res_track).split('/')[0].strip(),
-            "disc_number": str(res_disc) if "/" in str(res_disc) else f"{res_disc}/{total_discs}",
+            "disc_number": f"{res_disc}/{actual_total_discs}",
             "language": user_language_639_2,
             "mbid": mbz_candidates[0].get("mbid") if mbz_candidates else None,
             "steam_appid": app_id

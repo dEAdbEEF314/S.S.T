@@ -1,15 +1,10 @@
-import os
 import re
 import json
 import logging
 import requests
 import time
-import collections
-import threading
-from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
-import json_repair
 
 from .rate_limit import DistributedRateLimiter
 
@@ -138,7 +133,7 @@ class LLMOrganizer:
 {local_tracks_json}
 
 ### MANDATORY OUTPUT FORMAT (JSON ONLY):
-**注意：分析理由（reason）は正確性を期すため必ず「英語」で出力してください。それ以外のフィールドは日本語を使用してください。**
+**注意：分析理由（reason）は正確性を期すため必ず「英語」で出力してください。それ以外のフィールドは必ず「日本語（常用漢字・ひらがな・カタカナ）」のみを使用し、中国語（簡体字・繁体字）や中国語特有の語彙（例：「原声」「帯譜」など）は絶対に使用しないでください。**
 ```json
 {{
   "identity_confidence": number,
@@ -146,7 +141,7 @@ class LLMOrganizer:
   "archive_vs_review_ratio": {{"archive": number, "review": number}},
   "confidence_reason": "Detailed similarity analysis and reasoning (English)",
   "strategy": "MBZ_BASED" | "LOCAL_BASED" | "HYBRID" | "REVIEW_REQUIRED",
-  "semantic_label": "日本語 40文字以内",
+  "semantic_label": "日本語（JIS水準漢字）で40文字以内。中国語禁止。",
   "global_tags": {{
     "canonical_album_artist": "...",
     "canonical_genre": "...",

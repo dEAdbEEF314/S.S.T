@@ -1,8 +1,8 @@
 import logging
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 from mutagen import File
-from mutagen.id3 import ID3, APIC
+from mutagen.id3 import ID3
 
 logger = logging.getLogger(__name__)
 

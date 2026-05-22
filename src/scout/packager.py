@@ -14,7 +14,6 @@ class PackageManager:
         """
         from .utils import ensure_wsl_path
         import subprocess
-        import os
         
         try:
             # 1. Prepare final destination (Windows side)
@@ -97,7 +96,7 @@ class PackageManager:
             if result.returncode != 0:
                 try:
                     err_msg = result.stderr.decode('cp932')
-                except:
+                except Exception:
                     err_msg = result.stderr.decode('utf-8', errors='replace')
                 logger.error(f"Windows extraction failed for {app_id} (Code: {result.returncode}): {err_msg.strip()}")
                 logger.warning(f"ZIP file preserved for manual extraction: {final_zip_path}")

@@ -18,7 +18,7 @@ class TrackManager:
         try:
             cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(path)]
             return float(subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout.strip())
-        except: return 0.0
+        except Exception: return 0.0
 
     @staticmethod
     def group_by_logical_track(files: List[Path]) -> Dict[Tuple[int, str], List[Dict[str, Any]]]:
@@ -31,7 +31,7 @@ class TrackManager:
                 try:
                     d_str = str(meta.get("disc_number")).split('/')[0]
                     if d_str.isdigit(): disc = int(d_str)
-                except: pass
+                except Exception: pass
 
             stem = f.stem
             stem = re.sub(r'^(\d+[\s._-]+)+', '', stem)
@@ -88,7 +88,7 @@ class TrackManager:
                         for tag in audio.tags.values():
                             if hasattr(tag, 'data') and getattr(tag, 'FrameID', None) == "APIC": return tag.data
                     elif v["format"] == "flac" and audio.pictures: return audio.pictures[0].data
-            except: continue
+            except Exception: continue
         return None
 
     @staticmethod
