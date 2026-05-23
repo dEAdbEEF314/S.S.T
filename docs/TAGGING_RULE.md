@@ -25,9 +25,9 @@ DJ機材および Windows エクスプローラーとの最大互換性を確保
 
 | ID3 フレーム | フィールド | 内容 / フォーマットルール |
 | :--- | :--- | :--- |
-| **TIT2** | 曲名 | LLM によりクリーニングされた純粋な曲名。 |
-| **TPE1** | アーティスト | MusicBrainz のクレジット（最優先）または Steam 開発元。 |
-| **TALB** | アルバム名 | Steam 公式タイトル（不変）。 |
+| **TIT2** | 曲名 | **バイリンガル・タイトル (Plan B)**: `{Local} / {English}`<br>※VGMdb/MBZ/Steamから取得。結合後 60文字を超える場合は `{Local}` のみを優先。 |
+| **TPE1** | アーティスト | VGMdb/MusicBrainz のクレジット（最優先）または Steam 開発元。 |
+| **TALB** | アルバム名 | Steam 公式タイトルまたはバイリンガル・タイトル。 |
 | **TPE2** | アルバムアーティスト | `開発元, 出版社` |
 | **TCON** | ジャンル | `STEAM VGM, [全ジャンル]` (カンマ区切り) |
 | **TPUB** | レーベル | 公式 PICS レーベル、MBZ レーベル、または `開発元, 出版社` |
@@ -78,9 +78,9 @@ To ensure maximum compatibility with DJ hardware and Windows Explorer, the **ID3
 
 | ID3 Frame | Field | Content / Format Rule |
 | :--- | :--- | :--- |
-| **TIT2** | Title | Pure track title cleaned by LLM. |
-| **TPE1** | Artist | MusicBrainz credits (priority) or Steam developer. |
-| **TALB** | Album | Official Steam title (Locked). |
+| **TIT2** | Title | **Bilingual Title (Plan B)**: `{Local} / {English}`<br>Retrieved from VGMdb/MBZ/Steam. If the combined title exceeds 60 characters, defaults to `{Local}` only. |
+| **TPE1** | Artist | VGMdb/MusicBrainz credits (Priority) or Steam developer. |
+| **TALB** | Album | Official Steam title or Bilingual Title. |
 | **TPE2** | Album Artist | `Developer, Publisher` |
 | **TCON** | Genre | `STEAM VGM, [All Genres]` (comma separated) |
 | **TPUB** | Label | Official PICS Label, MBZ Label, or `Developer, Publisher`. |

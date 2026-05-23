@@ -50,20 +50,22 @@ class Config(BaseSettings):
     mbz_app_name: str = "SST-Scout"
     mbz_app_version: str = "1.0.0"
     mbz_contact: str = "contact@example.lan"
+    acoustid_api_key: Optional[str] = None
+    discogs_api_token: Optional[str] = None
     notify_enabled: bool = False
     notify_cooldown: int = 60
     discord_webhook_critical: Optional[str] = None
     discord_webhook_warning: Optional[str] = None
     discord_webhook_info: Optional[str] = None
     discord_webhook_completion: Optional[str] = None
-    metadata_source_priority: str = "STEAM_PICS,STEAM_STORE,MBZ,STEAM_TAGS,EMBEDDED"
+    metadata_source_priority: str = "VGMDB,MBZ,DISCOGS,STEAM_PICS,STEAM_STORE,STEAM_TAGS,EMBEDDED"
     
     # Tag-specific metadata priorities
-    priority_tit2: str = "FILE,EMBED,VDF,MBZ,PICS_API"
-    priority_tpe1: str = "EMBED,MBZ,PICS_API"
-    priority_trck: str = "EMBED,MBZ,PICS_API"
-    priority_tpos: str = "PICS_API,EMBED,MBZ"
-    priority_tyer: str = "EMBED,MBZ,WEB_API"
-    priority_tpub: str = "MBZ,PICS_API"
-    priority_apic: str = "EMBED,MBZ,PICS_API,WEB_API"
+    priority_tit2: str = "FILE,EMBED,VDF,VGMDB,MBZ,DISCOGS,PICS_API"
+    priority_tpe1: str = "EMBED,VGMDB,MBZ,DISCOGS,PICS_API"
+    priority_trck: str = "VGMDB,PICS_API,MBZ,DISCOGS,FILE,EMBED"
+    priority_tpos: str = "VGMDB,PICS_API,EMBED,MBZ,DISCOGS"
+    priority_tyer: str = "EMBED,VGMDB,MBZ,DISCOGS,WEB_API"
+    priority_tpub: str = "VGMDB,MBZ,DISCOGS,PICS_API"
+    priority_apic: str = "EMBED,MBZ,DISCOGS,PICS_API,WEB_API"
 

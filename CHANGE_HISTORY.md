@@ -28,3 +28,14 @@
 2026/05/23 01:00:00 - All Python files - ruffによる自動修正（インポート整理、フォーマット）の実施。src/scout/tagger.py への missing import (re) の追加。裸の except: を except Exception: に置換。
 2026/05/23 01:15:00 - src/scout/builder.py, src/scout/processor.py, src/scout/tagger.py - TYER優先順位のロールバック、Fast-track条件の厳格化（ディスク枚数・名前照合）、タグの完全クリーンアップ、レーベルの無効値フィルタリングの実施。
 2026/05/23 01:25:00 - src/scout/llm.py - LLMプロンプトにおける言語制約を強化。中国語（簡体字・繁体字）および中国語特有語彙の禁止を明文化。
+2026/05/23 13:37:59 src/scout/track_grouper.py, docs/LOGIC.md: ハイブリッド・トラック統合ロジックの実装。文字列類似度と再生時間を組み合わせることで、フォーマット間でファイル名に微細な差異（タイポ、冠詞、サフィックス）がある場合でも同一トラックとして正しくグループ化できるよう改善。
+2026/05/23 15:26:02 .env.example, src/scout/ident/mbz.py, src/scout/track_grouper.py: メタデータ照合能力の強化。AcoustID（音声指紋）および Discogs API 連携のための設定エントリを追加。また、MusicBrainz 候補の評価ロジックに「セット類似度照合（Set Similarity Matching）」を導入し、アルバム名が異なる場合でも全曲の「名前＋再生時間」のパターン一致度に基づいて高精度な特定を可能に改善。
+2026/05/23 18:31:16 src/scout/ident/acoustid.py, src/scout/ident/mbz.py, src/scout/processor.py: 音声指紋（AcoustID）連携の正式実装。`fpcalc` を使用して音声から MusicBrainz ID を直接特定する機能を追加。アルバム内の先頭数曲をサンプリング照合し、得られた ID を MusicBrainz 検索時のスコアリングに反映（大幅加点）させることで、テキスト情報が乏しい・あるいは誤っている場合でも確実なアルバム同定が可能に。
+2026/05/23 20:48:58 src/scout/track_grouper.py, src/scout/processor.py: 論理トラック統合ロジックのさらなる強化。ファイル名にアルバム名が含まれている場合にそれを自動除去する正規化処理を追加。これにより、Narita Boy のようにフォーマット間でファイル名の構成が劇的に異なるケース（一方は曲名のみ、他方はアルバム名＋番号＋曲名など）でも、正しく同一トラックとして統合できるよう改善。
+Review_list.md: sst-check-reviewsスキルを使用してReview項目の分析レポートを生成。
+VGMdb CDDB連携の技術検証完了。日本語・英語メタデータの取得に成功。詳細を Maintenance/vgmdb_cddb_report.md に記録。
+src/scout/ident/vgmdb.py: VGMdb CDDB連携クライアントの新規実装。
+src/scout/config.py, .env.example: メタデータ優先順位に VGMDB を追加。
+src/scout/processor.py: MBZ同定後のVGMdb自動照会とLLMスキップフローの実装。
+src/scout/builder.py: バイリンガル・タイトル（Plan B）生成ロジックの実装。
+docs/LOGIC.md, docs/TAGGING_RULE.md: VGMdb連携およびバイリンガル仕様の反映。

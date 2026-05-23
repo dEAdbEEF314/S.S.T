@@ -47,13 +47,18 @@ class ResultValidator:
 
         track_keys = []
         has_duplicates = False
+        duplicate_pairs = []
         for t in tracks:
             d_num = str(t["tags"].get("disc_number", "1")).split('/')[0]
             t_num = str(t["tags"].get("track_number", "0")).split('/')[0]
             key = (d_num, t_num)
             if key in track_keys:
                 has_duplicates = True
+                duplicate_pairs.append(f"{key} (Track: {t['tags'].get('title')})")
             track_keys.append(key)
+        
+        if has_duplicates:
+            logger.warning(f"[{app_id}] Duplicate track detected: {', '.join(duplicate_pairs)}")
 
         if z_count > 0 or u_count > 0 or d_count >= 1 or has_duplicates:
             status = "review"
