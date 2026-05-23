@@ -58,12 +58,13 @@ class AudioTagger:
         try:
             audio = AIFF(file_path) if file_path.suffix == ".aif" else MP3(file_path)
             
-            # CRITICAL: To ensure no cross-language leakage or redundant tags,
-            # we wipe all existing tags before writing our curated set.
-            if audio.tags is not None:
-                audio.delete()
+            # Ensure we have an ID3 tag object to work with
+            if audio.tags is None:
+                audio.add_tags()
+            else:
+                # Clear all existing frames to ensure a clean slate
+                audio.tags.clear()
             
-            audio.add_tags()
             tags = audio.tags
 
             # Standard Tags (Encoding 3 = UTF-16 or UTF-8 depending on ID3 version, 

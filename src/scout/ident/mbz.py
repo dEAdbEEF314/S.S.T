@@ -6,6 +6,8 @@ from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime
 from difflib import SequenceMatcher
 
+from .acoustid import AcoustIDIdentifier
+
 logger = logging.getLogger("scout.ident.mbz")
 
 class MusicBrainzIdentifier:
@@ -25,7 +27,8 @@ class MusicBrainzIdentifier:
             "date_match": 20,
             "date_penalty_per_year": 20,
             "date_penalty_max": 100,
-            "fingerprint_match": 200
+            "fingerprint_match": 200,
+            "direct_recording_match": 400
         }
 
     def _safe_year(self, date_str: Any) -> Optional[int]:
@@ -34,6 +37,50 @@ class MusicBrainzIdentifier:
         match = re.search(r'(\d{4})', str(date_str))
         return int(match.group(1)) if match else None
 
+    def get_release_details(self, mbid: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetches full details for a release, including discids and offsets.
+        """
+        try:
+            time.sleep(1.1)
+            res = musicbrainzngs.get_release_by_id(mbid, includes=["url-rels", "recordings", "artist-credits", "discids", "labels"])
+            return res.get('release', {})
+        except Exception as e:
+            logger.warning(f"Failed to fetch release details for {mbid}: {e}")
+            return None
+
+    def fuzzy_match_album(self, local_tracks: List[Tuple[str, float]], mb_tracks: List[Tuple[str, float]], time_threshold_ms: int = 2000) -> float:
+        """
+        Calculates a set similarity score between local and MB tracks based on name and duration.
+        """
+        if not local_tracks or not mb_tracks: return 0.0
+        
+        matched_count = 0
+        used_mb_indices = set()
+        
+        for l_name, l_dur in local_tracks:
+            best_match_idx = -1
+            best_sim = 0.0
+            
+            for m_idx, (m_name, m_dur) in enumerate(mb_tracks):
+                if m_idx in used_mb_indices: continue
+                
+                time_match = True
+                if l_dur and m_dur:
+                    time_match = abs(l_dur - m_dur) < time_threshold_ms
+                
+                if time_match:
+                    name_sim = SequenceMatcher(None, l_name.lower(), m_name.lower()).ratio()
+                    if name_sim > 0.8 and name_sim > best_sim:
+                        best_sim = name_sim
+                        best_match_idx = m_idx
+            
+            if best_match_idx != -1:
+                matched_count += 1
+                used_mb_indices.add(best_match_idx)
+        
+        return matched_count / max(len(local_tracks), len(mb_tracks))
+
     def search_release(
         self, 
         album_name: str, 
@@ -41,7 +88,8 @@ class MusicBrainzIdentifier:
         app_id: Optional[int] = None, 
         parent_app_id: Optional[int] = None,
         year: Optional[str] = None,
-        local_baseline: Optional[Dict[str, Any]] = None
+        local_baseline: Optional[Dict[str, Any]] = None,
+        acoustid_mbids: Optional[List[str]] = None
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """
         Searches MusicBrainz and returns ranked candidates using the NWO Hybrid Scoring System.
@@ -54,6 +102,7 @@ class MusicBrainzIdentifier:
         
         try:
             time.sleep(1.1)
+            # Use broad search for album name
             result = musicbrainzngs.search_releases(release=album_name, limit=20)
             all_raw_releases = result.get('release-list', [])
             log_data["attempts"].append({"query": album_name, "count": len(all_raw_releases)})
@@ -61,12 +110,25 @@ class MusicBrainzIdentifier:
             logger.error(f"MBZ search error: {e}")
             return [], log_data
 
+        # Also search by recordings if we have AcoustID MBIDs but no album results
+        if not all_raw_releases and acoustid_mbids:
+            # We can try to find releases containing these recordings
+            # This is a bit complex via API, but we can sample one recording and find its releases
+            try:
+                time.sleep(1.1)
+                rec_res = musicbrainzngs.get_recording_by_id(acoustid_mbids[0], includes=["releases"])
+                all_raw_releases = rec_res.get("recording", {}).get("release-list", [])
+                log_data["attempts"].append({"query": f"AcoustID Recording {acoustid_mbids[0]}", "count": len(all_raw_releases)})
+            except Exception: pass
+
         if not all_raw_releases:
             return [], log_data
 
         scored_candidates = []
-        for r in all_raw_releases:
+        logger.debug(f"Evaluating {len(all_raw_releases)} MBZ release candidates...")
+        for i, r in enumerate(all_raw_releases):
             mbid = r['id']
+            logger.debug(f"[{i+1}/{len(all_raw_releases)}] Fetching details for MBZ Release: {r.get('title')} ({mbid})...")
             try:
                 time.sleep(1.1)
                 full_r = musicbrainzngs.get_release_by_id(mbid, includes=["url-rels", "recordings", "artist-credits"])
@@ -77,6 +139,20 @@ class MusicBrainzIdentifier:
 
             score = 0
             evidence_notes = []
+
+            # --- Tier 0: AcoustID Correlation ---
+            if acoustid_mbids:
+                mb_rec_ids = []
+                for m in release_data.get('medium-list', []):
+                    for t in m.get('track-list', []):
+                        rid = t.get('recording', {}).get('id')
+                        if rid: mb_rec_ids.append(rid)
+                
+                intersection = set(acoustid_mbids) & set(mb_rec_ids)
+                if intersection:
+                    boost = self.scores.get("direct_recording_match", 400)
+                    score += boost
+                    evidence_notes.append(f"ACOUSTID_MATCH({len(intersection)} tracks)")
 
             # --- Tier 1: Deterministic Evidence ---
             seen_evidence = set()
@@ -163,6 +239,26 @@ class MusicBrainzIdentifier:
                 score += self.scores.get("digital_format", 30)
                 evidence_notes.append("DIGITAL_FORMAT")
 
+            # --- Tier 4: Collective (Set Similarity) ---
+            set_match_score = 0.0
+            if local_baseline and local_baseline.get("tracks"):
+                mb_tracks_data = []
+                for m in release_data.get('medium-list', []):
+                    for t in m.get('track-list', []):
+                        t_name = t.get('recording', {}).get('title') or t.get('title', 'Unknown')
+                        try:
+                            t_len = int(t.get('length') or t.get('recording', {}).get('length') or 0)
+                        except Exception: t_len = 0
+                        mb_tracks_data.append((t_name, t_len))
+                
+                # local_baseline["tracks"] now contains (name, duration_ms) tuples
+                local_tracks_data = local_baseline.get("tracks", [])
+                
+                set_match_ratio = self.fuzzy_match_album(local_tracks_data, mb_tracks_data)
+                set_match_score = int(set_match_ratio * self.scores.get("fingerprint_match", 200))
+                score += set_match_score
+                evidence_notes.append(f"SET_SIMILARITY({set_match_score})")
+
             mb_y = self._safe_year(release_data.get('date'))
             comp_y = self._safe_year(year) or (self._safe_year(local_baseline.get("year")) if local_baseline else None)
             
@@ -188,7 +284,7 @@ class MusicBrainzIdentifier:
                         })
             
             if local_baseline and local_baseline.get("tracks") and mb_tracks_data:
-                local_tracks = [t.lower() for t in local_baseline["tracks"]]
+                local_tracks = [t[0].lower() for t in local_baseline["tracks"]]
                 matches = 0
                 for lt in local_tracks:
                     if any(SequenceMatcher(None, lt, mt['title'].lower()).ratio() > 0.85 for mt in mb_tracks_data):

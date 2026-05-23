@@ -21,8 +21,10 @@ class TrackManager:
         except Exception: return 0.0
 
     @staticmethod
-    def group_by_logical_track(files: List[Path]) -> Dict[Tuple[int, str], List[Dict[str, Any]]]:
-        temp_groups = {}
+    def group_by_logical_track(files: List[Path], album_name: Optional[str] = None) -> Dict[Tuple[int, str], List[Dict[str, Any]]]:
+        from difflib import SequenceMatcher
+        
+        raw_tracks = []
         for f in files:
             meta = EmbeddedMetadataExtractor.extract(f)
             t_num = re.match(r'^(\d+)', f.stem)
@@ -34,37 +36,81 @@ class TrackManager:
                 except Exception: pass
 
             stem = f.stem
+            # Remove album name if present (case-insensitive)
+            if album_name:
+                # Escape album name for regex and remove it
+                escaped_album = re.escape(album_name)
+                stem = re.sub(escaped_album, '', stem, flags=re.IGNORECASE)
+                # Also try removing common variations (e.g. without "Soundtrack")
+                short_album = re.sub(r'\s*(Soundtrack|Original Soundtrack|OST)\s*$', '', album_name, flags=re.IGNORECASE)
+                if short_album and short_album != album_name:
+                    stem = re.sub(re.escape(short_album), '', stem, flags=re.IGNORECASE)
+
             stem = re.sub(r'^(\d+[\s._-]+)+', '', stem)
             stem = re.sub(r'[\s(\[]+(aiff|mp3|flac|wav|lossless|high-res|ost|soundtrack|official)[\s)\]]+$', '', stem, flags=re.IGNORECASE)
             stem = re.sub(r'[^a-zA-Z0-9]', ' ', stem)
             stem = " ".join(stem.split()).lower()
             stem = stem.replace("artifical", "artificial")
             stem = re.sub(r'\s*0+(\d+)', r' \1', stem)
-            
             norm_stem = stem.strip()
+            
             t_num_val = t_num.group(1).lstrip('0') or '0' if t_num else None
             
-            temp_key = (disc, norm_stem)
-            if temp_key not in temp_groups: temp_groups[temp_key] = []
-            temp_groups[temp_key].append({
+            raw_tracks.append({
                 "path": f, "meta": meta, "duration": TrackManager.get_duration(f), 
                 "format": f.suffix.lower().lstrip('.'),
                 "filename_track": int(t_num.group(1)) if t_num else None,
-                "t_num_val": t_num_val
+                "t_num_val": t_num_val,
+                "norm_stem": norm_stem,
+                "disc": disc
             })
+
+        groups: Dict[Tuple[int, str], List[Dict[str, Any]]] = {}
+        
+        for track in raw_tracks:
+            matched = False
+            for (g_disc, g_norm_stem), variants in groups.items():
+                if track["disc"] != g_disc:
+                    continue
+                
+                # Hybrid matching criteria
+                duration_diff = abs(track["duration"] - variants[0]["duration"])
+                is_duration_match = duration_diff < 1.0
+                
+                # 1. Exact stem match
+                if track["norm_stem"] == g_norm_stem:
+                    variants.append(track)
+                    matched = True
+                    break
+                
+                # 2. Track number + Duration match
+                if track["t_num_val"] and track["t_num_val"] == variants[0]["t_num_val"] and is_duration_match:
+                    variants.append(track)
+                    matched = True
+                    break
+                
+                # 3. Fuzzy match + Duration match
+                similarity = SequenceMatcher(None, track["norm_stem"], g_norm_stem).ratio()
+                if similarity >= 0.85 and is_duration_match:
+                    variants.append(track)
+                    matched = True
+                    break
             
-        groups = {}
-        for (disc, norm_stem), variants in temp_groups.items():
+            if not matched:
+                groups[(track["disc"], track["norm_stem"])] = [track]
+
+        # Post-process: Split groups that have different track numbers but same stem
+        final_groups = {}
+        for (disc, norm_stem), variants in groups.items():
             t_nums = {v["t_num_val"] for v in variants if v["t_num_val"] is not None}
             if len(t_nums) <= 1:
-                groups[(disc, norm_stem)] = variants
+                final_groups[(disc, norm_stem)] = variants
             else:
                 for v in variants:
                     final_track_id = f"{norm_stem} {v['t_num_val']}" if v["t_num_val"] else f"{norm_stem} unnum {variants.index(v)}"
-                    key = (disc, final_track_id)
-                    if key not in groups: groups[key] = []
-                    groups[key].append(v)
-        return groups
+                    final_groups[(disc, final_track_id)] = [v]
+                    
+        return final_groups
 
     @staticmethod
     def adopt_optimal_files(track_groups: Dict) -> Dict:
@@ -94,9 +140,10 @@ class TrackManager:
     @staticmethod
     def extract_local_baseline(track_groups: Dict) -> Dict[str, Any]:
         from collections import Counter
-        albums, artists, years, track_names = [], [], [], []
+        albums, artists, years, track_data = [], [], [], []
         for (disc, title), variants in track_groups.items():
             t_name = None
+            avg_dur = sum(v["duration"] for v in variants) / len(variants) if variants else 0
             for v in variants:
                 if v["meta"]:
                     if v["meta"].get("album"): albums.append(v["meta"]["album"])
@@ -106,9 +153,9 @@ class TrackManager:
             if not t_name and variants:
                 t_name = variants[0]["path"].stem
                 t_name = re.sub(r'^(\d+[\s.-]+)+', '', t_name).strip()
-            if t_name: track_names.append(t_name)
+            if t_name: track_data.append((t_name, int(avg_dur * 1000)))
         def most_common(lst): return Counter(lst).most_common(1)[0][0] if lst else None
-        return {"album": most_common(albums), "artist": most_common(artists), "year": most_common(years), "tracks": track_names}
+        return {"album": most_common(albums), "artist": most_common(artists), "year": most_common(years), "tracks": track_data}
 
     @staticmethod
     def prepare_llm_track_context(track_groups: Dict) -> Dict[str, List[Dict[str, Any]]]:

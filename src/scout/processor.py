@@ -2,6 +2,7 @@ import logging
 import shutil
 import time
 import json
+import re
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
@@ -10,6 +11,7 @@ from .models import SteamMetadata, LocalProcessResult
 from .tagger import AudioTagger
 from .llm import LLMOrganizer
 from .ident.mbz import MusicBrainzIdentifier
+from .ident.vgmdb import VGMdbClient
 from .notify import NotificationManager
 from .db import DatabaseManager
 from .builder import MetadataBuilder
@@ -45,6 +47,7 @@ class LocalProcessor:
             "fingerprint_match": config.score_mbz_fingerprint_match
         }
         self.mbz = MusicBrainzIdentifier(config.mbz_app_name, config.mbz_app_version, config.mbz_contact, scoring_config=mbz_scoring)
+        self.vgmdb = VGMdbClient()
         self.llm = LLMOrganizer(
             api_key=config.llm_api_key, base_url=config.llm_base_url, model=config.llm_model,
             rpm=config.llm_limit_rpm, tpm=config.llm_limit_tpm, rpd=config.llm_limit_rpd,
@@ -66,72 +69,91 @@ class LocalProcessor:
         import os
         return datetime.now(timezone(timedelta(hours=9))) if os.environ.get("TZ") == "Asia/Tokyo" else datetime.now(timezone.utc)
 
-    def _check_fast_track(self, app_id: int, steam_meta: SteamMetadata, track_groups: Dict, mbz_candidates: List[Dict]) -> Tuple[bool, Optional[Dict], Optional[Dict]]:
-        if not mbz_candidates: return False, None, None
-        best = mbz_candidates[0]
+    def _check_fast_track(self, app_id: int, steam_meta: SteamMetadata, track_groups: Dict, mbz_candidates: List[Dict], vgmdb_data: Optional[Dict] = None) -> Tuple[bool, Optional[Dict], Optional[Dict]]:
+        if not mbz_candidates and not vgmdb_data: return False, None, None
+        
+        best = mbz_candidates[0] if mbz_candidates else {}
         evidence = best.get("evidence", [])
-        has_direct_link = any(e in evidence for e in ["DIRECT_STEAM_LINK", "DIRECT_STEAMDB_LINK"])
-        if not has_direct_link: return False, None, None
+        has_strong_link = any(e in evidence for e in ["DIRECT_STEAM_LINK", "DIRECT_STEAMDB_LINK", "ACOUSTID_MATCH"])
+        
+        # If we have VGMdb data, it's a massive trust boost
+        if vgmdb_data:
+            has_strong_link = True
+            logger.info(f"[{app_id}] Fast-track: VGMdb bilingual metadata available.")
+
+        if not has_strong_link: return False, None, None
         
         local_count = len(track_groups)
         mbz_count = best.get("track_count", 0)
-        pics_count = len(steam_meta.store_tracklist)
         
-        # Disc Count Validation
-        max_local_disc = max((d for d, _ in track_groups.keys()), default=1)
-        max_mbz_disc = best.get("total_discs", 1)
-        # We also consider Steam Store's max disc if available
-        max_store_disc = max((int(t.get("disc", 1)) for t in steam_meta.store_tracklist), default=1) if steam_meta.store_tracklist else 1
-        
-        # SAFETY: All sources must agree on the track count and disc structure for fast-track
-        if local_count != mbz_count: return False, None, None
-        if pics_count > 0 and local_count != pics_count: return False, None, None
-        if max_local_disc != max_mbz_disc: return False, None, None
-        # Note: We allow store disc count to differ if it's 1, as Steam often flattens multi-disc albums.
-        # But if store says 3 discs and we have 1, or vice versa, it's safer to use LLM.
-        if max_store_disc > 1 and max_local_disc != max_store_disc: return False, None, None
+        # Validation
+        if vgmdb_data:
+            # VGMdb tracks are 1-based in my fetch_bilingual_metadata return
+            if local_count != len(vgmdb_data["tracks"]):
+                logger.warning(f"[{app_id}] Fast-track aborted: Track count mismatch (Local: {local_count}, VGMdb: {len(vgmdb_data['tracks'])})")
+                return False, None, None
+        elif local_count != mbz_count: 
+            return False, None, None
 
         logger.info(f"[{app_id}] Fast-track enabled: Absolute evidence found.")
-        global_id = {
-            "canonical_album_artist": best.get("artist") or steam_meta.developer,
-            "canonical_genre": steam_meta.genres[0] if steam_meta.genres else "Game Music",
-            "canonical_year": (steam_meta.release_date[:4] if steam_meta.release_date else None) or best.get("year") or "0000",
-            "canonical_label": best.get("label") or steam_meta.label or steam_meta.publisher,
-            "chosen_mbz_index": 0
-        }
         
-        # Mapping: We MUST align local track_groups with MBZ tracks properly.
-        # Simple i mapping is dangerous if order differs.
+        # Global Identity Construction
+        if vgmdb_data:
+            global_id = {
+                "canonical_album_artist": vgmdb_data.get("artist_ja") or best.get("artist") or steam_meta.developer,
+                "canonical_genre": vgmdb_data.get("genre_ja") or steam_meta.genres[0] if steam_meta.genres else "Game Music",
+                "canonical_year": vgmdb_data.get("year") or (steam_meta.release_date[:4] if steam_meta.release_date else None) or best.get("year") or "0000",
+                "canonical_label": best.get("label") or steam_meta.label or steam_meta.publisher,
+                "chosen_mbz_index": 0,
+                "vgmdb_album_ja": vgmdb_data.get("album_ja"),
+                "vgmdb_album_en": vgmdb_data.get("album_en")
+            }
+        else:
+            global_id = {
+                "canonical_album_artist": best.get("artist") or steam_meta.developer,
+                "canonical_genre": steam_meta.genres[0] if steam_meta.genres else "Game Music",
+                "canonical_year": (steam_meta.release_date[:4] if steam_meta.release_date else None) or best.get("year") or "0000",
+                "canonical_label": best.get("label") or steam_meta.label or steam_meta.publisher,
+                "chosen_mbz_index": 0
+            }
+        
         final_map = {}
-        mbz_tracks = best.get("tracks", [])
         
-        # Pre-process mbz tracks for easier matching
-        norm_mbz = []
-        for t in mbz_tracks:
-            title = t.get("title", "").lower()
-            norm_mbz.append(re.sub(r'[^a-z0-9]', '', title))
-        
-        for key, variants in track_groups.items():
-            disc_num, clean_title = key
-            tid = f"{disc_num}_{clean_title}"
+        # Mapping Logic
+        if vgmdb_data:
+            # If we have VGMdb, we assume the order matches because we queried by DiscID (offsets)
+            # This is much safer than text matching.
+            for i, (key, variants) in enumerate(track_groups.items()):
+                disc_num, clean_title = key
+                tid = f"{disc_num}_{clean_title}"
+                # CDDB tracks are usually 0-indexed in raw, but my fetcher made it 1-based
+                final_map[tid] = {
+                    "action": "use_vgmdb", 
+                    "vgmdb_track_index": i + 1, 
+                    "override_title": vgmdb_data["tracks"].get(i + 1),
+                    "reason": "Fast-track: VGMdb DiscID Match"
+                }
+        else:
+            # Original MBZ name-based matching
+            mbz_tracks = best.get("tracks", [])
+            norm_mbz = [re.sub(r'[^a-z0-9]', '', t.get("title", "").lower()) for t in mbz_tracks]
             
-            # Use normalize title for matching
-            norm_local = re.sub(r'[^a-z0-9]', '', clean_title.lower())
-            
-            # Try to find match in MBZ by name
-            found_idx = -1
-            for idx, n_mbz in enumerate(norm_mbz):
-                if n_mbz == norm_local:
-                    found_idx = idx
-                    break
-            
-            if found_idx == -1:
-                # If name match fails, fallback to simple index ONLY IF counts are small and likely identical
-                # But safer to just fail fast-track
-                logger.warning(f"[{app_id}] Fast-track mapping failed for: {clean_title}")
-                return False, None, None
-            
-            final_map[tid] = {"action": "use_mbz", "mbz_track_index": found_idx, "reason": "Fast-track: Perfect source alignment"}
+            for key, variants in track_groups.items():
+                disc_num, clean_title = key
+                tid = f"{disc_num}_{clean_title}"
+                norm_local = re.sub(r'[^a-z0-9]', '', clean_title.lower())
+                
+                found_idx = -1
+                for idx, n_mbz in enumerate(norm_mbz):
+                    if n_mbz == norm_local:
+                        found_idx = idx
+                        break
+                
+                if found_idx == -1:
+                    logger.warning(f"[{app_id}] Fast-track mapping failed for: {clean_title}")
+                    return False, None, None
+                
+                final_map[tid] = {"action": "use_mbz", "mbz_track_index": found_idx, "reason": "Fast-track: Perfect MBZ name alignment"}
             
         return True, final_map, global_id
 
@@ -156,20 +178,99 @@ class LocalProcessor:
         try:
             all_files = TrackManager.list_audio_files(install_dir)
             if not all_files: return LocalProcessResult(app_id=app_id, status="skip", album_name=steam_meta.name, message="No audio", confidence_score=0)
-            track_groups = TrackManager.group_by_logical_track(all_files)
+            track_groups = TrackManager.group_by_logical_track(all_files, album_name=steam_meta.name)
             max_local_disc = max((d for d, _ in track_groups.keys()), default=1) if track_groups else 1
             max_store_disc = max((int(t.get("disc", 1)) for t in steam_meta.store_tracklist), default=1) if steam_meta.store_tracklist else 1
             total_discs = max(max_local_disc, max_store_disc)
             num_ctx = self._auto_select_model(len(track_groups))
+
+            # AcoustID Sampling
+            acoustid_mbids = []
+            if self.config.acoustid_api_key:
+                logger.info(f"[{app_id}] Starting AcoustID sampling...")
+                from .ident.acoustid import AcoustIDIdentifier
+                aid = AcoustIDIdentifier(self.config.acoustid_api_key)
+                # Sample up to 3 tracks to avoid excessive API calls
+                sample_keys = list(track_groups.keys())[:3]
+                for skey in sample_keys:
+                    variants = track_groups[skey]
+                    if variants:
+                        logger.info(f"[{app_id}] Sampling track for AcoustID: {variants[0]['path'].name}")
+                        mbids = aid.identify_track(variants[0]["path"])
+                        for m in mbids:
+                            if m["mbid"] not in acoustid_mbids: acoustid_mbids.append(m["mbid"])
+                logger.info(f"[{app_id}] AcoustID sampling finished. Found {len(acoustid_mbids)} MBID hints.")
             local_baseline = TrackManager.extract_local_baseline(track_groups)
-            mbz_candidates, mbz_log = self.mbz.search_release(steam_meta.name, len(track_groups), app_id=app_id, parent_app_id=steam_meta.parent_app_id, year=steam_meta.release_date[:4] if steam_meta.release_date else None, local_baseline=local_baseline)
+            mbz_candidates, mbz_log = self.mbz.search_release(
+                steam_meta.name, 
+                len(track_groups), 
+                app_id=app_id, 
+                parent_app_id=steam_meta.parent_app_id, 
+                year=steam_meta.release_date[:4] if steam_meta.release_date else None, 
+                local_baseline=local_baseline,
+                acoustid_mbids=acoustid_mbids
+            )
             time.sleep(1.0)
+
+            # --- VGMdb Integration ---
+            vgmdb_data = None
+            if mbz_candidates:
+                top_score = mbz_candidates[0].get("score", 0)
+                has_acoustid = "ACOUSTID_MATCH" in str(mbz_candidates[0].get("evidence", []))
+                logger.debug(f"[{app_id}] Top MBZ candidate score: {top_score}, AcoustID Match: {has_acoustid}")
+                
+                if top_score >= 600 or has_acoustid:
+                    logger.info(f"[{app_id}] High confidence MBZ match found. Attempting VGMdb lookup...")
+                    mbz_details = self.mbz.get_release_details(mbz_candidates[0]["mbid"])
+                    if mbz_details:
+                        vgmdb_data = None
+                        # 1. Try physical DiscIDs from MBZ
+                        for medium in mbz_details.get("medium-list", []):
+                            discids = medium.get("disc-list", [])
+                            if discids:
+                                d = discids[0]
+                                logger.debug(f"[{app_id}] Using MBZ physical DiscID for VGMdb lookup: {d.get('id')}")
+                                vgmdb_data = self.vgmdb.fetch_bilingual_metadata(
+                                    len(d.get("offset-list", [])), 
+                                    [int(off) for off in d.get("offset-list", [])], 
+                                    int(d.get("sectors", 0))
+                                )
+                                if vgmdb_data: break
+                        
+                        # 2. Try theoretical DiscID from MBZ track durations
+                        if not vgmdb_data:
+                            for medium in mbz_details.get("medium-list", []):
+                                tracks = medium.get("track-list", [])
+                                if tracks:
+                                    durs = [int(t.get("recording", {}).get("length", 0)) for t in tracks]
+                                    if all(durs) and len(durs) == len(track_groups):
+                                        logger.debug(f"[{app_id}] Attempting VGMdb lookup using MBZ track durations...")
+                                        vgmdb_data = self.vgmdb.fetch_bilingual_metadata_by_durations(durs)
+                                        if vgmdb_data: break
+
+                        # 3. Try theoretical DiscID from local durations (Last resort for high confidence match)
+                        if not vgmdb_data:
+                            local_durs = [v[0]["duration"] * 1000 for k, v in track_groups.items()]
+                            logger.debug(f"[{app_id}] Attempting VGMdb lookup using local track durations...")
+                            vgmdb_data = self.vgmdb.fetch_bilingual_metadata_by_durations(local_durs)
+
+                        if not vgmdb_data:
+                            logger.debug(f"[{app_id}] VGMdb lookup failed via all DiscID methods.")
+                    else:
+                        logger.warning(f"[{app_id}] Failed to fetch detailed MBZ info for VGMdb lookup.")
+                else:
+                    logger.info(f"[{app_id}] MBZ confidence too low ({top_score}) for VGMdb fast-track.")
+            else:
+                logger.info(f"[{app_id}] No MBZ candidates found. Skipping VGMdb lookup.")
+
             track_sources = TrackManager.prepare_llm_track_context(track_groups)
-            is_fast, final_metadata, global_identity = self._check_fast_track(app_id, steam_meta, track_groups, mbz_candidates)
+            is_fast, final_metadata, global_identity = self._check_fast_track(app_id, steam_meta, track_groups, mbz_candidates, vgmdb_data=vgmdb_data)
             if is_fast:
-                llm_log = {"phase1_res": {"identity_confidence": 100, "integrity_quality": 100, "archive_vs_review_ratio": {"archive": 100, "review": 0}, "global_tags": global_identity, "confidence_reason": "Deterministic Fast-track enabled: Album identity and tracklist were perfectly verified against official sources. LLM analysis was skipped to ensure absolute integrity."}, "phase1_log": {"reason": "Fast-track Skip"}, "fast_track": True}
+                fast_reason = "Deterministic Fast-track enabled: " + ("VGMdb bilingual metadata verified." if vgmdb_data else "Album identity and tracklist were perfectly verified against official sources.")
+                llm_log = {"phase1_res": {"identity_confidence": 100, "integrity_quality": 100, "archive_vs_review_ratio": {"archive": 100, "review": 0}, "global_tags": global_identity, "confidence_reason": fast_reason}, "phase1_log": {"reason": "Fast-track Skip"}, "fast_track": True, "vgmdb_data": vgmdb_data}
             else:
                 final_metadata, llm_log = self.llm.consolidate_metadata(app_id, steam_meta.model_dump(), track_sources, mbz_candidates, num_ctx=num_ctx)
+                if vgmdb_data: llm_log["vgmdb_data"] = vgmdb_data
                 p1_res = llm_log.get("phase1_res", {})
                 global_identity = p1_res.get("global_tags", {})
             if final_metadata is None:
@@ -212,7 +313,8 @@ class LocalProcessor:
                     tag_map = MetadataBuilder.build_tag_map(
                         app_id, disc, clean_title, adopted_info, steam_meta, instr, 
                         mbz_candidates, track_sources, self.config.user_language_639_2, 
-                        global_identity, priorities=priorities, total_discs=total_discs
+                        global_identity, priorities=priorities, total_discs=total_discs,
+                        vgmdb_data=vgmdb_data
                     )
                     track_art = TrackManager.get_best_artwork(track_groups[(disc, clean_title)])
                     tagger.write_tags(processed_path, tag_map, tagger.process_artwork(track_art) if track_art else album_artwork)
