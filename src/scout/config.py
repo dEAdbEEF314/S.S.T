@@ -46,6 +46,7 @@ class Config(BaseSettings):
     score_mbz_date_penalty_per_year: int = 20
     score_mbz_date_penalty_max: int = 100
     score_mbz_fingerprint_match: int = 200
+    score_mbz_direct_recording_match: int = 1000
 
     mbz_app_name: str = "SST-Scout"
     mbz_app_version: str = "1.0.0"

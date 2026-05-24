@@ -6,10 +6,80 @@ logger = logging.getLogger("scout.report_generator")
 
 class ReportGenerator:
     @staticmethod
-    def generate_html_report(app_id: int, steam_meta: SteamMetadata, status: str, message: str, score: int, reason: str, count: int, llm_log: Dict[str, Any], mbz_candidates: List[Dict[str, Any]], localized_now_str: str, priority_str: str) -> str:
+    def _get_common_css() -> str:
+        return """
+:root {
+    --bg-color: #0d1117;
+    --card-bg: #161b22;
+    --text-color: #c9d1d9;
+    --accent-green: #238636;
+    --accent-yellow: #d29922;
+    --accent-blue: #58a6ff;
+    --border-color: #30363d;
+    --table-header: #0d1117;
+}
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background-color: var(--bg-color);
+    color: var(--text-color);
+    line-height: 1.6;
+    margin: 0;
+    padding: 20px;
+}
+.container { max-width: 1000px; margin: 0 auto; }
+.header { border-bottom: 1px solid var(--border-color); padding-bottom: 10px; margin-bottom: 20px; }
+.status-badge {
+    display: inline-block;
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-weight: bold;
+    margin-bottom: 10px;
+    text-transform: uppercase;
+}
+.status-archive { background-color: var(--accent-green); color: white; }
+.status-review { background-color: var(--accent-yellow); color: black; }
+.grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 20px;
+    margin-bottom: 20px;
+}
+.card {
+    background-color: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 15px;
+}
+.card h3 { margin-top: 0; font-size: 0.9rem; color: #8b949e; text-transform: uppercase; }
+.reason-box {
+    background-color: #090c10;
+    border-left: 4px solid var(--border-color);
+    padding: 15px;
+    margin: 20px 0;
+    font-style: italic;
+    white-space: pre-wrap;
+}
+.mbz-card {
+    border-bottom: 1px solid var(--border-color);
+    padding: 10px 0;
+}
+.mbz-card:last-child { border-bottom: none; }
+.badge { font-size: 0.8rem; background: #21262d; padding: 2px 6px; border-radius: 10px; }
+table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.85rem; }
+th, td { padding: 10px; text-align: left; border-bottom: 1px solid var(--border-color); }
+th { background-color: var(--table-header); color: #8b949e; font-weight: 600; }
+.tag-table tr:hover { background-color: #1c2128; }
+a { color: var(--accent-blue); text-decoration: none; }
+a:hover { text-decoration: underline; }
+footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center; border-top: 1px solid var(--border-color); padding-top: 20px; }
+"""
+
+    @staticmethod
+    def generate_html_report(app_id: int, steam_meta: SteamMetadata, status: str, message: str, score: int, reason: str, processed_tracks: List[Dict[str, Any]], llm_log: Dict[str, Any], mbz_candidates: List[Dict[str, Any]], localized_now_str: str, priority_str: str) -> str:
         is_fast = llm_log.get("fast_track", False)
         status_class = "status-archive" if status == "archive" else "status-review"
         status_label = "🛡️ ARCHIVE SUCCESS" if status == "archive" else "🔍 REVIEW REQUIRED"
+        count = len(processed_tracks)
         
         display_reason = reason
         if is_fast:
@@ -47,7 +117,107 @@ class ReportGenerator:
                         matrix_rows += f"<tr{row_style}><td>{source} (Candidate {i} - Score: {c.get('score')})</td><td>{c.get('album')}</td><td>{c.get('artist')}</td><td>{c.get('track_count')}</td><td>{c.get('year')}</td></tr>"
             elif source in ["STEAM_TAGS", "EMBEDDED"]: matrix_rows += f"<tr><td>{source}</td><td>(Per-track data)</td><td>N/A</td><td>N/A</td><td>N/A</td></tr>"
             
-        return f"""<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>SST Audit Report - {steam_meta.name}</title><style>:root {{--bg-color: #0d1117; --card-bg: #161b22; --text-color: #c9d1d9; --accent-green: #238636; --accent-yellow: #d29922; --border-color: #30363d;}}body {{font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; background-color: var(--bg-color); color: var(--text-color); line-height: 1.6; margin: 0; padding: 20px;}}.container {{max-width: 900px; margin: 0 auto;}}.header {{border-bottom: 1px solid var(--border-color); padding-bottom: 10px; margin-bottom: 20px;}}.status-badge {{display: inline-block; padding: 8px 16px; border-radius: 6px; font-weight: bold; margin-bottom: 10px;}}.status-archive {{ background-color: var(--accent-green); color: white; }}.status-review {{ background-color: var(--accent-yellow); color: black; }}.grid {{display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 20px;}}.card {{background-color: var(--card-bg); border: 1px solid var(--border-color); border-radius: 8px; padding: 15px;}}.card h3 {{ margin-top: 0; font-size: 0.9rem; color: #8b949e; text-transform: uppercase; }}.reason-box {{background-color: #090c10; border-left: 4px solid var(--border-color); padding: 15px; margin: 20px 0; font-style: italic;}}.mbz-card {{border-bottom: 1px solid var(--border-color); padding: 10px 0;}}.mbz-card:last-child {{ border-bottom: none; }}.badge {{font-size: 0.8rem; background: #21262d; padding: 2px 6px; border-radius: 10px;}}table {{width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.9rem;}}th, td {{padding: 8px; text-align: left; border-bottom: 1px solid var(--border-color);}}th {{ background-color: #0d1117; color: #8b949e; }}a {{ color: #58a6ff; text-decoration: none; }}a:hover {{ text-decoration: underline; }}footer {{margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center;}}</style></head><body><div class="container"><div class="header"><div class="status-badge {status_class}">{status_label}</div><h1>{steam_meta.name}</h1></div><div class="grid"><div class="card"><h3>Confidence Gates</h3><p>Identity: <strong>{p1_res.get('identity_confidence', 0)}%</strong><br>Integrity: <strong>{p1_res.get('integrity_quality', 0)}%</strong></p></div><div class="card"><h3>Decision Logic</h3><p>System: {message}<br>Tracks: {count}</p></div><div class="card"><h3>Steam Links</h3><p><a href="https://store.steampowered.com/app/{app_id}" target="_blank">Store Page</a><br>AppID: {app_id}</p></div></div><h2>🔍 Analysis & Reasoning</h2><div class="reason-box">{display_reason}</div><div class="card" style="margin-bottom: 20px;"><h3>Metadata Information Matrix</h3><table><tr><th>Source</th><th>Album Title</th><th>Artist</th><th>Tracks</th><th>Year</th></tr>{matrix_rows}</table></div><div class="grid"><div class="card" style="grid-column: span 2;"><h3>MusicBrainz Candidates (Provided to LLM)</h3>{mbz_html}</div><div class="card"><h3>Final Global Tags</h3><p>Artist: {global_tags.get('canonical_album_artist', 'N/A')}<br>Year: {global_tags.get('canonical_year', 'N/A')}<br>Label: {global_tags.get('canonical_label', 'N/A')}</p></div></div><footer>Report generated by S.S.T (Steam Soundtrack Tagger) at {localized_now_str}</footer></div></body></html>"""
+        # --- Detailed Tag Table ---
+        def safe_sort_key(t):
+            tags = t.get("tags", {})
+            try:
+                d = int(tags.get("disc_number") or 1)
+                n = int(tags.get("track_number") or 0)
+                return (d, n)
+            except: return (99, 99)
+
+        sorted_tracks = sorted(processed_tracks, key=safe_sort_key)
+        tag_rows = ""
+        for t in sorted_tracks:
+            tg = t.get("tags", {})
+            tag_rows += f"""<tr>
+                <td>{tg.get('disc_number', '1')}</td>
+                <td>{tg.get('track_number', '')}</td>
+                <td><strong>{tg.get('title', 'Unknown')}</strong></td>
+                <td>{tg.get('artist', '')}</td>
+                <td>{tg.get('album_artist', '')}</td>
+                <td>{tg.get('genre', '')}</td>
+                <td>{tg.get('year', '')}</td>
+                <td style="font-size: 0.75rem; color: #8b949e;">{t.get('source', '')}</td>
+            </tr>"""
+
+        return f"""<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SST Audit Report - {steam_meta.name}</title>
+    <style>{ReportGenerator._get_common_css()}</style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>SST Audit Report</h1>
+        <p>AppID: <a href="https://store.steampowered.com/app/{app_id}" target="_blank">{app_id}</a> | Album: <strong>{steam_meta.name}</strong></p>
+    </div>
+
+    <div class="status-badge {status_class}">{status_label}</div>
+
+    <div class="grid">
+        <div class="card">
+            <h3>Decision Summary</h3>
+            <p><strong>Status:</strong> {status.upper()}<br>
+            <strong>Score:</strong> {score}/100<br>
+            <strong>Message:</strong> {message}<br>
+            <strong>Tracks:</strong> {count}</p>
+        </div>
+        <div class="card">
+            <h3>LLM Metrics</h3>
+            <p><strong>Identity Confidence:</strong> {p1_res.get('identity_confidence', 'N/A')}%<br>
+            <strong>Integrity Quality:</strong> {p1_res.get('integrity_quality', 'N/A')}%<br>
+            <strong>Decision Ratio:</strong> Arch {p1_res.get('archive_vs_review_ratio', {}).get('archive', 0)}% : Rev {p1_res.get('archive_vs_review_ratio', {}).get('review', 0)}%</p>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>Judgment Reasoning & Strategy</h3>
+        <div class="reason-box">{display_reason}</div>
+    </div>
+
+    <div class="grid" style="margin-top: 20px;">
+        <div class="card">
+            <h3>Source Alignment Matrix</h3>
+            <table>
+                <thead><tr><th>Source</th><th>Title</th><th>Artist/Dev</th><th>Tracks</th><th>Year</th></tr></thead>
+                <tbody>{matrix_rows}</tbody>
+            </table>
+        </div>
+        <div class="card">
+            <h3>MusicBrainz Candidates</h3>
+            {mbz_html}
+        </div>
+    </div>
+
+    <div class="card" style="margin-top: 20px;">
+        <h3>Final Applied Tags (Tracklist)</h3>
+        <table class="tag-table">
+            <thead>
+                <tr>
+                    <th>Disc</th>
+                    <th>#</th>
+                    <th>Title</th>
+                    <th>Artist</th>
+                    <th>Album Artist</th>
+                    <th>Genre</th>
+                    <th>Year</th>
+                    <th>Source</th>
+                </tr>
+            </thead>
+            <tbody>{tag_rows}</tbody>
+        </table>
+    </div>
+
+    <footer>
+        <p>Generated by S.S.T (Steam Soundtrack Tagger) at {localized_now_str}</p>
+    </footer>
+</div>
+</body>
+</html>"""
 
     @staticmethod
     def generate_classification_basis(app_id: int, steam_meta: SteamMetadata, status: str, message: str, score: int, reason: str, count: int, llm_log: Dict[str, Any], mbz_candidates: List[Dict[str, Any]], localized_now_str: str) -> str:

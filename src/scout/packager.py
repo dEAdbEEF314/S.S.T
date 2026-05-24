@@ -53,52 +53,20 @@ class PackageManager:
                 shutil.copyfile(str(temp_zip_file), str(final_zip_path))
                 temp_zip_file.unlink()
             
-            # 5. Extraction (Directly call Windows tar.exe from WSL)
-            def wsl_to_win(wsl_p: Path) -> str:
-                s = str(wsl_p)
-                if s.startswith("/mnt/"):
-                    parts = s.split("/")
-                    drive = parts[2].upper()
-                    rest = "\\".join(parts[3:])
-                    return f"{drive}:\\{rest}"
-                return s.replace("/", "\\")
-
-            win_zip_path = wsl_to_win(final_zip_path)
-            win_extract_dir = wsl_to_win(extract_dir)
+            # 5. Extraction (Using Python's zipfile for cross-platform reliability)
+            import zipfile
             
-            # Find tar.exe robustly
-            def find_win_exe(name: str, fallback_path: str) -> str:
-                exe = shutil.which(name)
-                if not exe:
-                    p = Path(fallback_path)
-                    if p.exists(): exe = str(p)
-                return exe
-
-            raw_tar_exe = find_win_exe("tar.exe", "/mnt/c/Windows/System32/tar.exe")
-
-            if not raw_tar_exe:
-                logger.error(f"tar.exe not found in PATH or standard location. ZIP package remains at: {final_zip_path}")
-                logger.warning("Please install or ensure tar.exe is available in your Windows system for automatic extraction.")
-                return None
-
             if not final_zip_path.exists():
                 logger.error(f"ZIP file disappeared before extraction: {final_zip_path}")
                 return None
 
-            # Create destination directory in Python (WSL side can do this on /mnt/)
-            extract_dir.mkdir(parents=True, exist_ok=True)
-
-            # Execute Windows tar.exe directly
-            # Note: Win32 apps called from WSL expect Windows paths for their arguments
-            logger.debug(f"Executing Windows tar: {raw_tar_exe} -xf {win_zip_path} -C {win_extract_dir}")
-            result = subprocess.run([raw_tar_exe, "-xf", win_zip_path, "-C", win_extract_dir], capture_output=True)
-            
-            if result.returncode != 0:
-                try:
-                    err_msg = result.stderr.decode('cp932')
-                except Exception:
-                    err_msg = result.stderr.decode('utf-8', errors='replace')
-                logger.error(f"Windows extraction failed for {app_id} (Code: {result.returncode}): {err_msg.strip()}")
+            try:
+                extract_dir.mkdir(parents=True, exist_ok=True)
+                logger.debug(f"Extracting {final_zip_path} to {extract_dir} using zipfile...")
+                with zipfile.ZipFile(final_zip_path, 'r') as zip_ref:
+                    zip_ref.extractall(extract_dir)
+            except Exception as extract_err:
+                logger.error(f"Extraction failed for {app_id} using zipfile: {extract_err}")
                 logger.warning(f"ZIP file preserved for manual extraction: {final_zip_path}")
                 return None
 

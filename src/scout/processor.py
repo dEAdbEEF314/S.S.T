@@ -44,7 +44,8 @@ class LocalProcessor:
             "date_match": config.score_mbz_date_match,
             "date_penalty_per_year": config.score_mbz_date_penalty_per_year,
             "date_penalty_max": config.score_mbz_date_penalty_max,
-            "fingerprint_match": config.score_mbz_fingerprint_match
+            "fingerprint_match": config.score_mbz_fingerprint_match,
+            "direct_recording_match": config.score_mbz_direct_recording_match
         }
         self.mbz = MusicBrainzIdentifier(config.mbz_app_name, config.mbz_app_version, config.mbz_contact, scoring_config=mbz_scoring)
         self.vgmdb = VGMdbClient()
@@ -74,7 +75,7 @@ class LocalProcessor:
         
         best = mbz_candidates[0] if mbz_candidates else {}
         evidence = best.get("evidence", [])
-        has_strong_link = any(e in evidence for e in ["DIRECT_STEAM_LINK", "DIRECT_STEAMDB_LINK", "ACOUSTID_MATCH"])
+        has_strong_link = any(e in evidence for e in ["DIRECT_STEAM_LINK", "DIRECT_STEAMDB_LINK"]) or any(e.startswith("ACOUSTID_MATCH") for e in evidence)
         
         # If we have VGMdb data, it's a massive trust boost
         if vgmdb_data:
@@ -294,11 +295,12 @@ class LocalProcessor:
                 nonlocal any_audio_warnings, any_audio_failures
                 (disc, clean_title), adopted_info = track_data
                 try:
-                    local_raw_dir = buffer_dir / str(disc)
+                    disc_subdir = f"disc_{disc}"
+                    local_raw_dir = buffer_dir / disc_subdir
                     local_raw_dir.mkdir(parents=True, exist_ok=True)
                     local_source_path = local_raw_dir / adopted_info["path"].name
                     shutil.copy2(adopted_info["path"], local_source_path)
-                    processed_path, has_warnings = tagger.convert_and_limit(local_source_path, adopted_info["tier"], subdir=str(disc))
+                    processed_path, has_warnings = tagger.convert_and_limit(local_source_path, adopted_info["tier"], subdir=disc_subdir)
                     if has_warnings: any_audio_warnings = True
                     if local_source_path.exists(): local_source_path.unlink()
                     instr = final_metadata.get(f"{disc}_{clean_title}") or {"action": "use_local_tag"}
@@ -319,7 +321,7 @@ class LocalProcessor:
                     track_art = TrackManager.get_best_artwork(track_groups[(disc, clean_title)])
                     tagger.write_tags(processed_path, tag_map, tagger.process_artwork(track_art) if track_art else album_artwork)
                     if on_track_complete: on_track_complete()
-                    return {"file_path": f"{disc}/{processed_path.name}", "original_filename": local_source_path.name, "tags": tag_map, "source": instr.get("reason", "Fallback")}
+                    return {"file_path": f"{disc_subdir}/{processed_path.name}", "original_filename": local_source_path.name, "tags": tag_map, "source": instr.get("reason", "Fallback")}
                 except Exception as e:
                     logger.error(f"[{app_id}] Track failure for {clean_title}: {e}")
                     self.notifier.notify_critical(f"Track Error: {steam_meta.name}", str(e))
@@ -339,45 +341,12 @@ class LocalProcessor:
                 "mbz_log.json": mbz_log, 
                 "metadata.json": summary_meta,
                 "llm_log.json": llm_log,
-                "AUDIT_REPORT.html": ReportGenerator.generate_html_report(app_id, steam_meta, status, message, score, reason, len(processed_tracks_meta), llm_log, mbz_candidates, localized_now_str, self.config.metadata_source_priority),
-                "BASIS_for_CLASSIFICATION.md": ReportGenerator.generate_classification_basis(app_id, steam_meta, status, message, score, reason, len(processed_tracks_meta), llm_log, mbz_candidates, localized_now_str)
+                "AUDIT_REPORT.html": ReportGenerator.generate_html_report(app_id, steam_meta, status, message, score, reason, processed_tracks_meta, llm_log, mbz_candidates, localized_now_str, self.config.metadata_source_priority)
             }
 
             p1_log = llm_log.get("phase1_log", {})
-            def md_escape(text): return str(text or "-").replace("|", "\\|").replace("\n", "<br>")
-            def md_blockquote(text): return "\n".join([f"> {line}" for line in str(text or "-").strip().split("\n")])
-
             if p1_log.get("human_prompt"): log_bundle["LLM_PROMPT.md"] = p1_log["human_prompt"]
             elif p1_log.get("prompt"): log_bundle["LLM_PROMPT.md"] = p1_log["prompt"]
-            
-            if "phase1_res" in llm_log:
-                res_data = llm_log["phase1_res"]
-                resp_md = f"# LLM Phase 1 Response: {steam_meta.name}\n\n| Metric | Value |\n|---|---|\n| Identity Confidence | {res_data.get('identity_confidence')} |\n| Integrity Quality | {res_data.get('integrity_quality')} |\n| Strategy | `{res_data.get('strategy')}` |\n| Semantic Label | {md_escape(res_data.get('semantic_label'))} |\n\n## Judgment Reasoning\n{md_blockquote(res_data.get('confidence_reason'))}\n\n## Global Tags Applied\n"
-                for k, v in res_data.get('global_tags', {}).items(): resp_md += f"- **{k}**: {md_escape(v)}\n"
-                if "phase2_logs" in llm_log and llm_log["phase2_logs"]:
-                    resp_md += "\n## Track Mapping Instructions (Phase 2)\n\n| Track ID | Action | MBZ Index | Override Title | Reason |\n|---|---|---|---|---|\n"
-                    for c_log in llm_log["phase2_logs"]:
-                        try:
-                            parsed = json.loads(c_log.get("response", "{}"))
-                            instrs = parsed.get("track_instructions", {})
-                            for tid, t_data in instrs.items():
-                                action = t_data.get('action', 'N/A')
-                                if action in ["OVERRIDE", "MAP"]: action = f"**{action}**"
-                                resp_md += f"| {md_escape(tid)} | {action} | {md_escape(t_data.get('mbz_track_index', '-'))} | {md_escape(t_data.get('override_title', '-'))} | {md_escape(t_data.get('reason', '-'))} |\n"
-                        except Exception: pass
-                log_bundle["LLM_RESPONSE.md"] = resp_md
-            
-            meta_md = f"# Final Metadata Summary: {steam_meta.name}\n\n- **AppID**: [{app_id}](https://store.steampowered.com/app/{app_id})\n- **Status**: `{status.upper()}`\n- **Processed At**: {summary_meta.get('processed_at')}\n\n## Track Tags (ID3v2.3 Mapping)\n| # | Title | Artist | Album Artist | Genre | Year | Comment |\n|---|---|---|---|---|---|---|\n"
-            for t in summary_meta.get('tracks', []):
-                tg = t.get('tags', {})
-                meta_md += f"| {md_escape(tg.get('disc_number','1'))}-{md_escape(tg.get('track_number',''))} | {md_escape(tg.get('title',''))} | {md_escape(tg.get('artist',''))} | {md_escape(tg.get('album_artist',''))} | {md_escape(tg.get('genre',''))} | {md_escape(tg.get('year',''))} | {md_escape(tg.get('comment',''))} |\n"
-            log_bundle["METADATA.md"] = meta_md
-            
-            if mbz_log:
-                mbz_md = f"# MusicBrainz Identification Log: {steam_meta.name}\n\n- **Target Search Name**: {md_escape(mbz_log.get('target_name', steam_meta.name))}\n- **Candidates Found**: {len(mbz_log.get('ranked_candidates', []))}\n\n"
-                for c in mbz_log.get('ranked_candidates', []):
-                    mbz_md += f"## {md_escape(c.get('album'))} (Score: {c.get('score')})\n- **MBID**: [{c.get('mbid')}](https://musicbrainz.org/release/{c.get('mbid')})\n- **Evidence**: {', '.join([md_escape(e) for e in c.get('evidence', [])])}\n\n"
-                log_bundle["MBZ_LOG.md"] = mbz_md
 
             PackageManager.save_local_package(app_id, status, steam_meta.name, temp_output, log_bundle, self.config.sst_output_dir)
             self.db.record_processed(app_id, status, steam_meta.name, self._get_localized_now().isoformat(), summary_meta)
@@ -387,10 +356,14 @@ class LocalProcessor:
             self.notifier.notify_critical(f"Process Failed: {app_id}", str(e))
             return LocalProcessResult(app_id=app_id, status="error", album_name=steam_meta.name, message=str(e))
         finally:
-            if 'temp_output' in locals() and temp_output.exists():
-                is_debug = self.config.log_level.upper() == "DEBUG"
-                if not (is_debug and 'status' in locals() and status == "error"): shutil.rmtree(temp_output, ignore_errors=True)
-            if 'buffer_dir' in locals() and buffer_dir.exists(): shutil.rmtree(buffer_dir, ignore_errors=True)
+            is_debug = self.config.log_level.upper() == "DEBUG"
+            if is_debug:
+                logger.info(f"[{app_id}] DEBUG mode: Preserving temporary directories: {getattr(locals().get('temp_output'), 'name', 'N/A')}, {getattr(locals().get('buffer_dir'), 'name', 'N/A')}")
+            
+            if 'temp_output' in locals() and temp_output.exists() and not is_debug:
+                shutil.rmtree(temp_output, ignore_errors=True)
+            if 'buffer_dir' in locals() and buffer_dir.exists() and not is_debug:
+                shutil.rmtree(buffer_dir, ignore_errors=True)
 
     def _fetch_album_artwork(self, steam_meta: SteamMetadata, mbz_candidates: List[Dict], track_groups: Dict = None) -> Optional[bytes]:
         import requests
@@ -441,17 +414,35 @@ class LocalProcessor:
         p1_res = llm_log.get("phase1_res", {})
         id_conf, quality = p1_res.get("identity_confidence", 0), p1_res.get("integrity_quality", 0)
         ratio = p1_res.get("archive_vs_review_ratio", {"archive": 0, "review": 0})
+        is_fast = llm_log.get("fast_track", False)
+        
         fields = [
             {"name": "AppID", "value": f"[{app_id}](https://store.steampowered.com/app/{app_id})", "inline": True},
             {"name": "Status", "value": f"**{status.upper()}**", "inline": True},
             {"name": "Tracks", "value": str(track_count), "inline": True},
-            {"name": "Confidence / Quality", "value": f"ID: {id_conf}% / Qual: {quality}%", "inline": True},
+            {"name": "Identity / Quality", "value": f"ID: {id_conf}% / Qual: {quality}%", "inline": True},
             {"name": "Decision Ratio", "value": f"Arch {ratio.get('archive', 0)}% : Rev {ratio.get('review', 0)}%", "inline": True},
         ]
+        
+        if is_fast:
+            fields.append({"name": "🛡️ Processing Mode", "value": "**DETERMINISTIC FAST-TRACK** (LLM Bypassed)", "inline": True})
+
         if mbz_candidates:
             top_mbz = mbz_candidates[0]
-            fields.append({"name": "MusicBrainz (Top)", "value": f"[{top_mbz.get('album')}](https://musicbrainz.org/release/{top_mbz.get('mbid')}) (Score: {top_mbz.get('score')})", "inline": False})
-        fields.append({"name": "Reason / Summary", "value": f"_{message}_\n\n{reason[:800]}", "inline": False})
-        if any_audio_failures: fields.append({"name": "⚠️ CRITICAL ALERT", "value": "One or more tracks failed to encode correctly.", "inline": False})
-        if status == "review": self.notifier.notify_warning(f"Review Required: {name}", f"Manual check needed for AppID {app_id}", fields)
-        else: self.notifier.notify_info(f"Archived: {name}", f"Quality Check Passed for AppID {app_id}", fields)
+            mbz_val = f"[{top_mbz.get('album')}](https://musicbrainz.org/release/{top_mbz.get('mbid')}) (Score: {top_mbz.get('score')})"
+            fields.append({"name": "MusicBrainz (Top Candidate)", "value": mbz_val, "inline": False})
+        
+        # Split reasons clearly
+        fields.append({"name": "⚙️ System Logic Reason", "value": f"_{message}_", "inline": False})
+        
+        llm_reason = "Bypassed for Fast-Track" if is_fast else reason
+        if len(llm_reason) > 1000: llm_reason = llm_reason[:997] + "..."
+        fields.append({"name": "🧠 LLM Judgment Reason", "value": llm_reason, "inline": False})
+
+        if any_audio_failures: 
+            fields.append({"name": "🚨 CRITICAL ALERT", "value": "One or more tracks failed to encode correctly.", "inline": False})
+        
+        if status == "review":
+            self.notifier.notify_warning(f"Review Required: {name}", f"Manual check needed for AppID {app_id}", fields)
+        else:
+            self.notifier.notify_info(f"Archived: {name}", f"Automatic archive successful for AppID {app_id}", fields)

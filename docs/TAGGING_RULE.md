@@ -27,7 +27,7 @@ DJ機材および Windows エクスプローラーとの最大互換性を確保
 | :--- | :--- | :--- |
 | **TIT2** | 曲名 | **バイリンガル・タイトル (Plan B)**: `{Local} / {English}`<br>※VGMdb/MBZ/Steamから取得。結合後 60文字を超える場合は `{Local}` のみを優先。 |
 | **TPE1** | アーティスト | VGMdb/MusicBrainz のクレジット（最優先）または Steam 開発元。 |
-| **TALB** | アルバム名 | Steam 公式タイトルまたはバイリンガル・タイトル。 |
+| **TALB** | アルバム名 | Steam 公式タイトルまたはバイリンガル・タイトル. |
 | **TPE2** | アルバムアーティスト | `開発元, 出版社` |
 | **TCON** | ジャンル | `STEAM VGM, [全ジャンル]` (カンマ区切り) |
 | **TPUB** | レーベル | 公式 PICS レーベル、MBZ レーベル、または `開発元, 出版社` |
@@ -43,6 +43,10 @@ DJ機材および Windows エクスプローラーとの最大互換性を確保
 
 ## 3. 実装要件
 
+- **ディレクトリ構成**: 
+  - 最終出力は `{SST_OUTPUT_DIR}/{archive | review}/{app_id}_{Album_name}/disc_{DiscNumber}/{filename}` の形式で保存されます。
+- **レポート形式**:
+  - 各アルバムの処理結果は、リッチな装飾を施した **HTML 形式 (`AUDIT_REPORT.html`)** で出力されます。従来の Markdown 形式は廃止またはこの HTML に統合されます。
 - **セパレータ**:
   - 一般的な複数値フィールド: `, ` (カンマ＋スペース)
   - `COMM` タグ内のコミュニティタグ: `/ ` (スラッシュ＋スペース)
@@ -96,6 +100,10 @@ To ensure maximum compatibility with DJ hardware and Windows Explorer, the **ID3
 
 ## 3. Implementation Requirements
 
+- **Directory Structure**:
+  - Final outputs are saved as `{SST_OUTPUT_DIR}/{archive | review}/{app_id}_{Album_name}/disc_{DiscNumber}/{filename}`.
+- **Report Format**:
+  - Processing results for each album are output in a rich **HTML format (`AUDIT_REPORT.html`)**. Legacy Markdown reports are deprecated or integrated into this HTML.
 - **Separators**:
   - General multi-value fields: `, ` (Comma + Space)
   - Community tags in `COMM`: `/ ` (Slash + Space)
