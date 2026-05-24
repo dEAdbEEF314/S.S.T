@@ -6,8 +6,6 @@ from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime
 from difflib import SequenceMatcher
 
-from .acoustid import AcoustIDIdentifier
-
 logger = logging.getLogger("scout.ident.mbz")
 
 class MusicBrainzIdentifier:
@@ -28,7 +26,7 @@ class MusicBrainzIdentifier:
             "date_penalty_per_year": 20,
             "date_penalty_max": 100,
             "fingerprint_match": 200,
-            "direct_recording_match": 400
+            "direct_recording_match": 1000
         }
 
     def _safe_year(self, date_str: Any) -> Optional[int]:
