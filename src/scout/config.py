@@ -47,6 +47,11 @@ class Config(BaseSettings):
     score_mbz_date_penalty_max: int = 100
     score_mbz_fingerprint_match: int = 200
     score_mbz_direct_recording_match: int = 1000
+    score_mbz_acoustid_release_match: int = 1000
+    score_mbz_publisher_label_match: int = 100
+
+    # Metadata Cleaning Settings
+    title_cleaning_trusted_sources: str = "VGMDB,MBZ,PICS_API"
 
     mbz_app_name: str = "SST-Scout"
     mbz_app_version: str = "1.0.0"
@@ -59,14 +64,14 @@ class Config(BaseSettings):
     discord_webhook_warning: Optional[str] = None
     discord_webhook_info: Optional[str] = None
     discord_webhook_completion: Optional[str] = None
-    metadata_source_priority: str = "VGMDB,MBZ,DISCOGS,STEAM_PICS,STEAM_STORE,STEAM_TAGS,EMBEDDED"
+    metadata_source_priority: str = "VGMDB,MBZ,PICS_API,DISCOGS,STEAM_STORE,STEAM_TAGS,EMBEDDED"
     
     # Tag-specific metadata priorities
-    priority_tit2: str = "FILE,EMBED,VDF,VGMDB,MBZ,DISCOGS,PICS_API"
-    priority_tpe1: str = "EMBED,VGMDB,MBZ,DISCOGS,PICS_API"
+    priority_tit2: str = "VGMDB,MBZ,PICS_API,FILE,EMBED,VDF,DISCOGS"
+    priority_tpe1: str = "VGMDB,MBZ,PICS_API,EMBED,DISCOGS"
     priority_trck: str = "VGMDB,PICS_API,MBZ,DISCOGS,FILE,EMBED"
     priority_tpos: str = "VGMDB,PICS_API,EMBED,MBZ,DISCOGS"
-    priority_tyer: str = "EMBED,VGMDB,MBZ,DISCOGS,WEB_API"
-    priority_tpub: str = "VGMDB,MBZ,DISCOGS,PICS_API"
-    priority_apic: str = "EMBED,MBZ,DISCOGS,PICS_API,WEB_API"
+    priority_tyer: str = "VGMDB,MBZ,EMBED,DISCOGS,WEB_API"
+    priority_tpub: str = "VGMDB,MBZ,PICS_API,DISCOGS"
+    priority_apic: str = "MBZ,VGMDB,DISCOGS,PICS_API,WEB_API,EMBED"
 

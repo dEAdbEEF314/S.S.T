@@ -87,7 +87,8 @@ class MusicBrainzIdentifier:
         parent_app_id: Optional[int] = None,
         year: Optional[str] = None,
         local_baseline: Optional[Dict[str, Any]] = None,
-        acoustid_mbids: Optional[List[str]] = None
+        acoustid_mbids: Optional[List[str]] = None,
+        acoustid_release_ids: Optional[List[str]] = None
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """
         Searches MusicBrainz and returns ranked candidates using the NWO Hybrid Scoring System.
@@ -98,20 +99,31 @@ class MusicBrainzIdentifier:
             "attempts": []
         }
         
+        all_raw_releases = []
         try:
             time.sleep(1.1)
-            # Use broad search for album name
+            # 1. Primary: Text-based search
             result = musicbrainzngs.search_releases(release=album_name, limit=20)
             all_raw_releases = result.get('release-list', [])
             log_data["attempts"].append({"query": album_name, "count": len(all_raw_releases)})
         except Exception as e:
             logger.error(f"MBZ search error: {e}")
-            return [], log_data
 
-        # Also search by recordings if we have AcoustID MBIDs but no album results
+        # 2. Secondary: Ensure AcoustID-suggested Release IDs are evaluated
+        if acoustid_release_ids:
+            current_ids = {r['id'] for r in all_raw_releases}
+            for rid in acoustid_release_ids:
+                if rid not in current_ids:
+                    try:
+                        time.sleep(1.1)
+                        res = musicbrainzngs.get_release_by_id(rid)
+                        if res.get('release'):
+                            all_raw_releases.append(res['release'])
+                            log_data["attempts"].append({"query": f"AcoustID Release {rid}", "count": 1})
+                    except Exception: pass
+
+        # 3. Tertiary: Fallback to recording-based search if still empty
         if not all_raw_releases and acoustid_mbids:
-            # We can try to find releases containing these recordings
-            # This is a bit complex via API, but we can sample one recording and find its releases
             try:
                 time.sleep(1.1)
                 rec_res = musicbrainzngs.get_recording_by_id(acoustid_mbids[0], includes=["releases"])
@@ -126,10 +138,11 @@ class MusicBrainzIdentifier:
         logger.debug(f"Evaluating {len(all_raw_releases)} MBZ release candidates...")
         for i, r in enumerate(all_raw_releases):
             mbid = r['id']
-            logger.debug(f"[{i+1}/{len(all_raw_releases)}] Fetching details for MBZ Release: {r.get('title')} ({mbid})...")
+            title_text = r.get('title', 'Unknown Title')
+            logger.debug(f"[{i+1}/{len(all_raw_releases)}] Fetching details for MBZ Release: {title_text} ({mbid})...")
             try:
                 time.sleep(1.1)
-                full_r = musicbrainzngs.get_release_by_id(mbid, includes=["url-rels", "recordings", "artist-credits"])
+                full_r = musicbrainzngs.get_release_by_id(mbid, includes=["url-rels", "recordings", "artist-credits", "labels"])
                 release_data = full_r.get('release', {})
             except Exception as e:
                 logger.warning(f"Failed to fetch details for {mbid}: {e}")
@@ -138,7 +151,13 @@ class MusicBrainzIdentifier:
             score = 0
             evidence_notes = []
 
-            # --- Tier 0: AcoustID Correlation ---
+            # --- Tier 0: AcoustID Correlation (Release Match) ---
+            if acoustid_release_ids and mbid in acoustid_release_ids:
+                boost = self.scores.get("acoustid_release_match", 1000)
+                score += boost
+                evidence_notes.append("ACOUSTID_RELEASE_MATCH")
+
+            # --- Tier 0.5: AcoustID Correlation (Recording Match) ---
             if acoustid_mbids:
                 mb_rec_ids = []
                 for m in release_data.get('medium-list', []):
@@ -148,11 +167,10 @@ class MusicBrainzIdentifier:
                 
                 intersection = set(acoustid_mbids) & set(mb_rec_ids)
                 if intersection:
-                    boost = self.scores.get("direct_recording_match", 400)
+                    boost = self.scores.get("direct_recording_match", 1000)
                     score += boost
                     evidence_notes.append(f"ACOUSTID_MATCH({len(intersection)} tracks)")
-
-            # --- Tier 1: Deterministic Evidence ---
+            # --- Tier 1: Deterministic ---
             seen_evidence = set()
             relations = release_data.get('url-relation-list', [])
             for rel in relations:
@@ -162,65 +180,61 @@ class MusicBrainzIdentifier:
                 if app_id and f"store.steampowered.com/app/{app_id}" in url:
                     if "DIRECT_STEAM_LINK" not in seen_evidence:
                         score += self.scores.get("direct_steam_link", 500)
-                        evidence_notes.append("DIRECT_STEAM_LINK")
+                        evidence_notes.append('DIRECT_STEAM_LINK')
                         seen_evidence.add("DIRECT_STEAM_LINK")
                 
                 # 2. Parent Steam Link
                 elif parent_app_id and f"store.steampowered.com/app/{parent_app_id}" in url:
                     if "PARENT_STEAM_LINK" not in seen_evidence:
                         score += self.scores.get("parent_steam_link", 300)
-                        evidence_notes.append("PARENT_STEAM_LINK")
+                        evidence_notes.append('PARENT_STEAM_LINK')
                         seen_evidence.add("PARENT_STEAM_LINK")
                 
                 # 3. Direct SteamDB Link
                 if app_id and f"steamdb.info/app/{app_id}" in url:
                     if "DIRECT_STEAMDB_LINK" not in seen_evidence:
                         score += self.scores.get("direct_steamdb_link", 500)
-                        evidence_notes.append("DIRECT_STEAMDB_LINK")
+                        evidence_notes.append('DIRECT_STEAMDB_LINK')
                         seen_evidence.add("DIRECT_STEAMDB_LINK")
                 
                 # 4. Parent SteamDB Link
                 elif parent_app_id and f"steamdb.info/app/{parent_app_id}" in url:
                     if "PARENT_STEAMDB_LINK" not in seen_evidence:
                         score += self.scores.get("parent_steamdb_link", 300)
-                        evidence_notes.append("PARENT_STEAMDB_LINK")
+                        evidence_notes.append('PARENT_STEAMDB_LINK')
                         seen_evidence.add("PARENT_STEAMDB_LINK")
 
-                # Bandcamp (Once per domain to avoid multi-link inflation)
+                # Bandcamp
                 if "bandcamp.com" in url:
                     if "BANDCAMP_LINK" not in seen_evidence:
                         score += self.scores.get("bandcamp_link", 100)
-                        evidence_notes.append("BANDCAMP_LINK")
+                        evidence_notes.append('BANDCAMP_LINK')
                         seen_evidence.add("BANDCAMP_LINK")
 
-            # Deduplicate evidence notes early
-            unique_notes = []
-            for n in evidence_notes:
-                if n not in unique_notes: unique_notes.append(n)
-            evidence_notes = unique_notes
-
-            # --- Label Info Extraction ---
-            labels = []
-            for li in release_data.get('label-info-list', []):
-                if li.get('label') and li['label'].get('name'):
-                    labels.append(li['label']['name'])
-            canonical_label = ", ".join(labels) if labels else None
-
-            # --- Tier 2: Strong Semantic & Structural ---
-            title_text = release_data.get('title', '')
-            steam_sim = SequenceMatcher(None, album_name.lower(), title_text.lower()).ratio()
-            local_sim = 0
-            if local_baseline and local_baseline.get("album"):
-                local_sim = SequenceMatcher(None, local_baseline["album"].lower(), title_text.lower()).ratio()
-            
-            title_score = int(max(steam_sim, local_sim) * self.scores.get("title_similarity_max", 100))
-            score += title_score
-            evidence_notes.append(f"TITLE_SIM({title_score})")
-
+            # --- Tier 2: Structural ---
+            mb_tracks = 0
             try:
-                mb_tracks = sum(int(m.get('track-count', 0)) for m in release_data.get('medium-list', []))
-            except Exception: mb_tracks = 0
+                for m in release_data.get('medium-list', []):
+                    mb_tracks += len(m.get('track-list', []))
+                
+                # Publisher/Label Alignment (New Steam Anchor)
+                mb_labels = []
+                canonical_label = "Unknown"
+                for l_entry in release_data.get('label-info-list', []):
+                    lname = l_entry.get('label', {}).get('name')
+                    if lname:
+                        mb_labels.append(lname.lower())
+                        if canonical_label == "Unknown": canonical_label = lname
+            except Exception: pass
             
+            # Steam Publisher matching
+            if local_baseline and local_baseline.get("publisher"):
+                pub = local_baseline["publisher"].lower()
+                if any(pub in lbl or lbl in pub for lbl in mb_labels):
+                    boost = self.scores.get("publisher_label_match", 100)
+                    score += boost
+                    evidence_notes.append('PUBLISHER_LABEL_MATCH')
+
             if mb_tracks == expected_track_count:
                 score += self.scores.get("track_count_match", 50)
                 evidence_notes.append("TRACK_COUNT_MATCH")

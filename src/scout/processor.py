@@ -45,9 +45,13 @@ class LocalProcessor:
             "date_penalty_per_year": config.score_mbz_date_penalty_per_year,
             "date_penalty_max": config.score_mbz_date_penalty_max,
             "fingerprint_match": config.score_mbz_fingerprint_match,
-            "direct_recording_match": config.score_mbz_direct_recording_match
+            "direct_recording_match": config.score_mbz_direct_recording_match,
+            "acoustid_release_match": config.score_mbz_acoustid_release_match,
+            "publisher_label_match": config.score_mbz_publisher_label_match
         }
         self.mbz = MusicBrainzIdentifier(config.mbz_app_name, config.mbz_app_version, config.mbz_contact, scoring_config=mbz_scoring)
+        from .ident.acoustid import AcoustIDIdentifier
+        self.acoustid = AcoustIDIdentifier(config.acoustid_api_key)
         self.vgmdb = VGMdbClient()
         self.llm = LLMOrganizer(
             api_key=config.llm_api_key, base_url=config.llm_base_url, model=config.llm_model,
@@ -185,23 +189,44 @@ class LocalProcessor:
             total_discs = max(max_local_disc, max_store_disc)
             num_ctx = self._auto_select_model(len(track_groups))
 
-            # AcoustID Sampling
+            # AcoustID Sampling (Bottom-up Album Identification)
             acoustid_mbids = []
+            common_release_ids = []
             if self.config.acoustid_api_key:
-                logger.info(f"[{app_id}] Starting AcoustID sampling...")
-                from .ident.acoustid import AcoustIDIdentifier
-                aid = AcoustIDIdentifier(self.config.acoustid_api_key)
-                # Sample up to 3 tracks to avoid excessive API calls
-                sample_keys = list(track_groups.keys())[:3]
+                logger.info(f"[{app_id}] Starting AcoustID sampling for bottom-up identification...")
+                # Sample more tracks for better statistical confidence (up to 10 or 50% of album)
+                sample_count = min(10, max(3, int(len(track_groups) * 0.5)))
+                sample_keys = list(track_groups.keys())[:sample_count]
+                
+                acoustid_release_ids = []
                 for skey in sample_keys:
                     variants = track_groups[skey]
                     if variants:
-                        logger.info(f"[{app_id}] Sampling track for AcoustID: {variants[0]['path'].name}")
-                        mbids = aid.identify_track(variants[0]["path"])
-                        for m in mbids:
-                            if m["mbid"] not in acoustid_mbids: acoustid_mbids.append(m["mbid"])
-                logger.info(f"[{app_id}] AcoustID sampling finished. Found {len(acoustid_mbids)} MBID hints.")
+                        logger.debug(f"[{app_id}] Sampling track for AcoustID: {variants[0]['path'].name}")
+                        candidates = self.acoustid.identify_track(variants[0]["path"])
+                        if candidates:
+                            # Record top Recording ID for scoring boost
+                            if candidates[0]["mbid"] not in acoustid_mbids:
+                                acoustid_mbids.append(candidates[0]["mbid"])
+                            # Collect all Release IDs from all candidates for the "common ID" search
+                            for c in candidates:
+                                if c.get("release_ids"):
+                                    acoustid_release_ids.extend(c["release_ids"])
+                    if on_track_complete: on_track_complete()
+                
+                if acoustid_release_ids:
+                    from collections import Counter
+                    counts = Counter(acoustid_release_ids)
+                    # Threshold: appears in at least 40% of the sampled tracks
+                    threshold = sample_count * 0.4
+                    common_release_ids = [rid for rid, count in counts.items() if count >= threshold]
+                    logger.info(f"[{app_id}] AcoustID sampling finished. Found {len(acoustid_mbids)} Recording IDs and {len(common_release_ids)} potential Release IDs.")
+            
             local_baseline = TrackManager.extract_local_baseline(track_groups)
+            # Add publisher info to baseline for Steam Anchor matching
+            local_baseline["publisher"] = steam_meta.publisher or steam_meta.developer
+            
+            # --- MusicBrainz Alignment (Hybrid Top-down/Bottom-up) ---
             mbz_candidates, mbz_log = self.mbz.search_release(
                 steam_meta.name, 
                 len(track_groups), 
@@ -209,8 +234,14 @@ class LocalProcessor:
                 parent_app_id=steam_meta.parent_app_id, 
                 year=steam_meta.release_date[:4] if steam_meta.release_date else None, 
                 local_baseline=local_baseline,
-                acoustid_mbids=acoustid_mbids
+                acoustid_mbids=acoustid_mbids,
+                acoustid_release_ids=common_release_ids
             )
+            # Add AcoustID stats to log for LLM
+            mbz_log["acoustid_stats"] = {
+                "sample_count": sample_count if self.config.acoustid_api_key else 0,
+                "common_release_ids": common_release_ids
+            }
             time.sleep(1.0)
 
             # --- VGMdb Integration ---
@@ -311,6 +342,7 @@ class LocalProcessor:
                         "TPOS": self.config.priority_tpos,
                         "TYER": self.config.priority_tyer,
                         "TPUB": self.config.priority_tpub,
+                        "TRUSTED_TITLE_SOURCES": self.config.title_cleaning_trusted_sources,
                     }
                     tag_map = MetadataBuilder.build_tag_map(
                         app_id, disc, clean_title, adopted_info, steam_meta, instr, 
