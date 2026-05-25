@@ -27,8 +27,8 @@ class AcoustIDIdentifier:
             logger.debug(f"Fingerprint generated ({duration:.2f}s). Looking up AcoustID...")
             
             # Lookup AcoustID
-            # meta="recordings" gives us the MusicBrainz Recording IDs
-            results = acoustid.lookup(self.api_key, fingerprint, duration, meta="recordings")
+            # meta="recordings releases" gives us MB Recording IDs and associated Release IDs
+            results = acoustid.lookup(self.api_key, fingerprint, duration, meta="recordings releases")
             logger.debug(f"AcoustID lookup completed for {file_path.name}.")
 
             candidates = []
@@ -36,8 +36,11 @@ class AcoustIDIdentifier:
                 for result in results.get("results", []):
                     score = result.get("score", 0.0)
                     for recording in result.get("recordings", []):
+                        # Extract all associated Release IDs for this recording
+                        release_ids = [rel.get("id") for rel in recording.get("releases", []) if rel.get("id")]
                         candidates.append({
                             "mbid": recording.get("id"),
+                            "release_ids": release_ids,
                             "title": recording.get("title"),
                             "artist": recording.get("artists", [{}])[0].get("name") if recording.get("artists") else None,
                             "acoustid_score": score,

@@ -113,6 +113,7 @@ class MetadataBuilder:
 
         # 2.1 TIT2 (曲名)
         res_title = None
+        chosen_src = "VDF"
         tit2_priority = priorities.get("TIT2", "FILE,EMBED,VDF,VGMDB,MBZ,PICS_API")
         for src in tit2_priority.split(","):
             src = src.strip().upper()
@@ -124,8 +125,8 @@ class MetadataBuilder:
             elif src == "VDF":
                 val = clean_title
             elif src == "VGMDB" and vgmdb_data:
-                t_idx = instr.get("vgmdb_track_index")
-                if t_idx: val = vgmdb_data["tracks"].get(t_idx)
+                t_idx = instr.get("vdb_track_index") or instr.get("vgmdb_track_index")
+                if t_idx: val = vgmdb_data["tracks"].get(str(t_idx))
             elif src == "MBZ" and mbz_track:
                 val = mbz_track.get("title") if isinstance(mbz_track, dict) else str(mbz_track)
             elif src == "PICS_API" and pics_track:
@@ -133,6 +134,7 @@ class MetadataBuilder:
             
             if val and str(val).strip():
                 res_title = str(val).strip()
+                chosen_src = src
                 # Apply Plan B Truncation Logic (60 chars)
                 if " / " in res_title and len(res_title) > 60:
                     # Preserving only the local (Japanese) part if combined is too long
@@ -142,6 +144,7 @@ class MetadataBuilder:
                 break
         if not res_title:
             res_title = clean_title
+            chosen_src = "VDF"
 
         # 2.2 TPE1 (アーティスト)
         res_artist = None
@@ -275,12 +278,20 @@ class MetadataBuilder:
             res_label = f"{steam_meta.developer or steam_meta.publisher}"
 
         # --- 3. Apply Overrides (LLM Correction) ---
-        if instr.get("override_title"): res_title = instr["override_title"]
+        if instr.get("override_title"):
+            res_title = instr["override_title"]
+            chosen_src = "LLM_OVERRIDE" # LLM is untrusted by system logic for final cleaning
+            
         if instr.get("override_track"): res_track = str(instr["override_track"])
         if instr.get("override_disc"): res_disc = str(instr["override_disc"])
 
-        # --- 4. Final System-level Cleaning ---
-        res_title = MetadataBuilder._clean_title_logic(res_title, res_track)
+        # --- 4. Final System-level Cleaning (Trust Tier Logic) ---
+        trusted_sources = [s.strip().upper() for s in (priorities.get("TRUSTED_TITLE_SOURCES") or "VGMDB,MBZ,PICS_API").split(",")]
+        
+        if chosen_src not in trusted_sources:
+            res_title = MetadataBuilder._clean_title_logic(res_title, res_track)
+        else:
+            logger.debug(f"Skipping title cleaning for trusted source: {chosen_src} ('{res_title}')")
 
         # --- 5. Genre Logic ---
         all_genres = steam_meta.genres if steam_meta.genres else []
