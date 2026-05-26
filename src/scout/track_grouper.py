@@ -138,22 +138,38 @@ class TrackManager:
         return None
 
     @staticmethod
-    def extract_local_baseline(track_groups: Dict) -> Dict[str, Any]:
+    def extract_local_baseline(track_groups: Dict, acoustid_evidence: Optional[Dict] = None) -> Dict[str, Any]:
         from collections import Counter
         albums, artists, years, track_data = [], [], [], []
         for (disc, title), variants in track_groups.items():
             t_name = None
             avg_dur = sum(v["duration"] for v in variants) / len(variants) if variants else 0
-            for v in variants:
-                if v["meta"]:
-                    if v["meta"].get("album"): albums.append(v["meta"]["album"])
-                    if v["meta"].get("artist"): artists.append(v["meta"]["artist"])
-                    if v["meta"].get("year"): years.append(str(v["meta"]["year"]))
-                    if not t_name and v["meta"].get("title"): t_name = v["meta"]["title"]
+            
+            # 1. Use AcoustID evidence if available (High Trust)
+            if acoustid_evidence and (disc, title) in acoustid_evidence:
+                evidence = acoustid_evidence[(disc, title)]
+                t_name = evidence.get("title")
+                logger.debug(f"Using AcoustID-provided title for track {(disc, title)}: {t_name}")
+                if evidence.get("artist"):
+                    artists.append(evidence["artist"])
+            
+            # 2. Use embedded metadata if AcoustID failed or was not available
+            if not t_name:
+                for v in variants:
+                    if v["meta"]:
+                        if v["meta"].get("album"): albums.append(v["meta"]["album"])
+                        if v["meta"].get("artist"): artists.append(v["meta"]["artist"])
+                        if v["meta"].get("year"): years.append(str(v["meta"]["year"]))
+                        if not t_name and v["meta"].get("title"): t_name = v["meta"]["title"]
+            
+            # 3. Fallback to filename
             if not t_name and variants:
                 t_name = variants[0]["path"].stem
                 t_name = re.sub(r'^(\d+[\s.-]+)+', '', t_name).strip()
-            if t_name: track_data.append((t_name, int(avg_dur * 1000)))
+            
+            if t_name:
+                track_data.append((t_name, int(avg_dur * 1000)))
+        
         def most_common(lst): return Counter(lst).most_common(1)[0][0] if lst else None
         return {"album": most_common(albums), "artist": most_common(artists), "year": most_common(years), "tracks": track_data}
 
