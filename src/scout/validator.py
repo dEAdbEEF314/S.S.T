@@ -12,12 +12,26 @@ class ResultValidator:
         quality = int(p1_res.get("integrity_quality", 0))
         reason = p1_res.get("confidence_reason", "No LLM response")
         label = p1_res.get("semantic_label", "Review")
+        strategy = p1_res.get("strategy", "UNKNOWN")
         ratio = p1_res.get("archive_vs_review_ratio", {"archive": 0, "review": 0})
         
-        if id_conf < 95 or ratio.get("archive", 0) < 90 or p1_res.get("strategy") == "REVIEW_REQUIRED":
-            return "review", f"[{label}] {reason}", id_conf, reason
+        # --- Decision Strategy Keywords ---
+        strategy_badges = []
+        if strategy == "LOCAL_BASED" and "シングル盤の法則" in str(llm_log): strategy_badges.append("Fallback (Single)")
+        elif strategy == "LOCAL_BASED": strategy_badges.append("Steam Fallback")
+        elif strategy == "MBZ_BASED": strategy_badges.append("MBZ Match")
+        elif strategy == "HYBRID": strategy_badges.append("Hybrid (MBZ+Steam)")
+        
+        if "AcoustID" in str(llm_log): strategy_badges.append("AcoustID")
+        
+        badge_str = f"[{'+'.join(strategy_badges)}]" if strategy_badges else ""
+        
+        if id_conf < 95 or ratio.get("archive", 0) < 90 or strategy == "REVIEW_REQUIRED":
+            return "review", f"{badge_str} LLM's decision", id_conf, reason
 
-        status, message = "archive", "Success"
+        status, message = "archive", f"Success {badge_str}".strip()
+        if not badge_str: message = "Success (LLM's decision)"
+        
         z_count = sum(1 for t in tracks if str(t["tags"].get("track_number")) == "0")
         u_count = sum(1 for t in tracks if (t["tags"].get("title") or "Unknown") == "Unknown")
         
@@ -65,12 +79,12 @@ class ResultValidator:
             issues = []
             if z_count > 0: issues.append(f"Track#0 x{z_count}")
             if u_count > 0: issues.append(f"Unknown Title x{u_count}")
-            if d_count >= 1: issues.append(f"Dirty/Conflicting Tags x{int(d_count)}")
-            if has_duplicates: issues.append("Duplicate Disc/Track pairs")
-            message = f"{label} [{', '.join(issues)}]"
+            if d_count >= 1: issues.append(f"Dirty Tags x{int(d_count)}")
+            if has_duplicates: issues.append("Duplicates")
+            message = f"[{', '.join(issues)}]"
 
         if id_conf < 100 or quality < 95:
-            if status == "archive": status, message = "review", f"[{label}] Trust threshold not met ({id_conf}%/{quality}%)"
+            if status == "archive": status, message = "review", f"Trust threshold not met ({id_conf}%/{quality}%)"
 
         if audio_fail: status, message = "review", "[CRITICAL: Audio Source Error]"
         elif audio_warn: status, message = "review", "Audio quality warning detected"

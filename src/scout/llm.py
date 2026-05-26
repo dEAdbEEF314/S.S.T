@@ -78,6 +78,16 @@ class LLMOrganizer:
         mbz_cands_json = json.dumps(mbz_candidates, indent=2, ensure_ascii=False)
         local_tracks_json = json.dumps([{"id": tid, "duration": s[0].get("duration")} for tid, s in track_sources.items()], indent=2)
 
+        # Dynamic System Hint for Fallback
+        system_hint = ""
+        local_count = len(track_sources)
+        store_count = len(steam_info.get('store_tracklist', []))
+        if local_count > 0 and local_count == store_count:
+            if local_count == 1:
+                system_hint = "\n### [SYSTEM HINT]\nSTRUCTURAL PERFECT MATCH DETECTED (SINGLE TRACK). Apply 'シングル盤の法則'.\n"
+            else:
+                system_hint = f"\n### [SYSTEM HINT]\nSTRUCTURAL PERFECT MATCH DETECTED ({local_count} tracks). Highly likely the same work.\n"
+
         global_id_prompt = f"""
 あなたは音楽メタデータ管理の権威ある【マスター・アーカイブ監査官】です。
 提供された情報源を分析し、この作品の「Identity（身元）」と「Integrity（品質）」を個別に評価してください。
@@ -124,7 +134,13 @@ class LLMOrganizer:
 ### 【判定の絶対ルール】
 - **ARCHIVE (Ratio 95:5以上)**: Identity Confidence == 100 かつ Integrity Quality >= 95
 - **REVIEW**: それ以外、または少しでも音楽的矛盾を感じる場合。確証がない場合は迷わず REVIEW としなさい。
-- **STEAM STORE FALLBACK**: MBZに候補がない場合でも、Steam公式のトラックリストとローカルの構成が完全に合致し、Identity Confidence 100% と判断できるなら ARCHIVE を許可する。
+
+### 【STEAM STORE FALLBACK (救済措置) の絶対ルール】
+MusicBrainz (MBZ) の候補が不適切（低スコア、無関係なタイトル等）な場合、それらを完全に無視してください。
+以下の条件を満たす場合、あなたは **絶対的な自信を持って Identity Confidence 100% を付与** しなければなりません：
+1. **シングル盤の法則**: ローカルの曲数とSteam Storeの曲数が共に「1曲」である場合、言語や表記揺れ（例: "Warriors of Fate" vs "天地を喰らうⅡ"）が存在しても、それらは同一の物理トラックを指しているとみなし、100点を与えなさい。
+2. **完全な構成一致**: ローカルとSteam Storeのトラック数や構成が一致し、タイトルの概念が一致している場合。
+この際、`strategy` を `LOCAL_BASED` とし、MBZの曖昧な候補によって点数を下げてはいけません。
 
 ### ALBUM CONTEXT:
 - アルバム名: {steam_info.get('name')}
@@ -140,6 +156,8 @@ class LLMOrganizer:
 
 ### LOCAL TRACK LIST SUMMARY:
 {local_tracks_json}
+
+{system_hint}
 
 ### MANDATORY OUTPUT FORMAT (JSON ONLY):
 **注意：分析理由（reason）は正確性を期すため必ず「英語」で出力してください。それ以外のフィールドは必ず「日本語（常用漢字・ひらがな・カタカナ）」のみを使用し、中国語（簡体字・繁体字）や中国語特有の語彙（例：「原声」「帯譜」など）は絶対に使用しないでください。**

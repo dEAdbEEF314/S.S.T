@@ -234,6 +234,14 @@ def main():
         results = runner.run(soundtracks)
         duration_str = str(datetime.now() - start_time).split('.')[0]
 
+        # Generate Batch Report (Result.html)
+        from .report_generator import ReportGenerator
+        from .utils import ensure_wsl_path
+        output_root = ensure_wsl_path(config.sst_output_dir)
+        output_root.mkdir(parents=True, exist_ok=True)
+        ReportGenerator.generate_batch_report(results, output_root / "Result.html")
+        logger.info(f"Batch report generated at: {output_root / 'Result.html'}")
+
         console.print(f"\n[bold blue]🏁 Complete! Total Time: {duration_str}[/bold blue]\n")
         
         # Notify completion

@@ -192,6 +192,7 @@ class LocalProcessor:
             # AcoustID Sampling (Bottom-up Album Identification)
             acoustid_mbids = []
             common_release_ids = []
+            acoustid_track_evidence = {}
             if self.config.acoustid_api_key:
                 logger.info(f"[{app_id}] Starting AcoustID sampling for bottom-up identification...")
                 # Sample more tracks for better statistical confidence (up to 10 or 50% of album)
@@ -208,6 +209,11 @@ class LocalProcessor:
                             # Record top Recording ID for scoring boost
                             if candidates[0]["mbid"] not in acoustid_mbids:
                                 acoustid_mbids.append(candidates[0]["mbid"])
+                            
+                            # Store track-level evidence (highest score candidate)
+                            acoustid_track_evidence[skey] = candidates[0]
+                            logger.debug(f"[{app_id}] Added AcoustID track evidence for {skey}: {candidates[0]['title']} by {candidates[0]['artist']}")
+                            
                             # Collect all Release IDs from all candidates for the "common ID" search
                             for c in candidates:
                                 if c.get("release_ids"):
@@ -222,7 +228,7 @@ class LocalProcessor:
                     common_release_ids = [rid for rid, count in counts.items() if count >= threshold]
                     logger.info(f"[{app_id}] AcoustID sampling finished. Found {len(acoustid_mbids)} Recording IDs and {len(common_release_ids)} potential Release IDs.")
             
-            local_baseline = TrackManager.extract_local_baseline(track_groups)
+            local_baseline = TrackManager.extract_local_baseline(track_groups, acoustid_evidence=acoustid_track_evidence)
             # Add publisher info to baseline for Steam Anchor matching
             local_baseline["publisher"] = steam_meta.publisher or steam_meta.developer
             
@@ -465,7 +471,7 @@ class LocalProcessor:
             fields.append({"name": "MusicBrainz (Top Candidate)", "value": mbz_val, "inline": False})
         
         # Split reasons clearly
-        fields.append({"name": "⚙️ System Logic Reason", "value": f"_{message}_", "inline": False})
+        fields.append({"name": "⚙️ System Logic Reason", "value": f"**{message}**", "inline": False})
         
         llm_reason = "Bypassed for Fast-Track" if is_fast else reason
         if len(llm_reason) > 1000: llm_reason = llm_reason[:997] + "..."
