@@ -194,39 +194,61 @@ class LocalProcessor:
             common_release_ids = []
             acoustid_track_evidence = {}
             if self.config.acoustid_api_key:
-                logger.info(f"[{app_id}] Starting AcoustID sampling for bottom-up identification...")
-                # Sample more tracks for better statistical confidence (up to 10 or 50% of album)
-                sample_count = min(10, max(3, int(len(track_groups) * 0.5)))
-                sample_keys = list(track_groups.keys())[:sample_count]
-                
+                if self.config.fingerprint_all:
+                    logger.info(f"[{app_id}] Full-track fingerprinting mode: Scanning ALL {len(track_groups)} tracks...")
+                    target_keys = list(track_groups.keys())
+                    sample_count = len(target_keys)
+                    threshold_ratio = 1.0 # Requires 100% agreement among those with results
+                else:
+                    logger.info(f"[{app_id}] Starting AcoustID sampling for bottom-up identification...")
+                    # Sample more tracks for better statistical confidence (up to 10 or 50% of album)
+                    sample_count = min(10, max(3, int(len(track_groups) * 0.5)))
+                    target_keys = list(track_groups.keys())[:sample_count]
+                    threshold_ratio = 0.4 # Default consensus threshold
+
                 acoustid_release_ids = []
-                for skey in sample_keys:
+                valid_track_count = 0
+                for i, skey in enumerate(target_keys):
                     variants = track_groups[skey]
                     if variants:
-                        logger.debug(f"[{app_id}] Sampling track for AcoustID: {variants[0]['path'].name}")
+                        if self.config.fingerprint_all:
+                            logger.info(f"[{app_id}] [{i+1}/{sample_count}] Fingerprinting: {variants[0]['path'].name}")
+                        else:
+                            logger.debug(f"[{app_id}] Sampling track for AcoustID: {variants[0]['path'].name}")
+                            
                         candidates = self.acoustid.identify_track(variants[0]["path"])
                         if candidates:
+                            valid_track_count += 1
                             # Record top Recording ID for scoring boost
                             if candidates[0]["mbid"] not in acoustid_mbids:
                                 acoustid_mbids.append(candidates[0]["mbid"])
                             
                             # Store track-level evidence (highest score candidate)
                             acoustid_track_evidence[skey] = candidates[0]
-                            logger.debug(f"[{app_id}] Added AcoustID track evidence for {skey}: {candidates[0]['title']} by {candidates[0]['artist']}")
                             
                             # Collect all Release IDs from all candidates for the "common ID" search
                             for c in candidates:
                                 if c.get("release_ids"):
                                     acoustid_release_ids.extend(c["release_ids"])
+                    
                     if on_track_complete: on_track_complete()
+                    
+                    # API Rate Limit mitigation
+                    if self.config.fingerprint_all and i < sample_count - 1:
+                        import time
+                        import random
+                        # 1.5 - 2.0s delay
+                        time.sleep(1.5 + random.uniform(0, 0.5))
                 
                 if acoustid_release_ids:
                     from collections import Counter
                     counts = Counter(acoustid_release_ids)
-                    # Threshold: appears in at least 40% of the sampled tracks
-                    threshold = sample_count * 0.4
+                    # Threshold: appears in X% of the tracks that actually returned results
+                    threshold = valid_track_count * threshold_ratio
                     common_release_ids = [rid for rid, count in counts.items() if count >= threshold]
-                    logger.info(f"[{app_id}] AcoustID sampling finished. Found {len(acoustid_mbids)} Recording IDs and {len(common_release_ids)} potential Release IDs.")
+                    
+                    mode_str = "Full-track" if self.config.fingerprint_all else "Sampling"
+                    logger.info(f"[{app_id}] AcoustID {mode_str} finished. Tracks with results: {valid_track_count}/{sample_count}. Potential Release IDs: {len(common_release_ids)}")
             
             local_baseline = TrackManager.extract_local_baseline(track_groups, acoustid_evidence=acoustid_track_evidence)
             # Add publisher info to baseline for Steam Anchor matching

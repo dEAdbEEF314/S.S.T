@@ -168,6 +168,18 @@ def handle_all_confirm(console: Console):
     if input("[Step 3/3] Type 'START' to begin: ") != 'START': return False
     return True
 
+def handle_fingerprint_all_confirm(console: Console):
+    console.print("[bold red]!!! WARNING: ENABLING FULL-TRACK FINGERPRINTING MODE !!![/bold red]")
+    console.print("[yellow]This mode will scan EVERY track in the album using AcoustID.[/yellow]")
+    console.print("[dim]Due to API rate limits, a 1.5-2.0s delay per track is enforced.[/dim]")
+    console.print("[dim]For a 100-track album, this will take at least 3-4 minutes per album.[/dim]")
+    
+    # 3-Step Confirmation
+    if not Confirm.ask("[Step 1/3] Proceed with slow but high-precision mode?", console=console): return False
+    if input("[Step 2/3] Type 'SLOW' to acknowledge: ") != 'SLOW': return False
+    if input("[Step 3/3] Type 'CONFIRM' to finalize: ") != 'CONFIRM': return False
+    return True
+
 def main():
     parser = argparse.ArgumentParser(description="SST Scout")
     parser.add_argument("--all", action="store_true", help="Process all unprocessed soundtracks")
@@ -177,6 +189,7 @@ def main():
     parser.add_argument("--dev", action="store_true", help="Run in development mode (DEBUG logs, unique log files)")
     parser.add_argument("--reset-db", action="store_true")
     parser.add_argument("--finalize", action="store_true", help="Ingest corrected metadata from review folders into DB")
+    parser.add_argument("--fingerprint-all", action="store_true", help="Scan every track with AcoustID (slow but extremely precise)")
     args = parser.parse_args()
     console = Console()
 
@@ -190,6 +203,14 @@ def main():
         config = Config()
         config.steam_language_full = {"ja": "japanese", "en": "english"}.get(config.user_language, "english")
         config.user_language_639_2 = {"ja": "jpn", "en": "eng"}.get(config.user_language, "eng")
+        
+        # Handle Fingerprint-all confirmation
+        if args.fingerprint_all:
+            if handle_fingerprint_all_confirm(console):
+                config.fingerprint_all = True
+            else:
+                return console.print("[yellow]Aborted.[/yellow]")
+                
     except Exception as e: return console.print(f"[red]Config error: {e}[/red]")
 
     fetch_steam_userdata(config, console)

@@ -25,6 +25,7 @@ class Config(BaseSettings):
     llm_draft_model: Optional[str] = None
     max_parallel_albums: int = 2
     max_encoding_tasks: int = 4
+    fingerprint_all: bool = False
     
     # Adaptive LLM Router Settings
     llm_model_small: str = "qwen2.5:7b-sst"
