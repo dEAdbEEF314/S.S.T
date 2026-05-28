@@ -104,3 +104,4 @@ Handover_Document_*.md
 Models/blobs/
 Models/*.pdf
 .aider*
+output_test/
