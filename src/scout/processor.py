@@ -141,12 +141,14 @@ class LocalProcessor:
         else:
             # Original MBZ name-based matching
             mbz_tracks = best.get("tracks", [])
-            norm_mbz = [re.sub(r'[^a-z0-9]', '', t.get("title", "").lower()) for t in mbz_tracks]
+            # Use alphanumeric normalization consistent with TrackManager
+            def n_alpha(s): return re.sub(r'[^a-z0-9]', '', str(s).lower())
+            norm_mbz = [n_alpha(t.get("title", "")) for t in mbz_tracks]
             
             for key, variants in track_groups.items():
                 disc_num, clean_title = key
                 tid = f"{disc_num}_{clean_title}"
-                norm_local = re.sub(r'[^a-z0-9]', '', clean_title.lower())
+                norm_local = n_alpha(clean_title)
                 
                 found_idx = -1
                 for idx, n_mbz in enumerate(norm_mbz):
@@ -235,7 +237,6 @@ class LocalProcessor:
                     
                     # API Rate Limit mitigation
                     if self.config.fingerprint_all and i < sample_count - 1:
-                        import time
                         import random
                         # 1.5 - 2.0s delay
                         time.sleep(1.5 + random.uniform(0, 0.5))
