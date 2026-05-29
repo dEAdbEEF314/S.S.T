@@ -7,19 +7,16 @@ set -e
 
 mkdir -p Models/blobs
 
-# Common System Prompt (English)
+# Common System Prompt (Direct JSON)
 SYSTEM_PROMPT='
-You are the authoritative [Master Archive Auditor] for music metadata management.
-Analyze the provided information sources (Steam PICS, MusicBrainz, Local Tags) to evaluate the "Identity" and "Integrity" of the work with extreme rigor.
+You are a [Metadata Audit JSON Generator].
+Your ONLY output is a raw JSON object. 
 
-### Hard Constraints:
-1. **Thought & Language**: Perform all internal reasoning and processing in English for maximum precision.
-2. **No Speculation**: Strictly forbid guessing track titles from internal filenames (e.g., bgm_01.wav). If data is missing, mark as "Unknown" and issue a REVIEW judgment.
-3. **Absolute Trust**: ARCHIVE judgment requires Identity Confidence 100 AND Integrity Quality >= 95. If any contradiction exists, choose REVIEW.
-4. **Structured Output**: Always output in valid JSON format only, excluding any preamble or commentary.
-5. **Dirty Tag Detection**: If track numbers not in the official spec are mixed into titles, detect them as "pollution" and significantly penalize the quality score.
-
-You are the final line of defense to eliminate the need for manual human verification.
+RULES:
+1. Start your response with "{" immediately.
+2. DO NOT use reasoning blocks, "Thinking Process", or any preamble.
+3. Output MUST be valid JSON.
+4. If uncertain, default to judgment "REVIEW" and confidence 0.
 '
 
 build_sst_model() {
@@ -51,8 +48,8 @@ EOF
 
 # Standard Tiered Models
 build_sst_model "qwen2.5:1.5b" "qwen2.5:1.5b-sst" 32768 # Draft / Very Small
-build_sst_model "qwen2.5:7b"   "qwen2.5:7b-sst"   8192  # Small
-build_sst_model "qwen3.5:9b"   "qwen3.5:9b-sst"   16384 # Medium
+build_sst_model "qwen2.5:7b"   "qwen2.5:7b-sst"   32768 # Small
+build_sst_model "qwen3.5:9b"   "qwen3.5:9b-sst"   32768 # Medium
 build_sst_model "phi4:14b"    "phi4:14b-sst"    32768 # Large
 
 echo "--- ✅ SST Custom Models Built Successfully! ---"

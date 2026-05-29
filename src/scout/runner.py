@@ -91,8 +91,13 @@ class JobRunner:
                     if not tier_soundtracks:
                         continue
                     
-                    # For Medium/Large, we must restrict to 1 worker to allow full VRAM for context
-                    tier_workers = max_album_workers if "SMALL" in tier_name else 1
+                    # Tier-based dynamic worker allocation
+                    if "SMALL" in tier_name:
+                        tier_workers = self.config.max_parallel_small
+                    elif "MEDIUM" in tier_name:
+                        tier_workers = self.config.max_parallel_medium
+                    else: # LARGE
+                        tier_workers = self.config.max_parallel_large
                     
                     logger.info(f"--- Starting {tier_name} Tier ({len(tier_soundtracks)} albums) with {tier_workers} workers ---")
                     with ThreadPoolExecutor(max_workers=tier_workers) as executor:

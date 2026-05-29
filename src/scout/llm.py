@@ -41,6 +41,171 @@ class LLMOrganizer:
         self.priority_apic = priority_apic
         self.limiter = DistributedRateLimiter(rpm, tpm, rpd)
 
+    def _simplify_v_album(self, v: Optional[Dict], sampled: bool = False) -> Optional[Dict]:
+        if not v: return None
+        v_copy = v.copy()
+        tracks = v_copy.get("tracks", [])
+        
+        # Remove heavy/redundant fields for LLM context
+        simplified_tracks = []
+        for t in tracks:
+            if not isinstance(t, dict): 
+                simplified_tracks.append(t)
+                continue
+            st = {
+                "d": t.get("disc"),
+                "n": t.get("track_num"),
+                "t": t.get("title")
+            }
+            simplified_tracks.append(st)
+        
+        if sampled and len(simplified_tracks) > 20:
+            v_copy["tracks"] = simplified_tracks[:15] + [{"note": f"... skipping {len(simplified_tracks)-20} tracks ..."}] + simplified_tracks[-5:]
+        else:
+            v_copy["tracks"] = simplified_tracks
+            
+        return v_copy
+
+    def consolidate_virtual_albums(self, app_id: int, v_steam: Dict, v_fingerprint: Optional[Dict], v_local: Dict, num_ctx: Optional[int] = None) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+        """
+        Consolidates the three virtual albums into a final tag set using LLM.
+        """
+        full_logs = []
+        
+        # Simplify albums to save context
+        s_steam = self._simplify_v_album(v_steam, sampled=True)
+        s_fingerprint = self._simplify_v_album(v_fingerprint, sampled=True)
+        s_local = self._simplify_v_album(v_local, sampled=True)
+
+        # Phase 1: Identity & Global Tags
+        identity_prompt = f"""
+Generate an audit JSON object based on these three "Virtual Albums".
+(Note: Tracklists are sampled/simplified)
+
+### 1. STEAM VIRTUAL ALBUM (Official Store Info)
+{json.dumps(s_steam, ensure_ascii=False)}
+
+### 2. FINGERPRINT VIRTUAL ALBUM (Physical Waveform Match)
+{json.dumps(s_fingerprint, ensure_ascii=False) if v_fingerprint else "NOT AVAILABLE"}
+
+### 3. LOCAL VIRTUAL ALBUM (Current File Tags/Filenames)
+{json.dumps(s_local, ensure_ascii=False)}
+
+### [MASTER AUDIT GUIDELINE]
+1. GROUND TRUTH: FINGERPRINT matches are based on physical waveforms. 
+   If physical_match_ratio > 80%, set Identity Confidence to 95-100% even if names vary.
+2. IDENTITY ALIASES: Game Developer (Steam) == Artist (MBZ), Publisher (Steam) == Label (MBZ). 
+   These are NOT contradictions.
+3. YEAR FLEXIBILITY: Difference between Store and Physical release year is NORMAL.
+4. JUDGEMENT: Choose ARCHIVE if Confidence >= 95 and Quality >= 90.
+
+### OUTPUT FORMAT (JSON ONLY, NO PREAMBLE, NO THINKING):
+```json
+{{
+  "identity_confidence": number (0-100 integer),
+  "integrity_quality": number (0-100 integer),
+  "archive_vs_review_ratio": {{"archive": number, "review": number}},
+  "confidence_reason": "English reasoning",
+  "strategy": "FINGERPRINT_BASED" | "STEAM_BASED" | "LOCAL_BASED" | "HYBRID",
+  "semantic_label": "Label in {self.user_language}",
+  "global_tags": {{
+    "canonical_album_artist": "...",
+    "canonical_genre": "...",
+    "canonical_year": "YYYY",
+    "canonical_label": "...",
+    "chosen_mbz_id": "..."
+  }}
+}}
+```
+"""
+        global_res, global_log = self._call_llm(app_id, identity_prompt, num_ctx=num_ctx)
+        full_logs.append(global_log)
+
+        if not global_res:
+             return None, {"phase1_res": None, "phase1_log": global_log}
+
+        # Normalize confidence if in 0-1 range
+        conf = global_res.get("identity_confidence", 0)
+        if 0 < conf <= 1:
+            conf *= 100
+            global_res["identity_confidence"] = conf
+        
+        # Prototype threshold: 90 instead of 95 for testing
+        if conf < 90:
+             return None, {"phase1_res": global_res, "phase1_log": global_log}
+
+        # Phase 2: Track-by-Track Mapping with Chunking
+        final_instructions = {}
+        local_tracks = v_local.get("tracks", [])
+        
+        # Prepare full simplified reference tracks for Phase 2 (not sampled, but simplified)
+        ref_steam = self._simplify_v_album(v_steam, sampled=False).get("tracks", [])
+        ref_fingerprint = self._simplify_v_album(v_fingerprint, sampled=False).get("tracks", []) if v_fingerprint else []
+        
+        chunk_size = 20
+        for i in range(0, len(local_tracks), chunk_size):
+            chunk = local_tracks[i:i + chunk_size]
+            # Also simplify the local chunk
+            s_chunk = []
+            for t in chunk:
+                s_chunk.append({
+                    "id": t.get("title"), # We'll use title as identification in prompt
+                    "d": t.get("disc"),
+                    "dur": (t.get("duration_ms", 0) // 1000) if t.get("duration_ms") else None
+                })
+            
+            mapping_prompt = f"""
+Generate track mapping instructions for tracks {i+1} to {i+len(chunk)}.
+Identity: {json.dumps(global_res.get("global_tags"), ensure_ascii=False)}
+
+### REFERENCE VIRTUAL ALBUMS (TRACKS ONLY):
+STEAM: {json.dumps(ref_steam, ensure_ascii=False)}
+FINGERPRINT: {json.dumps(ref_fingerprint, ensure_ascii=False)}
+
+### LOCAL_CHUNK TO PROCESS:
+{json.dumps(s_chunk, ensure_ascii=False)}
+
+### RULES:
+1. Match LOCAL_CHUNK to STEAM and FINGERPRINT.
+2. Output JSON ONLY. No preamble, no thinking.
+
+### MANDATORY OUTPUT FORMAT (JSON ONLY):
+```json
+{{
+  "track_instructions": {{
+     "LOCAL_TRACK_ID": {{
+        "action": "use_fingerprint" | "use_steam" | "use_local",
+        "override_title": string | null,
+        "override_track": number | null,
+        "override_disc": number | null,
+        "reason": "English reasoning"
+     }}
+  }}
+}}
+```
+"""
+            track_res, track_log = self._call_llm(app_id, mapping_prompt, num_ctx=num_ctx)
+            full_logs.append(track_log)
+            
+            if track_res and "track_instructions" in track_res:
+                for t_id, data in track_res["track_instructions"].items():
+                    # Match by the "id" we provided (which was the title)
+                    matching_track = next((t for t in chunk if t["title"] == t_id), None)
+                    if matching_track:
+                        tid = f"{matching_track['local_key'][0]}_{matching_track['local_key'][1]}"
+                        data.update({
+                            "TPE2": global_res["global_tags"].get("canonical_album_artist"),
+                            "TCON": global_res["global_tags"].get("canonical_genre"),
+                            "TDRC": global_res["global_tags"].get("canonical_year"),
+                            "TPUB": global_res["global_tags"].get("canonical_label"),
+                            "identity_confidence": global_res["identity_confidence"],
+                            "confidence_score": global_res["identity_confidence"],
+                            "strategy": global_res["strategy"],
+                            "semantic_label": global_res["semantic_label"]
+                        })
+                        final_instructions[tid] = data
+
+        return final_instructions, {"phase1_res": global_res, "logs": full_logs}
 
     def consolidate_metadata(self, app_id: int, steam_info: Dict[str, Any], track_sources: Dict[str, List[Dict[str, Any]]], mbz_candidates: List[Dict[str, Any]], num_ctx: Optional[int] = None) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
         full_logs = []
@@ -144,7 +309,7 @@ In these cases, set `strategy` to `LOCAL_BASED` and do NOT lower the score due t
 ### ALBUM CONTEXT:
 - Album Name: {steam_info.get('name')}
 - Developer: {steam_info.get('developer')}
-- Release Year: {re.search(r'(\d{{4}})', str(steam_info.get('release_date', ''))).group(1) if re.search(r'(\d{{4}})', str(steam_info.get('release_date', ''))) else 'Unknown'}
+- Release Year: {re.search(r'(\d{4})', str(steam_info.get('release_date', ''))).group(1) if re.search(r'(\d{4})', str(steam_info.get('release_date', ''))) else 'Unknown'}
 
 ### STEAM STORE DATA (OFFICIAL):
 - Tracklist: {steam_tracks_json}
@@ -161,14 +326,14 @@ In these cases, set `strategy` to `LOCAL_BASED` and do NOT lower the score due t
 ### MANDATORY OUTPUT FORMAT (JSON ONLY):
 **NOTE: All reasoning (reason, confidence_reason, mbz_choice_reason) MUST be output in ENGLISH for technical precision. However, metadata fields (semantic_label, global_tags.*) MUST use the user's language ({self.user_language}). Specifically for Japanese (ja), avoid Chinese-specific characters or vocabulary.**
 ```json
-{{
+{
   "identity_confidence": number,
   "integrity_quality": number,
-  "archive_vs_review_ratio": {{"archive": number, "review": number}},
+  "archive_vs_review_ratio": {"archive": number, "review": number},
   "confidence_reason": "Detailed similarity analysis and reasoning (English)",
   "strategy": "MBZ_BASED" | "LOCAL_BASED" | "HYBRID" | "REVIEW_REQUIRED",
   "semantic_label": "Label in {self.user_language} (max 40 chars)",
-  "global_tags": {{
+  "global_tags": {
     "canonical_album_artist": "...",
     "canonical_genre": "...",
     "canonical_year": "YYYY",
@@ -176,8 +341,8 @@ In these cases, set `strategy` to `LOCAL_BASED` and do NOT lower the score due t
     "chosen_mbz_index": number | null,
     "chosen_mbz_id": "MusicBrainz Release ID | null",
     "mbz_choice_reason": "English reason why this candidate was chosen over others"
-  }}
-}}
+  }
+}
 ```
 """
         global_res, global_log = self._call_llm(app_id, global_id_prompt, num_ctx=num_ctx)
@@ -220,7 +385,6 @@ In these cases, set `strategy` to `LOCAL_BASED` and do NOT lower the score due t
             chunk_context = {}
             for k in chunk:
                 sid = logical_to_stable[k]
-                # Extract disc from tid (format: "disc_title")
                 try:
                     local_disc = int(k.split('_')[0])
                 except:
@@ -233,10 +397,10 @@ In these cases, set `strategy` to `LOCAL_BASED` and do NOT lower the score due t
                     "sources": track_sources[k]
                 }
 
-            chunk_json = json.dumps(chunk_context, indent=2, ensure_ascii=False)
+            chunk_json = json.dumps(chunk_context, indent=None, ensure_ascii=False)
             mapping_prompt = f"""
             Perform precise track mapping.
-            Identity: {json.dumps(global_identity, indent=2)}
+            Identity: {json.dumps(global_identity, ensure_ascii=False)}
 
             ### STEAM STORE DATA (OFFICIAL):
             - Tracklist: {steam_tracks_json}
@@ -244,29 +408,19 @@ In these cases, set `strategy` to `LOCAL_BASED` and do NOT lower the score due t
 
             ### INSTRUCTIONS:
             1. Parse the credits text (e.g., "Track 1 by X") and link it to the composer or artist of the corresponding track.
-            2. Match the Steam official tracklist titles with the local tracks, and use the most reliable source based on individual priorities (Title: {self.priority_tit2}, Artist: {self.priority_tpe1}, Track Number: {self.priority_trck}, Disc Number: {self.priority_tpos}).
+            2. Match the Steam official tracklist titles with the local tracks, and use the most reliable source.
             3. **Title Cleaning (Absolute Command)**: Regardless of the source adopted, if a title begins with a track number like "01. " or "1- ", you MUST remove it.
-               - Use `override_title` as needed to output only the pure title.
-4. **Track Number Completion & Invalidation**:
+            4. **Track Number Completion & Invalidation**:
                - If the local track number is unknown (0 or null) and the title matches the Steam official tracklist, output that number as `override_track`.
-               - **WARNING**: If the provided local `track_number` tags are the same for all tracks (e.g., all are "1"), NEVER output `override_track` and set it to `null`. The system will automatically infer the correct number from the filename.
-5. **Disc Number Maintenance & Completion (Critical)**:
-               - **Supreme Rule**: If the provided `local_context.disc` is 2 or higher, even if the Steam official data only has Disc 1, that track should be treated as Disc 2 or higher. ALWAYS output the appropriate disc number in `override_disc`.
-               - If the local disc number is unknown but a clear disc number (e.g., Disc 2, 3) is identifiable from the Steam official tracklist or context, output that value in `override_disc`.
-6. **No Duplicate Track Numbers (Absolute Command)**:
+            5. **Disc Number Maintenance & Completion (Critical)**:
+               - If the provided `local_context.disc` is 2 or higher, ALWAYS output it in `override_disc`.
+            6. **No Duplicate Track Numbers (Absolute Command)**:
                - It is **systemically forbidden** to assign the same `override_track` to multiple tracks within the same disc.
-               - **Handling Variation Tracks (Inst, Remix, Extended, etc.)**: If the official list only has the original version (e.g., "Song A"), do not assign the local "Song A (Inst.)" to the same official number. Variation tracks MUST have `override_track: null` and be treated as independent tracks.
-               - **Warning for Filename Duplicates**: If multiple local files have the same number (e.g., "01. A.mp3" and "01. B.mp3") and you set both to `override_track: null`, a conflict will occur in the system. In such cases, explicitly specify a unique, appropriate number in `override_track`.
-7. **Title Consistency**:
-               - For variation tracks, include identifiers such as "(Extended Ver.)" in `override_title` to distinguish them from other tracks.
-8. **Final Check**:
-               - Before submitting, self-check that `override_track` is not duplicated within the same disc in your `track_instructions` output.
 
             ### TRACKS TO MAP (Keys are Stable IDs):
             {chunk_json}
 
             ### MANDATORY OUTPUT FORMAT (JSON ONLY):
-            **NOTE: All reasoning (reason) MUST be output in ENGLISH for technical precision.**
             ```json
             {{
               "track_instructions": {{
@@ -284,65 +438,34 @@ In these cases, set `strategy` to `LOCAL_BASED` and do NOT lower the score due t
             """
             res, log_data = self._call_llm(app_id, mapping_prompt, num_ctx=num_ctx)
 
-            # Log human-readable version
-            # Reconstruction for the human-readable log (mapping stable IDs back to logical IDs)
-            human_chunk_context = {}
-            for sid, ctx in chunk_context.items():
-                tid = stable_to_logical[sid]
-                human_chunk_context[tid] = ctx
-
+            human_chunk_context = {stable_to_logical[sid]: ctx for sid, ctx in chunk_context.items()}
             human_mapping_prompt = mapping_prompt.replace(chunk_json, json.dumps(human_chunk_context, indent=2, ensure_ascii=False))
             log_data["human_prompt"] = human_mapping_prompt
             full_logs.append(log_data)
             
             if res and "track_instructions" in res:
-                instructions = res["track_instructions"]
-                
-                # --- Post-response Sanitization to prevent duplicates ---
-                for sid in list(instructions.keys()):
+                for sid, data in res["track_instructions"].items():
                     tid = stable_to_logical.get(sid)
                     if not tid: continue
                     
-                    # Determine current local disc
                     try:
                         local_disc = int(tid.split('_')[0])
                     except:
                         local_disc = 1
 
-                    data = instructions[sid]
-                    
-                    # Target disc/track after overrides
-                    target_disc = data.get("override_disc")
-                    if target_disc is None: target_disc = local_disc
-                    
+                    target_disc = data.get("override_disc") or local_disc
                     target_track = data.get("override_track")
                     
-                    # If override is null, determine the fallback track number
                     if target_track is None:
                         for src in track_sources[tid]:
                             if src["type"] == "filename":
                                 target_track = src.get("inferred_track_num")
                                 break
-                        if target_track is None:
-                            # Still null? Use embedded if available
-                            for src in track_sources[tid]:
-                                if src["type"] == "embedded_merged":
-                                    tn = src.get("tags", {}).get("track_number")
-                                    if tn:
-                                        try:
-                                            target_track = int(str(tn).split('/')[0])
-                                        except: pass
-                                    break
                     
                     if target_track is not None:
                         key = (str(target_disc), str(target_track))
                         if key in seen_numbers_global:
-                            prev_sid = seen_numbers_global[key]
-                            logger.warning(f"[{app_id}] [LLM Sanitizer] Duplicate track {key} detected for {sid} (already used by {prev_sid}).")
-                            # If it was an override, nullify it. If it was already a fallback, we can't do much here 
-                            # but at least we can warn.
                             if data.get("override_track") is not None:
-                                logger.warning(f"[{app_id}] [LLM Sanitizer] Nullifying override_track for {sid} to allow system fallback.")
                                 data["override_track"] = None
                         else:
                             seen_numbers_global[key] = sid
@@ -378,7 +501,7 @@ In these cases, set `strategy` to `LOCAL_BASED` and do NOT lower the score due t
 
         if self.llm_backend == "OLLAMA":
             url = f"{self.base_url}/api/chat"
-            options = {"temperature": 0.0}
+            options = {"temperature": 0.0, "num_predict": 4096}
             if num_ctx:
                 options["num_ctx"] = num_ctx
             payload = {
@@ -392,7 +515,7 @@ In these cases, set `strategy` to `LOCAL_BASED` and do NOT lower the score due t
             url = f"{self.base_url}/v1beta/openai/chat/completions" if self.llm_backend == "GEMINI" else f"{self.base_url}/v1/chat/completions"
             payload = {"model": self.model, "messages": messages, "temperature": 0.0, "response_format": {"type": "json_object"}}
             if num_ctx:
-                payload["num_ctx"] = num_ctx # Ollama's OpenAI endpoint supports this
+                payload["num_ctx"] = num_ctx
             headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
 
         for attempt in range(max_retries + 1):
@@ -400,26 +523,33 @@ In these cases, set `strategy` to `LOCAL_BASED` and do NOT lower the score due t
                 response = requests.post(url, headers=headers, json=payload, timeout=300)
                 if response.status_code == 200:
                     res_json = response.json()
-                    content = res_json.get("message", {}).get("content", "") if self.llm_backend == "OLLAMA" else res_json.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    message = res_json.get("message", {})
+                    content = message.get("content", "")
+                    thinking = message.get("thinking", "")
                     
+                    if self.llm_backend != "OLLAMA":
+                        content = res_json.get("choices", [{}])[0].get("message", {}).get("content", "")
+
                     logger.debug(f"[{app_id}] --- [LLM RESPONSE START] ---\n{content}\n--- [LLM RESPONSE END] ---")
+                    if thinking:
+                        logger.debug(f"[{app_id}] --- [LLM THINKING START] ---\n{thinking}\n--- [LLM THINKING END] ---")
                     
-                    if not content or not content.strip(): raise ValueError("Empty response")
+                    if not content or not content.strip():
+                        if thinking and '{' in thinking:
+                            # Attempt to salvage JSON from thinking if content is empty
+                            content = thinking
+                        else:
+                            raise ValueError("Empty response")
+                    
                     log_entry["response"] = content
                     
-                    # Act-15: Strict Parsing (No json-repair)
                     try:
-                        # 1. Clean markdown code blocks and reasoning blocks
                         clean_content = re.sub(r'```json\s*(.*?)\s*```', r'\1', content, flags=re.DOTALL)
                         clean_content = re.sub(r'<(thought|reasoning)>.*?</\1>', '', clean_content, flags=re.DOTALL | re.IGNORECASE)
-                        
-                        # 2. Extract first valid {...} block to handle minor chatter
                         start_idx = clean_content.find('{')
                         end_idx = clean_content.rfind('}')
-                        
                         if start_idx != -1 and end_idx != -1:
                             json_str = clean_content[start_idx:end_idx + 1]
-                            # Minor structural cleaning that isn't "inference" (e.g. trailing commas in arrays)
                             json_str = re.sub(r',\s*([\]}])', r'\1', json_str)
                             return json.loads(json_str), log_entry
                         else:

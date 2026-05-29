@@ -16,6 +16,7 @@ from .notify import NotificationManager
 from .db import DatabaseManager
 from .builder import MetadataBuilder
 from .packager import PackageManager
+from .virtual_album import VirtualAlbumBuilder
 
 # New functional modules
 from .track_grouper import TrackManager
@@ -53,6 +54,7 @@ class LocalProcessor:
         from .ident.acoustid import AcoustIDIdentifier
         self.acoustid = AcoustIDIdentifier(config.acoustid_api_key)
         self.vgmdb = VGMdbClient()
+        self.virtual_album_builder = VirtualAlbumBuilder(self.acoustid, self.mbz)
         self.llm = LLMOrganizer(
             api_key=config.llm_api_key, base_url=config.llm_base_url, model=config.llm_model,
             rpm=config.llm_limit_rpm, tpm=config.llm_limit_tpm, rpd=config.llm_limit_rpd,
@@ -166,17 +168,12 @@ class LocalProcessor:
 
     def _auto_select_model(self, track_count: int) -> int:
         if self.config.llm_backend != "OLLAMA": return 8192
-        if track_count <= 50:
-            target_model = self.config.llm_model_small
-            target_ctx = 8192
-        elif track_count <= 100:
-            target_model = self.config.llm_model_medium
-            target_ctx = 16384
-        else:
-            target_model = self.config.llm_model_large
-            target_ctx = 32768
+        # All tiers now use qwen2.5:7b-sst for stability against reasoning blocks
+        target_model = self.config.llm_model_small # This defaults to qwen2.5:7b-sst
+        target_ctx = 32768
+        
         if self.llm.model != target_model:
-            logger.info(f"Routing to model: {target_model} (tracks: {track_count})")
+            logger.info(f"Routing to stable model: {target_model} (tracks: {track_count})")
             self.llm.model = target_model
         return target_ctx
 
@@ -191,149 +188,60 @@ class LocalProcessor:
             total_discs = max(max_local_disc, max_store_disc)
             num_ctx = self._auto_select_model(len(track_groups))
 
-            # AcoustID Sampling (Bottom-up Album Identification)
-            acoustid_mbids = []
-            common_release_ids = []
-            acoustid_track_evidence = {}
-            if self.config.acoustid_api_key:
-                if self.config.fingerprint_all:
-                    logger.info(f"[{app_id}] Full-track fingerprinting mode: Scanning ALL {len(track_groups)} tracks...")
-                    target_keys = list(track_groups.keys())
-                    sample_count = len(target_keys)
-                    threshold_ratio = 1.0 # Requires 100% agreement among those with results
-                else:
-                    logger.info(f"[{app_id}] Starting AcoustID sampling for bottom-up identification...")
-                    # Sample more tracks for better statistical confidence (up to 10 or 50% of album)
-                    sample_count = min(10, max(3, int(len(track_groups) * 0.5)))
-                    target_keys = list(track_groups.keys())[:sample_count]
-                    threshold_ratio = 0.4 # Default consensus threshold
-
-                acoustid_release_ids = []
-                valid_track_count = 0
-                for i, skey in enumerate(target_keys):
-                    variants = track_groups[skey]
-                    if variants:
-                        if self.config.fingerprint_all:
-                            logger.info(f"[{app_id}] [{i+1}/{sample_count}] Fingerprinting: {variants[0]['path'].name}")
-                        else:
-                            logger.debug(f"[{app_id}] Sampling track for AcoustID: {variants[0]['path'].name}")
-                            
-                        candidates = self.acoustid.identify_track(variants[0]["path"])
-                        if candidates:
-                            valid_track_count += 1
-                            # Record top Recording ID for scoring boost
-                            if candidates[0]["mbid"] not in acoustid_mbids:
-                                acoustid_mbids.append(candidates[0]["mbid"])
-                            
-                            # Store track-level evidence (highest score candidate)
-                            acoustid_track_evidence[skey] = candidates[0]
-                            
-                            # Collect all Release IDs from all candidates for the "common ID" search
-                            for c in candidates:
-                                if c.get("release_ids"):
-                                    acoustid_release_ids.extend(c["release_ids"])
-                    
-                    if on_track_complete: on_track_complete()
-                    
-                    # API Rate Limit mitigation
-                    if self.config.fingerprint_all and i < sample_count - 1:
-                        import random
-                        # 1.5 - 2.0s delay
-                        time.sleep(1.5 + random.uniform(0, 0.5))
-                
-                if acoustid_release_ids:
-                    from collections import Counter
-                    counts = Counter(acoustid_release_ids)
-                    # Threshold: appears in X% of the tracks that actually returned results
-                    threshold = valid_track_count * threshold_ratio
-                    common_release_ids = [rid for rid, count in counts.items() if count >= threshold]
-                    
-                    mode_str = "Full-track" if self.config.fingerprint_all else "Sampling"
-                    logger.info(f"[{app_id}] AcoustID {mode_str} finished. Tracks with results: {valid_track_count}/{sample_count}. Potential Release IDs: {len(common_release_ids)}")
+            # --- NEW EXPERIMENTAL VIRTUAL ALBUM FLOW ---
+            logger.info(f"[{app_id}] Building Virtual Albums for Identity Consolidation...")
             
-            local_baseline = TrackManager.extract_local_baseline(track_groups, acoustid_evidence=acoustid_track_evidence)
-            # Add publisher info to baseline for Steam Anchor matching
-            local_baseline["publisher"] = steam_meta.publisher or steam_meta.developer
+            # 1. STEAM Virtual Album
+            v_steam = self.virtual_album_builder.build_steam_album(steam_meta)
             
-            # --- MusicBrainz Alignment (Hybrid Top-down/Bottom-up) ---
-            mbz_candidates, mbz_log = self.mbz.search_release(
-                steam_meta.name, 
-                len(track_groups), 
-                app_id=app_id, 
-                parent_app_id=steam_meta.parent_app_id, 
-                year=steam_meta.release_date[:4] if steam_meta.release_date else None, 
-                local_baseline=local_baseline,
-                acoustid_mbids=acoustid_mbids,
-                acoustid_release_ids=common_release_ids
+            # 2. LOCAL Virtual Album
+            v_local = self.virtual_album_builder.build_local_album(track_groups)
+            
+            # 3. FINGERPRINT Virtual Album (Majority Vote)
+            v_fingerprint = self.virtual_album_builder.build_fingerprint_album(
+                track_groups, on_track_complete=on_track_complete
             )
-            # Add AcoustID stats to log for LLM
-            mbz_log["acoustid_stats"] = {
-                "sample_count": sample_count if self.config.acoustid_api_key else 0,
-                "common_release_ids": common_release_ids
-            }
-            time.sleep(1.0)
+            
+            # --- LLM Consolidation via Virtual Albums ---
+            mbz_log = {"status": "virtual_album_flow"} # Initialize for log bundle
+            final_metadata, llm_log = self.llm.consolidate_virtual_albums(
+                app_id, v_steam, v_fingerprint, v_local, num_ctx=num_ctx
+            )
+            
+            if final_metadata is None:
+                p1_res = llm_log.get("phase1_res", {}) if llm_log else {}
+                error_msg = p1_res.get("confidence_reason") or "Manual Review Required (LLM Failure)"
+                summary_meta = {"app_id": app_id, "album_name": steam_meta.name, "status": "review", "confidence_score": 0, "confidence_reason": error_msg, "processed_at": self._get_localized_now().isoformat(), "tracks": [], "steam_info": steam_meta.model_dump()}
+                self.db.record_processed(app_id, "review", steam_meta.name, self._get_localized_now().isoformat(), summary_meta)
+                return LocalProcessResult(app_id=app_id, status="review", album_name=steam_meta.name, confidence_score=0, confidence_reason=error_msg, message=f"LLM Failure: {error_msg}")
 
-            # --- VGMdb Integration ---
-            vgmdb_data = None
-            if mbz_candidates:
-                top_score = mbz_candidates[0].get("score", 0)
-                has_acoustid = "ACOUSTID_MATCH" in str(mbz_candidates[0].get("evidence", []))
-                logger.debug(f"[{app_id}] Top MBZ candidate score: {top_score}, AcoustID Match: {has_acoustid}")
-                
-                if top_score >= 600 or has_acoustid:
-                    logger.info(f"[{app_id}] High confidence MBZ match found. Attempting VGMdb lookup...")
-                    mbz_details = self.mbz.get_release_details(mbz_candidates[0]["mbid"])
-                    if mbz_details:
-                        vgmdb_data = None
-                        # 1. Try physical DiscIDs from MBZ
-                        for medium in mbz_details.get("medium-list", []):
-                            discids = medium.get("disc-list", [])
-                            if discids:
-                                d = discids[0]
-                                logger.debug(f"[{app_id}] Using MBZ physical DiscID for VGMdb lookup: {d.get('id')}")
-                                vgmdb_data = self.vgmdb.fetch_bilingual_metadata(
-                                    len(d.get("offset-list", [])), 
-                                    [int(off) for off in d.get("offset-list", [])], 
-                                    int(d.get("sectors", 0))
-                                )
-                                if vgmdb_data: break
-                        
-                        # 2. Try theoretical DiscID from MBZ track durations
-                        if not vgmdb_data:
-                            for medium in mbz_details.get("medium-list", []):
-                                tracks = medium.get("track-list", [])
-                                if tracks:
-                                    durs = [int(t.get("recording", {}).get("length", 0)) for t in tracks]
-                                    if all(durs) and len(durs) == len(track_groups):
-                                        logger.debug(f"[{app_id}] Attempting VGMdb lookup using MBZ track durations...")
-                                        vgmdb_data = self.vgmdb.fetch_bilingual_metadata_by_durations(durs)
-                                        if vgmdb_data: break
-
-                        # 3. Try theoretical DiscID from local durations (Last resort for high confidence match)
-                        if not vgmdb_data:
-                            local_durs = [v[0]["duration"] * 1000 for k, v in track_groups.items()]
-                            logger.debug(f"[{app_id}] Attempting VGMdb lookup using local track durations...")
-                            vgmdb_data = self.vgmdb.fetch_bilingual_metadata_by_durations(local_durs)
-
-                        if not vgmdb_data:
-                            logger.debug(f"[{app_id}] VGMdb lookup failed via all DiscID methods.")
-                    else:
-                        logger.warning(f"[{app_id}] Failed to fetch detailed MBZ info for VGMdb lookup.")
-                else:
-                    logger.info(f"[{app_id}] MBZ confidence too low ({top_score}) for VGMdb fast-track.")
-            else:
-                logger.info(f"[{app_id}] No MBZ candidates found. Skipping VGMdb lookup.")
-
+            # Compatibility layer for existing validator/tagger
+            # We still need track_sources for build_tag_map
             track_sources = TrackManager.prepare_llm_track_context(track_groups)
-            is_fast, final_metadata, global_identity = self._check_fast_track(app_id, steam_meta, track_groups, mbz_candidates, vgmdb_data=vgmdb_data)
-            if is_fast:
-                fast_reason = "Deterministic Fast-track enabled: " + ("VGMdb bilingual metadata verified." if vgmdb_data else "Album identity and tracklist were perfectly verified against official sources.")
-                llm_log = {"phase1_res": {"identity_confidence": 100, "integrity_quality": 100, "archive_vs_review_ratio": {"archive": 100, "review": 0}, "global_tags": global_identity, "confidence_reason": fast_reason}, "phase1_log": {"reason": "Fast-track Skip"}, "fast_track": True, "vgmdb_data": vgmdb_data}
-            else:
-                final_metadata, llm_log = self.llm.consolidate_metadata(app_id, steam_meta.model_dump(), track_sources, mbz_candidates, num_ctx=num_ctx)
-                if vgmdb_data: llm_log["vgmdb_data"] = vgmdb_data
-                p1_res = llm_log.get("phase1_res", {})
-                global_identity = p1_res.get("global_tags", {})
+            
+            # Map v_fingerprint to mbz_candidates for compatibility with existing ReportGenerator/Validator
+            mbz_candidates = []
+            if v_fingerprint:
+                mbz_candidates.append({
+                    "mbid": v_fingerprint["mbid"],
+                    "album": v_fingerprint["album_name"],
+                    "artist": v_fingerprint["artist"],
+                    "year": v_fingerprint["year"],
+                    "label": v_fingerprint["label"],
+                    "score": 1000, # Max score for majority vote winner
+                    "evidence": ["MAJORITY_VOTE_WINNER"],
+                    "tracks": v_fingerprint["tracks"]
+                })
+            
+            # Identity and strategy for builder
+            p1_res = llm_log.get("phase1_res", {})
+            global_identity = p1_res.get("global_tags", {})
+            
+            # For now, we skip the old MusicBrainz Alignment and VGMdb Integration sections
+            # but we need to ensure the variables are defined.
+            vgmdb_data = None 
+            
+            # --- END OF NEW FLOW ---
             if final_metadata is None:
                 p1_log = llm_log.get("phase1_log", {})
                 error_msg = p1_log.get("error") or "Manual Review Required"
