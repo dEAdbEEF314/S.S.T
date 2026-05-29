@@ -37,11 +37,15 @@ class MusicBrainzIdentifier:
 
     def get_release_details(self, mbid: str) -> Optional[Dict[str, Any]]:
         """
-        Fetches full details for a release, including discids and offsets.
+        Fetches full details for a release, including relationships and tracks.
         """
         try:
             time.sleep(1.1)
-            res = musicbrainzngs.get_release_by_id(mbid, includes=["url-rels", "recordings", "artist-credits", "discids", "labels"])
+            include = [
+                "url-rels", "recordings", "artist-credits", "discids", "labels",
+                "recording-level-rels", "work-level-rels", "artist-rels", "tags"
+            ]
+            res = musicbrainzngs.get_release_by_id(mbid, includes=include)
             return res.get('release', {})
         except Exception as e:
             logger.warning(f"Failed to fetch release details for {mbid}: {e}")
