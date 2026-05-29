@@ -26,7 +26,8 @@ class ResultValidator:
         
         badge_str = f"[{'+'.join(strategy_badges)}]" if strategy_badges else ""
         
-        if id_conf < 95 or ratio.get("archive", 0) < 90 or strategy == "REVIEW_REQUIRED":
+        # Prototype threshold: 95/80 (archive ratio)
+        if id_conf < 95 or ratio.get("archive", 0) < 80 or strategy == "REVIEW_REQUIRED":
             return "review", f"{badge_str} LLM's decision", id_conf, reason
 
         status, message = "archive", f"Success {badge_str}".strip()
@@ -83,7 +84,7 @@ class ResultValidator:
             if has_duplicates: issues.append("Duplicates")
             message = f"[{', '.join(issues)}]"
 
-        if id_conf < 100 or quality < 95:
+        if id_conf < 95 or quality < 90:
             if status == "archive": status, message = "review", f"Trust threshold not met ({id_conf}%/{quality}%)"
 
         if audio_fail: status, message = "review", "[CRITICAL: Audio Source Error]"

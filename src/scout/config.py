@@ -24,6 +24,9 @@ class Config(BaseSettings):
     llm_limit_rpd: int = 1500
     llm_draft_model: Optional[str] = None
     max_parallel_albums: int = 2
+    max_parallel_small: int = 4
+    max_parallel_medium: int = 2
+    max_parallel_large: int = 1
     max_encoding_tasks: int = 4
     fingerprint_all: bool = False
     

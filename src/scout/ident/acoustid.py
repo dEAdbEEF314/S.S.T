@@ -1,16 +1,31 @@
 import acoustid
 import logging
 import os
+import time
+import threading
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
 logger = logging.getLogger("scout.ident.acoustid")
 
 class AcoustIDIdentifier:
+    _api_lock = threading.Lock()
+    _last_call_time = 0.0
+
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or os.getenv("ACOUSTID_API_KEY")
         if not self.api_key:
             logger.warning("ACOUSTID_API_KEY not found. AcoustID matching will be disabled.")
+
+    def _wait_for_rate_limit(self):
+        """Ensures at least 1.0s between global API calls."""
+        with self._api_lock:
+            now = time.time()
+            elapsed = now - AcoustIDIdentifier._last_call_time
+            wait_time = 1.1 - elapsed # Use 1.1s for safety
+            if wait_time > 0:
+                time.sleep(wait_time)
+            AcoustIDIdentifier._last_call_time = time.time()
 
     def identify_track(self, file_path: Path) -> List[Dict[str, Any]]:
         """
@@ -24,6 +39,10 @@ class AcoustIDIdentifier:
             logger.debug(f"Generating fingerprint for {file_path.name}...")
             # Generate fingerprint using fpcalc via the acoustid library
             duration, fingerprint = acoustid.fingerprint_file(str(file_path))
+            
+            # Global Rate Limit Enforcement
+            self._wait_for_rate_limit()
+            
             logger.debug(f"Fingerprint generated ({duration:.2f}s). Looking up AcoustID...")
             
             # Lookup AcoustID
