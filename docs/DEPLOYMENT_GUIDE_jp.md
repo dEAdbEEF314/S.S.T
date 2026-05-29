@@ -13,21 +13,29 @@
 ## 2. 前提条件
 
 - **WSL2 (Ubuntu等)**: Python 3.12 および `uv` がインストールされていること。
+- **zstd**: Ollamaモデル展開用に必須。
 - **Docker Desktop**: Windows 側でインストールされ、WSL2 連携が有効であること。
 - **Steam Web API Key**: [こちら](https://steamcommunity.com/dev/apikey)から取得してください。
 
 ---
 
-## 3. ステップ 1: PICS Bridge の起動 (Docker)
+## 3. ステップ 1: インフラの起動
 
+### 3.1 PICS Bridge (Docker)
 外部のキャッシュサーバーを介さず、自分の PC から直接 Steam データを取得するために、以下のコマンドをターミナルで実行してください。
 
 ```bash
-docker run --name sst-pics-bridge -d -p 8080:8000 steamcmd/api:latest
+docker run --name sst-pics-bridge -d -p 8080:8000 --restart unless-stopped steamcmd/api:latest
 ```
 
-- これにより、`http://localhost:8080/v1/info/` で PICS データが取得可能になります。
-- Windows の Docker Desktop 画面で `sst-pics-bridge` が実行中であることを確認してください。
+### 3.2 ローカルLLM (Ollama Native)
+LLMによる推論をローカルで行うため、Ollamaと専用モデルをセットアップします。
+
+```bash
+# セットアップスクリプトの実行 (zstdのインストール、モデルの取得、SST専用モデルの作成)
+chmod +x Models/LLM_setup.sh Models/build_lightweight_sst.sh
+./Models/LLM_setup.sh
+```
 
 ---
 

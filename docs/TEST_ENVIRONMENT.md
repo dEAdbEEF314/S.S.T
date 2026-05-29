@@ -8,11 +8,11 @@
 - **メディアエンジン**: FFmpeg (WSL の `PATH` 内で利用可能であること)。
 - **データベース**: SQLite 3。
 
-## 2. インフラストラクチャ (Local Docker)
-「究極データ取得モード」の検証には、ローカル PICS ブリッジが稼働している必要があります：
-- **コンテナ**: `steamcmd/api:latest`
-- **公開ポート**: `8080` (内部ポート `8000` からマップ)。
-- **エンドポイント**: `http://localhost:8080/v1/info/{AppID}`
+## 2. インフラストラクチャ (Local Environment)
+「究極データ取得モード」の検証には、以下のコンポーネントが稼働している必要があります：
+- **PICS Bridge (Docker)**: `steamcmd/api:latest` (Port 8080)。
+- **Ollama (Native WSL2)**: ローカルLLM推論エンジン。`Models/LLM_setup.sh` で構築。
+- **zstd**: Ollamaモデルの展開に必須。
 
 ## 3. データソース (検証ターゲット)
 テストは、以下の代表的な AppID に対して実行することを推奨します：
@@ -24,10 +24,10 @@
 有効なテスト環境には以下が必須です：
 - `STEAM_WEB_API_KEY`: コミュニティタグ取得用。
 - `STEAM_PICS_BRIDGE_URL`: `http://localhost:8080/v1/info/` に設定。
-- `LLM_BACKEND`: `GEMINI` または `OPENAI_COMPATIBLE` (Docker llama-server)。
+- `LLM_BACKEND`: `GEMINI`, `OLLAMA` (Native Ollama 推奨) または `OPENAI_COMPATIBLE`。
 
 ## 5. 検証チェックリスト
-- [ ] Windows 側での自動 ZIP 展開（ネイティブ `tar.exe` 経由）。
+- [ ] Windows 側での自動 ZIP 展開（Python `zipfile` ライブラリ経由）。
 - [ ] 中間生成物（ZIPファイル）の自動削除。
 - [ ] `COMM` 欄の新しい書式（`[タグ1/ タグ2]`）の適用。
 - [ ] MP3 に対する正確な ID3v2.3 タグ付け。
@@ -44,11 +44,11 @@ This document defines the standard test environment for validating S.S.T's stand
 - **Media Engine**: FFmpeg (must be available in WSL `PATH`).
 - **Database**: SQLite 3.
 
-## 2. Infrastructure (Local Docker)
-For the "Ultimate Data Mode", a local PICS bridge must be active:
-- **Container**: `steamcmd/api:latest`
-- **Exposed Port**: `8080` (mapped to internal `8000`).
-- **Endpoint**: `http://localhost:8080/v1/info/{AppID}`
+## 2. Infrastructure (Local Environment)
+For the "Ultimate Data Mode", the following components must be active:
+- **PICS Bridge (Docker)**: `steamcmd/api:latest` (Port 8080).
+- **Ollama (Native WSL2)**: Local LLM inference engine, set up via `Models/LLM_setup.sh`.
+- **zstd**: Required for extracting Ollama models.
 
 ## 3. Data Sources (Validation Targets)
 Tests should be run against these representative AppIDs:
@@ -60,10 +60,10 @@ Tests should be run against these representative AppIDs:
 A valid test environment MUST have:
 - `STEAM_WEB_API_KEY`: For official community tag retrieval.
 - `STEAM_PICS_BRIDGE_URL`: Set to `http://localhost:8080/v1/info/`.
-- `LLM_BACKEND`: `GEMINI` or `OPENAI_COMPATIBLE` (Docker llama-server).
+- `LLM_BACKEND`: `GEMINI`, `OLLAMA` (Native Ollama recommended), or `OPENAI_COMPATIBLE`.
 
 ## 5. Verification Checklist
-- [ ] Automatic ZIP extraction on Windows (via native `tar.exe`).
+- [ ] Automatic ZIP extraction on Windows (via Python `zipfile` library).
 - [ ] Automatic deletion of intermediate ZIP files.
 - [ ] Application of the new `COMM` format (`[tag1/ tag2]`).
 - [ ] Correct ID3v2.3 tagging for MP3.
