@@ -17,9 +17,9 @@ class VirtualAlbumBuilder:
 
     def build_fingerprint_album(self, track_groups: Dict[Tuple[int, str], List[Dict[str, Any]]], on_track_complete: Optional[callable] = None) -> Optional[Dict[str, Any]]:
         """
-        Builds a virtual album using AcoustID cross-validation (majority vote).
+        Builds a virtual album using AcoustID cross-validation (majority vote) with advanced tie-break.
         """
-        logger.info("Building FINGERPRINT virtual album using cross-validation...")
+        logger.info("Building FINGERPRINT virtual album using advanced cross-validation...")
         
         all_release_ids = []
         track_results = {}
@@ -42,31 +42,56 @@ class VirtualAlbumBuilder:
             
             if on_track_complete:
                 on_track_complete()
-            
-            # API Rate Limit mitigation for large albums
-            if i < len(target_keys) - 1:
-                import time
-                import random
-                time.sleep(1.0 + random.uniform(0, 0.5))
         
         if not all_release_ids:
             logger.warning("No Release IDs found via AcoustID.")
             return None
 
-        # Step 2: Majority Vote
-        counts = Counter(all_release_ids)
-        most_common = counts.most_common()
+        # Step 2: Advanced Scoring (Tie-break)
+        # Instead of just counting, we calculate a score for each unique Release ID
+        unique_rids = set(all_release_ids)
+        rid_scores = {}
         
-        # Tie-break logic (simplified for now: pick the one with most tracks in MBZ matching local count)
-        chosen_rid = most_common[0][0]
-        logger.info(f"Majority vote winner: {chosen_rid} ({counts[chosen_rid]} votes)")
+        counts = Counter(all_release_ids)
+        local_track_count = len(track_groups)
+        local_names_flat = " ".join([k[1].lower() for k in track_groups.keys()])
+        
+        for rid in unique_rids:
+            # Base score: votes from tracks
+            score = counts[rid] * 10
+            
+            # Fetch summary info for tie-break (fast fetch)
+            details = self.mbz.get_release_details(rid)
+            if not details: continue
+            
+            # 1. Structural Match (+50pt)
+            mb_track_count = 0
+            for medium in details.get("medium-list", []):
+                mb_track_count += len(medium.get("track-list", []))
+            
+            if mb_track_count == local_track_count:
+                score += 50
+                logger.debug(f"RID {rid}: Track count match (+50)")
+            
+            # 2. Keyword Alignment (+30pt)
+            keywords = ["instrumental", "off vocal", "karaoke", "remix", "arrange"]
+            for kw in keywords:
+                if kw in local_names_flat and kw in (details.get("title") or "").lower():
+                    score += 30
+                    logger.debug(f"RID {rid}: Keyword match '{kw}' (+30)")
+            
+            rid_scores[rid] = (score, details)
 
-        # Step 3: Fetch full details for the winner
-        release_details = self.mbz.get_release_details(chosen_rid)
-        if not release_details:
+        # Pick the winner
+        if not rid_scores:
+            logger.warning("No Release ID scores could be calculated.")
             return None
 
-        # Step 4: Construct Virtual Album
+        sorted_rids = sorted(rid_scores.items(), key=lambda x: x[1][0], reverse=True)
+        chosen_rid, (best_score, release_details) = sorted_rids[0]
+        logger.info(f"Advanced winner: {chosen_rid} (Score: {best_score})")
+
+        # Step 3: Construct Virtual Album with Detailed Credits
         virtual_album = {
             "source": "FINGERPRINT",
             "mbid": chosen_rid,
@@ -77,28 +102,41 @@ class VirtualAlbumBuilder:
             "tracks": []
         }
 
-        # Step 5: Duration-based Track Binding
+        # Step 4: Parse Detailed Credits (Relationships)
         mb_mediums = release_details.get("medium-list", [])
         mb_all_tracks = []
         for medium in mb_mediums:
             m_pos = int(medium.get("position", 1))
             for track in medium.get("track-list", []):
+                recording = track.get("recording", {})
+                
+                # Parse relationships (Composer, Lyricist, etc.)
+                credits = {"composer": [], "lyricist": [], "arranger": [], "remixer": []}
+                rels = recording.get("recording-relation-list", []) + recording.get("work-relation-list", [])
+                for rel in rels:
+                    rtype = rel.get("type")
+                    target = rel.get("artist", {}).get("name")
+                    if rtype == "composer": credits["composer"].append(target)
+                    elif rtype == "lyricist": credits["lyricist"].append(target)
+                    elif rtype == "arranger": credits["arranger"].append(target)
+                    elif rtype == "remixer": credits["remixer"].append(target)
+
                 mb_all_tracks.append({
                     "disc": m_pos,
                     "position": int(track.get("position", 0)),
-                    "title": track.get("recording", {}).get("title") or track.get("title"),
-                    "duration_ms": int(track.get("length") or track.get("recording", {}).get("length") or 0),
-                    "mbid": track.get("recording", {}).get("id")
+                    "title": recording.get("title") or track.get("title"),
+                    "duration_ms": int(track.get("length") or recording.get("length") or 0),
+                    "mbid": recording.get("id"),
+                    "credits": {k: ", ".join(v) if v else None for k, v in credits.items()}
                 })
 
+        # Step 5: Duration-based Track Binding
         matched_count = 0
-        total_local_tracks = len(track_groups)
         for key, variants in track_groups.items():
             local_dur = variants[0]["duration"] * 1000 # ms
             
-            # Find best duration match in the chosen MBZ release
             best_match = None
-            min_diff = 2000 # 2 seconds threshold
+            min_diff = 3000 # 3 seconds threshold
             
             for mb_t in mb_all_tracks:
                 diff = abs(mb_t["duration_ms"] - local_dur)
@@ -114,7 +152,8 @@ class VirtualAlbumBuilder:
                     "track_num": best_match["position"],
                     "title": best_match["title"],
                     "duration_ms": best_match["duration_ms"],
-                    "mbid": best_match["mbid"]
+                    "mbid": best_match["mbid"],
+                    "credits": best_match["credits"]
                 })
             else:
                 virtual_album["tracks"].append({
@@ -123,13 +162,14 @@ class VirtualAlbumBuilder:
                     "track_num": None,
                     "title": None,
                     "duration_ms": None,
-                    "mbid": None
+                    "mbid": None,
+                    "credits": None
                 })
         
         # Physical confidence hint
-        match_ratio = (matched_count / total_local_tracks * 100) if total_local_tracks > 0 else 0
+        match_ratio = (matched_count / local_track_count * 100) if local_track_count > 0 else 0
         virtual_album["physical_match_ratio"] = round(match_ratio, 1)
-        virtual_album["match_hint"] = f"HIGH ({matched_count}/{total_local_tracks} tracks matched by duration)" if match_ratio > 80 else "LOW"
+        virtual_album["match_hint"] = f"HIGH ({matched_count}/{local_track_count} tracks matched by duration)" if match_ratio > 80 else "LOW"
 
         return virtual_album
 
@@ -151,7 +191,7 @@ class VirtualAlbumBuilder:
                 "disc": int(track.get("disc", 1)),
                 "track_num": int(track.get("track_number", 0)),
                 "title": track.get("name"),
-                "duration_ms": None # Steam doesn't usually provide duration via Web API easily
+                "duration_ms": None
             })
             
         return virtual_album
@@ -174,7 +214,7 @@ class VirtualAlbumBuilder:
             virtual_album["tracks"].append({
                 "local_key": key,
                 "disc": key[0],
-                "track_num": None, # Usually parsed from filename or existing tag
+                "track_num": None, 
                 "title": key[1],
                 "duration_ms": int(best["duration"] * 1000)
             })

@@ -46,7 +46,7 @@ class LLMOrganizer:
         v_copy = v.copy()
         tracks = v_copy.get("tracks", [])
         
-        # Remove heavy/redundant fields for LLM context
+        # Remove heavy/redundant fields for LLM context, but KEEP credits for FINGERPRINT
         simplified_tracks = []
         for t in tracks:
             if not isinstance(t, dict): 
@@ -57,6 +57,9 @@ class LLMOrganizer:
                 "n": t.get("track_num"),
                 "t": t.get("title")
             }
+            # Keep credits if they exist (FINGERPRINT source)
+            if t.get("credits"):
+                st["c"] = t["credits"]
             simplified_tracks.append(st)
         
         if sampled and len(simplified_tracks) > 20:
@@ -85,7 +88,7 @@ Generate an audit JSON object based on these three "Virtual Albums".
 ### 1. STEAM VIRTUAL ALBUM (Official Store Info)
 {json.dumps(s_steam, ensure_ascii=False)}
 
-### 2. FINGERPRINT VIRTUAL ALBUM (Physical Waveform Match)
+### 2. FINGERPRINT VIRTUAL ALBUM (Physical Waveform Match / Ground Truth)
 {json.dumps(s_fingerprint, ensure_ascii=False) if v_fingerprint else "NOT AVAILABLE"}
 
 ### 3. LOCAL VIRTUAL ALBUM (Current File Tags/Filenames)
@@ -130,7 +133,6 @@ Generate an audit JSON object based on these three "Virtual Albums".
             conf *= 100
             global_res["identity_confidence"] = conf
         
-        # Prototype threshold: 90 instead of 95 for testing
         if conf < 90:
              return None, {"phase1_res": global_res, "phase1_log": global_log}
 
@@ -138,18 +140,17 @@ Generate an audit JSON object based on these three "Virtual Albums".
         final_instructions = {}
         local_tracks = v_local.get("tracks", [])
         
-        # Prepare full simplified reference tracks for Phase 2 (not sampled, but simplified)
+        # Prepare full simplified reference tracks for Phase 2 (not sampled)
         ref_steam = self._simplify_v_album(v_steam, sampled=False).get("tracks", [])
         ref_fingerprint = self._simplify_v_album(v_fingerprint, sampled=False).get("tracks", []) if v_fingerprint else []
         
         chunk_size = 20
         for i in range(0, len(local_tracks), chunk_size):
             chunk = local_tracks[i:i + chunk_size]
-            # Also simplify the local chunk
             s_chunk = []
             for t in chunk:
                 s_chunk.append({
-                    "id": t.get("title"), # We'll use title as identification in prompt
+                    "id": t.get("title"), 
                     "d": t.get("disc"),
                     "dur": (t.get("duration_ms", 0) // 1000) if t.get("duration_ms") else None
                 })
@@ -160,14 +161,15 @@ Identity: {json.dumps(global_res.get("global_tags"), ensure_ascii=False)}
 
 ### REFERENCE VIRTUAL ALBUMS (TRACKS ONLY):
 STEAM: {json.dumps(ref_steam, ensure_ascii=False)}
-FINGERPRINT: {json.dumps(ref_fingerprint, ensure_ascii=False)}
+FINGERPRINT (Ground Truth): {json.dumps(ref_fingerprint, ensure_ascii=False)}
 
 ### LOCAL_CHUNK TO PROCESS:
 {json.dumps(s_chunk, ensure_ascii=False)}
 
 ### RULES:
-1. Match LOCAL_CHUNK to STEAM and FINGERPRINT.
-2. Output JSON ONLY. No preamble, no thinking.
+1. Match LOCAL_CHUNK to FINGERPRINT (Ground Truth) first.
+2. If FINGERPRINT has "c" (credits: composer, lyricist, etc.), ensure they are integrated.
+3. Output JSON ONLY. No preamble, no thinking.
 
 ### MANDATORY OUTPUT FORMAT (JSON ONLY):
 ```json
@@ -178,6 +180,9 @@ FINGERPRINT: {json.dumps(ref_fingerprint, ensure_ascii=False)}
         "override_title": string | null,
         "override_track": number | null,
         "override_disc": number | null,
+        "composer": string | null,
+        "lyricist": string | null,
+        "arranger": string | null,
         "reason": "English reasoning"
      }}
   }}
@@ -198,6 +203,9 @@ FINGERPRINT: {json.dumps(ref_fingerprint, ensure_ascii=False)}
                             "TCON": global_res["global_tags"].get("canonical_genre"),
                             "TDRC": global_res["global_tags"].get("canonical_year"),
                             "TPUB": global_res["global_tags"].get("canonical_label"),
+                            "TEXT": data.get("lyricist"),
+                            "TCOM": data.get("composer"),
+                            "TPE4": data.get("arranger"),
                             "identity_confidence": global_res["identity_confidence"],
                             "confidence_score": global_res["identity_confidence"],
                             "strategy": global_res["strategy"],
