@@ -48,11 +48,12 @@ class LLMOrganizer:
         
         # Remove heavy/redundant fields for LLM context, but KEEP credits for FINGERPRINT
         simplified_tracks = []
-        for t in tracks:
+        for idx, t in enumerate(tracks):
             if not isinstance(t, dict): 
                 simplified_tracks.append(t)
                 continue
             st = {
+                "v_idx": idx, # Unique index in this virtual album
                 "d": t.get("disc"),
                 "n": t.get("track_num"),
                 "t": t.get("title")
@@ -60,6 +61,11 @@ class LLMOrganizer:
             # Keep credits if they exist (FINGERPRINT source)
             if t.get("credits"):
                 st["c"] = t["credits"]
+            
+            # Keep internal mapping hint for fingerprint
+            if t.get("mbz_track_index") is not None:
+                st["mbz_idx"] = t["mbz_track_index"]
+                
             simplified_tracks.append(st)
         
         if sampled and len(simplified_tracks) > 20:
@@ -97,10 +103,14 @@ Generate an audit JSON object based on these three "Virtual Albums".
 ### [MASTER AUDIT GUIDELINE]
 1. GROUND TRUTH: FINGERPRINT matches are based on physical waveforms. 
    If physical_match_ratio > 80%, set Identity Confidence to 95-100% even if names vary.
-2. IDENTITY ALIASES: Game Developer (Steam) == Artist (MBZ), Publisher (Steam) == Label (MBZ). 
+2. STEAM-TRUST PATH: If FINGERPRINT is missing but STEAM tracklist structurally matches LOCAL (same count/order), TRUST STEAM as Ground Truth and set Identity Confidence to 100%.
+3. DISC NUMBER FLEXIBILITY: LOCAL disc numbers (d) are often incorrect or defaulted to 1. 
+   If STEAM or FINGERPRINT define multiple discs, you MUST re-assign tracks to the correct discs in Phase 2.
+4. IDENTITY ALIASES: Game Developer (Steam) == Artist (MBZ), Publisher (Steam) == Label (MBZ). 
    These are NOT contradictions.
-3. YEAR FLEXIBILITY: Difference between Store and Physical release year is NORMAL.
-4. JUDGEMENT: Choose ARCHIVE if Confidence >= 95 and Quality >= 90.
+5. JUDGEMENT: Choose ARCHIVE if Confidence >= 95 and Quality >= 90. 
+   When ARCHIVE is chosen, you MUST set "archive_vs_review_ratio" to {{"archive": 100, "review": 0}}.
+
 
 ### OUTPUT FORMAT (JSON ONLY, NO PREAMBLE, NO THINKING):
 ```json
@@ -127,11 +137,31 @@ Generate an audit JSON object based on these three "Virtual Albums".
         if not global_res:
              return None, {"phase1_res": None, "phase1_log": global_log}
 
+        # --- SYSTEM-LEVEL HEURISTICS (PRE-NORMALIZE) ---
+        # 1. STEAM-TRUST Path: If FINGERPRINT is missing but STEAM count matches LOCAL count exactly
+        # and LLM was conservative (conf < 95), trust the structural match.
+        if not v_fingerprint:
+            steam_count = len(v_steam.get("tracks", []))
+            local_count = len(v_local.get("tracks", []))
+            if steam_count > 0 and steam_count == local_count:
+                current_conf = global_res.get("identity_confidence", 0)
+                if current_conf < 95:
+                    logger.info(f"[{app_id}] Applying STEAM-TRUST: Structural match detected ({steam_count} tracks). Boosting confidence to 100%.")
+                    global_res["identity_confidence"] = 100
+                    global_res["archive_vs_review_ratio"] = {"archive": 100, "review": 0}
+                    global_res["strategy"] = "STEAM_BASED"
+                    global_res["confidence_reason"] = f"SYSTEM: Boosted to 100% via STEAM-TRUST (structural match with {steam_count} tracks)."
+
         # Normalize confidence if in 0-1 range
-        conf = global_res.get("identity_confidence", 0)
+        conf = int(global_res.get("identity_confidence", 0))
         if 0 < conf <= 1:
-            conf *= 100
+            conf = int(conf * 100)
             global_res["identity_confidence"] = conf
+        
+        # Ensure ratio is valid
+        ratio = global_res.get("archive_vs_review_ratio", {})
+        if not isinstance(ratio, dict) or not ratio:
+            global_res["archive_vs_review_ratio"] = {"archive": 0, "review": 100}
         
         if conf < 90:
              return None, {"phase1_res": global_res, "phase1_log": global_log}
@@ -139,44 +169,53 @@ Generate an audit JSON object based on these three "Virtual Albums".
         # Phase 2: Track-by-Track Mapping with Chunking
         final_instructions = {}
         local_tracks = v_local.get("tracks", [])
-        
+
         # Prepare full simplified reference tracks for Phase 2 (not sampled)
         ref_steam = self._simplify_v_album(v_steam, sampled=False).get("tracks", [])
         ref_fingerprint = self._simplify_v_album(v_fingerprint, sampled=False).get("tracks", []) if v_fingerprint else []
-        
+        ref_fingerprint_str = json.dumps(ref_fingerprint, ensure_ascii=False) if v_fingerprint else "NOT AVAILABLE"
+
         chunk_size = 20
         for i in range(0, len(local_tracks), chunk_size):
             chunk = local_tracks[i:i + chunk_size]
             s_chunk = []
-            for t in chunk:
+            for idx, t in enumerate(chunk):
                 s_chunk.append({
-                    "id": t.get("title"), 
+                    "chunk_idx": i + idx,
+                    "t": t.get("title"),
                     "d": t.get("disc"),
                     "dur": (t.get("duration_ms", 0) // 1000) if t.get("duration_ms") else None
                 })
-            
+
             mapping_prompt = f"""
-Generate track mapping instructions for tracks {i+1} to {i+len(chunk)}.
-Identity: {json.dumps(global_res.get("global_tags"), ensure_ascii=False)}
+        Generate track mapping instructions for tracks {i+1} to {i+len(chunk)}.
+        Identity: {json.dumps(global_res.get("global_tags"), ensure_ascii=False)}
 
-### REFERENCE VIRTUAL ALBUMS (TRACKS ONLY):
-STEAM: {json.dumps(ref_steam, ensure_ascii=False)}
-FINGERPRINT (Ground Truth): {json.dumps(ref_fingerprint, ensure_ascii=False)}
+        ### REFERENCE VIRTUAL ALBUMS (TRACKS ONLY):
+        STEAM: {json.dumps(ref_steam, ensure_ascii=False)}
+        FINGERPRINT (Ground Truth): {ref_fingerprint_str}
 
-### LOCAL_CHUNK TO PROCESS:
-{json.dumps(s_chunk, ensure_ascii=False)}
+        ### LOCAL_CHUNK TO PROCESS:
+        {json.dumps(s_chunk, ensure_ascii=False)}
 
-### RULES:
-1. Match LOCAL_CHUNK to FINGERPRINT (Ground Truth) first.
-2. If FINGERPRINT has "c" (credits: composer, lyricist, etc.), ensure they are integrated.
-3. Output JSON ONLY. No preamble, no thinking.
+        ### RULES:
+        1. Match LOCAL_CHUNK to FINGERPRINT (if available) first, then STEAM. NEVER select "use_fingerprint" if FINGERPRINT is NOT AVAILABLE.
+        2. **Unique Mapping**: Each track in the LOCAL_CHUNK MUST map to a **UNIQUE** reference track (v_idx). Do NOT map multiple local tracks to the same "matched_v_idx".
+        3. **Automatic Numbering**: If action is "use_steam" or "use_fingerprint", LEAVE "override_track" and "override_disc" as **null**. The system will automatically adopt the numbers from the reference album.
+
+4. **Override Only When Necessary**: Use "override_track" or "override_disc" ONLY if the reference album has WRONG or MISSING numbers (e.g., track number is 0 or null).
+5. **Disc Alignment**: If the matched reference track belongs to a different disc than the local "d", you MUST ensure the final output reflects the correct disc.
+6. If action is "use_fingerprint" or "use_steam", MUST provide "matched_v_idx" from the respective reference album.
+7. No Duplicate Tracks: Ensure that the final mapping does not result in duplicate track numbers within the same disc.
+8. Output JSON ONLY. No preamble, no thinking.
 
 ### MANDATORY OUTPUT FORMAT (JSON ONLY):
 ```json
 {{
   "track_instructions": {{
-     "LOCAL_TRACK_ID": {{
+     "CHUNK_INDEX": {{
         "action": "use_fingerprint" | "use_steam" | "use_local",
+        "matched_v_idx": number | null,
         "override_title": string | null,
         "override_track": number | null,
         "override_disc": number | null,
@@ -193,11 +232,24 @@ FINGERPRINT (Ground Truth): {json.dumps(ref_fingerprint, ensure_ascii=False)}
             full_logs.append(track_log)
             
             if track_res and "track_instructions" in track_res:
-                for t_id, data in track_res["track_instructions"].items():
-                    # Match by the "id" we provided (which was the title)
-                    matching_track = next((t for t in chunk if t["title"] == t_id), None)
+                for c_idx_str, data in track_res["track_instructions"].items():
+                    try:
+                        c_idx = int(c_idx_str)
+                        if c_idx < 0 or c_idx >= len(local_tracks): continue
+                        matching_track = local_tracks[c_idx]
+                    except ValueError:
+                        # Fallback for LLM title keys (legacy support or hallucination)
+                        matching_track = next((t for t in chunk if t["title"] == c_idx_str), None)
+                    
                     if matching_track:
                         tid = f"{matching_track['local_key'][0]}_{matching_track['local_key'][1]}"
+                        
+                        # Pass through MBZ track index if matched with fingerprint
+                        mv_idx = data.get("matched_v_idx")
+                        if data.get("action") == "use_fingerprint" and mv_idx is not None:
+                            if mv_idx < len(ref_fingerprint):
+                                data["mbz_track_index"] = ref_fingerprint[mv_idx].get("mbz_idx")
+                        
                         data.update({
                             "TPE2": global_res["global_tags"].get("canonical_album_artist"),
                             "TCON": global_res["global_tags"].get("canonical_genre"),
@@ -207,6 +259,8 @@ FINGERPRINT (Ground Truth): {json.dumps(ref_fingerprint, ensure_ascii=False)}
                             "TCOM": data.get("composer"),
                             "TPE4": data.get("arranger"),
                             "identity_confidence": global_res["identity_confidence"],
+                            "integrity_quality": global_res.get("integrity_quality", 0),
+                            "archive_vs_review_ratio": global_res.get("archive_vs_review_ratio", {"archive": 0, "review": 100}),
                             "confidence_score": global_res["identity_confidence"],
                             "strategy": global_res["strategy"],
                             "semantic_label": global_res["semantic_label"]
@@ -395,7 +449,7 @@ In these cases, set `strategy` to `LOCAL_BASED` and do NOT lower the score due t
                 sid = logical_to_stable[k]
                 try:
                     local_disc = int(k.split('_')[0])
-                except:
+                except Exception:
                     local_disc = 1
                 
                 chunk_context[sid] = {
@@ -458,7 +512,7 @@ In these cases, set `strategy` to `LOCAL_BASED` and do NOT lower the score due t
                     
                     try:
                         local_disc = int(tid.split('_')[0])
-                    except:
+                    except Exception:
                         local_disc = 1
 
                     target_disc = data.get("override_disc") or local_disc

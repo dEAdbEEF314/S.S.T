@@ -77,7 +77,7 @@ class SteamScanner:
         logger.info(f"Initialized SteamScanner with {len(wsl_libs)} libraries.")
         return wsl_libs
 
-    def find_soundtracks(self, force: bool = False, limit: Optional[int] = None, is_processed_callback: Optional[callable] = None, target_appid: Optional[int] = None) -> List[dict]:
+    def find_soundtracks(self, force: bool = False, limit: Optional[int] = None, is_processed_callback: Optional[callable] = None, target_appids: Optional[List[int]] = None) -> List[dict]:
         """
         Finds soundtrack app manifests and merges them with local appinfo metadata.
         """
@@ -104,14 +104,14 @@ class SteamScanner:
                 parent_appid = int(app_state.get("appid", 0)) # Default
                 
                 # Filter by AppID if requested
-                if target_appid and current_id != target_appid:
+                if target_appids and current_id not in target_appids:
                     continue
 
                 if not force and is_processed_callback and is_processed_callback(current_id):
                     continue
 
-                # If target_appid is NOT set, only process if it's a known soundtrack
-                if not target_appid and not self._is_soundtrack(manifest, current_id) and current_id == parent_appid:
+                # If target_appids is NOT set, only process if it's a known soundtrack
+                if not target_appids and not self._is_soundtrack(manifest, current_id) and current_id == parent_appid:
                     continue
 
                 last_updated = app_state.get("LastUpdated", "0")
@@ -125,7 +125,7 @@ class SteamScanner:
                     except Exception: pass
                 
                 enriched = self._get_local_metadata(current_id)
-                if not enriched and not target_appid:
+                if not enriched and not target_appids:
                     # If we can't find metadata locally and it wasn't a targeted scan, skip
                     continue
 

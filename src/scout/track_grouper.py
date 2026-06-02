@@ -34,6 +34,15 @@ class TrackManager:
                     d_str = str(meta.get("disc_number")).split('/')[0]
                     if d_str.isdigit(): disc = int(d_str)
                 except Exception: pass
+            
+            # Fallback to directory name if disc is still 1
+            if disc == 1:
+                # Look for "disc N" or "CD N" in path parts (reversed to find the innermost one)
+                for part in reversed(f.parts):
+                    d_match = re.search(r'(?:disc|cd)\s*(\d+)', part, re.IGNORECASE)
+                    if d_match:
+                        disc = int(d_match.group(1))
+                        break
 
             stem = f.stem
             # Remove album name if present (case-insensitive)

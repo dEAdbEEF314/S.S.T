@@ -79,31 +79,61 @@ class MetadataBuilder:
         if mbz_idx is None or mbz_idx == -1: mbz_idx = 0
         if mbz_candidates and mbz_idx < len(mbz_candidates):
             mbz_album = mbz_candidates[mbz_idx]
-            t_idx = instr.get("mbz_track_index")
-            if t_idx is None: t_idx = 0
-            if t_idx < len(mbz_album.get("tracks", [])):
+            
+            # Use matched_v_idx from LLM if action is use_fingerprint
+            t_idx = None
+            if instr.get("action") == "use_fingerprint":
+                t_idx = instr.get("matched_v_idx")
+            else:
+                t_idx = instr.get("mbz_track_index")
+
+            if t_idx is not None and t_idx < len(mbz_album.get("tracks", [])):
                 mbz_track = mbz_album["tracks"][t_idx]
+            else:
+                if t_idx is not None:
+                    logger.warning(f"[{app_id}] MBZ track index {t_idx} out of range (max: {len(mbz_album.get('tracks', []))-1})")
+                mbz_track = None
 
         # PICS_API (Steam PICS Tracks Data)
         pics_track = None
-        # Remove leading numbers and separators from clean_title for fuzzy matching (same as track_grouper)
-        fuzzy_clean_title = re.sub(r'^(\d+[\s._-]+)+', '', clean_title)
-        fuzzy_clean_title = re.sub(r'\.[a-zA-Z0-9]+$', '', fuzzy_clean_title) # Remove extension if any
-        fuzzy_clean_title = re.sub(r'[^a-zA-Z0-9]', ' ', fuzzy_clean_title)
-        fuzzy_clean_title = " ".join(fuzzy_clean_title.split()).lower()
+        
+        # Use matched_v_idx from LLM if action is use_steam
+        # RELAXED HEURISTIC: If LLM suggested use_fingerprint but there's no MBZ track found
+        # (common hallucination when fingerprint is missing), try using it as a Steam index.
+        s_idx = instr.get("matched_v_idx")
+        is_steam_action = (instr.get("action") == "use_steam")
+        is_misidentified_fingerprint = (instr.get("action") == "use_fingerprint" and not mbz_track)
 
-        for t in steam_meta.store_tracklist:
-            t_title = t.get("title", "")
-            # Normalize store title in the same way TrackManager does for filenames
-            norm_t_title = re.sub(r'[^a-zA-Z0-9]', ' ', t_title)
-            norm_t_title = " ".join(norm_t_title.split()).lower()
+        if (is_steam_action or is_misidentified_fingerprint) and s_idx is not None:
+            if s_idx < len(steam_meta.store_tracklist):
+                pics_track = steam_meta.store_tracklist[s_idx]
+                if is_misidentified_fingerprint:
+                    logger.debug(f"[{app_id}] Corrected misidentified fingerprint action to Steam index {s_idx} for track '{clean_title}'")
+        
+        if not pics_track:
+            # Fallback to fuzzy matching
+            fuzzy_clean_title = re.sub(r'^(\d+[\s._-]+)+', '', clean_title)
+            fuzzy_clean_title = re.sub(r'\.[a-zA-Z0-9]+$', '', fuzzy_clean_title)
+            fuzzy_clean_title = re.sub(r'[^a-zA-Z0-9]', ' ', fuzzy_clean_title)
+            fuzzy_clean_title = " ".join(fuzzy_clean_title.split()).lower()
+
+            exact_match = None
+            prefix_match = None
+            for t in steam_meta.store_tracklist:
+                t_title = t.get("title") or t.get("name", "")
+                norm_t_title = re.sub(r'[^a-zA-Z0-9]', ' ', t_title)
+                norm_t_title = " ".join(norm_t_title.split()).lower()
+                
+                if norm_t_title == fuzzy_clean_title:
+                    exact_match = t
+                    break
+                if not prefix_match and fuzzy_clean_title.startswith(norm_t_title + " "):
+                    prefix_match = t
             
-            if norm_t_title == fuzzy_clean_title or fuzzy_clean_title.startswith(norm_t_title + " "):
-                pics_track = t
-                break
+            pics_track = exact_match or prefix_match
+
         with open("/tmp/builder_debug.log", "a") as dbgf:
             dbgf.write(f"\n--- {clean_title} ---\n")
-            dbgf.write(f"fuzzy_clean_title: {fuzzy_clean_title}\n")
             if pics_track:
                 dbgf.write(f"Matched PICS: {pics_track.get('title')} (Disc {pics_track.get('disc')})\n")
             else:
@@ -112,39 +142,43 @@ class MetadataBuilder:
         # --- 2. Dynamic Priority Resolution with Fallback ---
 
         # 2.1 TIT2 (曲名)
-        res_title = None
-        chosen_src = "VDF"
-        tit2_priority = priorities.get("TIT2", "FILE,EMBED,VDF,VGMDB,MBZ,PICS_API")
-        for src in tit2_priority.split(","):
-            src = src.strip().upper()
-            val = None
-            if src == "FILE" and adopted_info.get("path"):
-                val = adopted_info["path"].stem
-            elif src == "EMBED":
-                val = local_tags.get("title")
-            elif src == "VDF":
-                val = clean_title
-            elif src == "VGMDB" and vgmdb_data:
-                t_idx = instr.get("vdb_track_index") or instr.get("vgmdb_track_index")
-                if t_idx: val = vgmdb_data["tracks"].get(str(t_idx))
-            elif src == "MBZ" and mbz_track:
-                val = mbz_track.get("title") if isinstance(mbz_track, dict) else str(mbz_track)
-            elif src == "PICS_API" and pics_track:
-                val = pics_track.get("title")
-            
-            if val and str(val).strip():
-                res_title = str(val).strip()
-                chosen_src = src
-                # Apply Plan B Truncation Logic (60 chars)
-                if " / " in res_title and len(res_title) > 60:
-                    # Preserving only the local (Japanese) part if combined is too long
-                    parts = res_title.split(" / ", 1)
-                    res_title = parts[0].strip()
-                    logger.debug(f"Bilingual title truncated to local only (length > 60): {res_title}")
-                break
+        res_title = instr.get("override_title")
+        chosen_src = "LLM_OVERRIDE" if res_title else "VDF"
+        
+        if not res_title:
+            tit2_priority = priorities.get("TIT2", "FILE,EMBED,VDF,VGMDB,MBZ,PICS_API")
+            for src in tit2_priority.split(","):
+                src = src.strip().upper()
+                val = None
+                if src == "FILE" and adopted_info.get("path"):
+                    val = adopted_info["path"].stem
+                elif src == "EMBED":
+                    val = local_tags.get("title")
+                elif src == "VDF":
+                    val = clean_title
+                elif src == "VGMDB" and vgmdb_data:
+                    t_idx = instr.get("vdb_track_index") or instr.get("vgmdb_track_index")
+                    if t_idx: val = vgmdb_data["tracks"].get(str(t_idx))
+                elif src == "MBZ" and mbz_track:
+                    val = mbz_track.get("title") if isinstance(mbz_track, dict) else str(mbz_track)
+                elif src == "PICS_API" and pics_track:
+                    val = pics_track.get("title") or pics_track.get("name")
+                
+                if val and str(val).strip():
+                    res_title = str(val).strip()
+                    chosen_src = src
+                    # Apply Plan B Truncation Logic (60 chars)
+                    if " / " in res_title and len(res_title) > 60:
+                        parts = res_title.split(" / ", 1)
+                        res_title = parts[0].strip()
+                        logger.debug(f"Bilingual title truncated to local only (length > 60): {res_title}")
+                    break
+        
         if not res_title:
             res_title = clean_title
             chosen_src = "VDF"
+            
+        res_title = MetadataBuilder._clean_title_logic(res_title, instr.get("override_track"))
 
         # 2.2 TPE1 (アーティスト)
         res_artist = None
@@ -174,47 +208,51 @@ class MetadataBuilder:
             res_artist = steam_meta.developer or "Various Artists"
 
         # 2.3 TRCK (トラック番号)
-        res_track = None
-        trck_priority = priorities.get("TRCK", "VGMDB,PICS_API,MBZ,FILE,EMBED")
-        for src in trck_priority.split(","):
-            src = src.strip().upper()
-            val = None
-            if src == "VGMDB" and vgmdb_data:
-                val = instr.get("vgmdb_track_index")
-            elif src == "FILE":
-                val = adopted_info.get("filename_track")
-            elif src == "EMBED":
-                val = local_tags.get("track_number")
-            elif src == "MBZ" and mbz_track:
-                val = mbz_track.get("position") if isinstance(mbz_track, dict) else None
-            elif src == "PICS_API" and pics_track:
-                val = pics_track.get("number")
-            
-            if val and str(val).strip() and str(val).strip() != "0":
-                res_track = str(val).strip()
-                break
-        if not res_track:
+        res_track = str(instr.get("override_track") or "")
+        if not res_track or res_track == "0":
+            trck_priority = priorities.get("TRCK", "VGMDB,PICS_API,MBZ,FILE,EMBED")
+            for src in trck_priority.split(","):
+                src = src.strip().upper()
+                val = None
+                if src == "VGMDB" and vgmdb_data:
+                    val = instr.get("vgmdb_track_index")
+                elif src == "FILE":
+                    val = adopted_info.get("filename_track")
+                elif src == "EMBED":
+                    val = local_tags.get("track_number")
+                elif src == "MBZ" and mbz_track:
+                    val = mbz_track.get("position") if isinstance(mbz_track, dict) else None
+                elif src == "PICS_API" and pics_track:
+                    val = pics_track.get("number")
+                
+                if val and str(val).strip() and str(val).strip() != "0":
+                    res_track = str(val).strip()
+                    break
+        if not res_track or res_track == "0":
             res_track = str(adopted_info.get("filename_track") or 0)
 
         # 2.4 TPOS (ディスク番号)
-        res_disc = None
-        tpos_priority = priorities.get("TPOS", "VGMDB,PICS_API,EMBED,MBZ")
-        for src in tpos_priority.split(","):
-            src = src.strip().upper()
-            val = None
-            if src == "VGMDB" and vgmdb_data:
-                val = str(disc)
-            elif src == "PICS_API" and pics_track:
-                val = pics_track.get("disc")
-            elif src == "EMBED":
-                val = local_tags.get("disc_number")
-            elif src == "MBZ" and mbz_album:
-                # MBZ already provides disc/total format usually
-                val = f"{mbz_album.get('disc_number', disc)}/{mbz_album.get('total_discs', 1)}"
-            
-            if val and str(val).strip() and str(val).strip() != "0":
-                res_disc = str(val).strip()
-                break
+        res_disc = str(instr.get("override_disc") or "")
+        if not res_disc or res_disc == "0":
+            tpos_priority = priorities.get("TPOS", "VGMDB,PICS_API,EMBED,MBZ")
+            for src in tpos_priority.split(","):
+                src = src.strip().upper()
+                val = None
+                if src == "VGMDB" and vgmdb_data:
+                    val = str(disc)
+                elif src == "PICS_API" and pics_track:
+                    val = pics_track.get("disc")
+                elif src == "EMBED":
+                    val = local_tags.get("disc_number")
+                elif src == "MBZ" and mbz_track:
+                    val = str(mbz_track.get("disc", disc))
+                
+                if val and str(val).strip() and str(val).strip() != "0":
+                    res_disc = str(val).strip()
+                    break
+        
+        if not res_disc or res_disc == "0":
+            res_disc = str(disc)
         
         # Determine logical total discs for the denominator
         actual_total_discs = total_discs
@@ -224,12 +262,17 @@ class MetadataBuilder:
             if len(parts) > 1:
                 try:
                     explicit_total = int(parts[1].strip())
-                    if explicit_total >= disc:
-                        actual_total_discs = explicit_total
+                    actual_total_discs = max(actual_total_discs, explicit_total)
                 except ValueError: pass
 
         if not res_disc:
             res_disc = str(disc)
+        
+        # FINAL SAFETY: If res_disc is a number, ensure denominator is at least that number
+        try:
+            d_num = int(res_disc)
+            actual_total_discs = max(actual_total_discs, d_num)
+        except ValueError: pass
 
         # 2.5 TYER (発売年)
         res_year = None
@@ -276,6 +319,28 @@ class MetadataBuilder:
                 break
         if not res_label:
             res_label = f"{steam_meta.developer or steam_meta.publisher}"
+
+        # 2.7 TCOM (作曲者)
+        res_composer = instr.get("composer") or instr.get("TCOM")
+        if not res_composer or res_composer == "Unknown":
+            # Fallback to regex extraction from Steam credits
+            if steam_meta.store_credits:
+                # Common patterns in Steam credits: "Composer: XXX", "Music by XXX", etc.
+                patterns = [
+                    r'Composer:\s*(.*)',
+                    r'Music by\s*(.*)',
+                    r'Music:\s*(.*)',
+                    r'Sound by\s*(.*)',
+                    r'Soundtrack by\s*(.*)'
+                ]
+                for p in patterns:
+                    match = re.search(p, steam_meta.store_credits, re.IGNORECASE)
+                    if match:
+                        res_composer = match.group(1).split('\n')[0].strip()
+                        break
+        
+        if not res_composer:
+            res_composer = steam_meta.developer or "Unknown"
 
         # --- 3. Apply Overrides (LLM Correction) ---
         if instr.get("override_title"):
@@ -347,7 +412,7 @@ class MetadataBuilder:
             "label": res_label,
             "grouping": f"{target_name}, Steam",
             "comment": res_comment,
-            "composer": instr.get("TCOM", steam_meta.developer or "Unknown"),
+            "composer": res_composer,
             "year": res_year,
             "track_number": str(res_track).split('/')[0].strip(),
             "disc_number": f"{res_disc}/{actual_total_discs}",

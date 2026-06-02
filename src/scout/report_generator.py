@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from pathlib import Path
 from .models import SteamMetadata
 
@@ -76,7 +76,7 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
 """
 
     @staticmethod
-    def generate_html_report(app_id: int, steam_meta: SteamMetadata, status: str, message: str, score: int, reason: str, processed_tracks: List[Dict[str, Any]], llm_log: Dict[str, Any], mbz_candidates: List[Dict[str, Any]], localized_now_str: str, priority_str: str) -> str:
+    def generate_html_report(app_id: int, steam_meta: SteamMetadata, status: str, message: str, score: int, reason: str, processed_tracks: List[Dict[str, Any]], llm_log: Dict[str, Any], mbz_candidates: List[Dict[str, Any]], localized_now_str: str, priority_str: str, quality: Optional[int] = None) -> str:
         is_fast = llm_log.get("fast_track", False)
         status_class = "status-archive" if status == "archive" else "status-review"
         status_label = "🛡️ ARCHIVE SUCCESS" if status == "archive" else "🔍 REVIEW REQUIRED"
@@ -87,6 +87,8 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
             display_reason = "<strong>🛡️ DETERMINISTIC FAST-TRACK ENABLED</strong><br><br>This album was automatically verified by matching perfect evidence from MusicBrainz or PICS. LLM inference was bypassed to maintain 100% data integrity."
 
         p1_res = llm_log.get("phase1_res", {})
+        if quality is None:
+            quality = int(p1_res.get("integrity_quality", 0))
         global_tags = p1_res.get("global_tags", {})
         chosen_idx = global_tags.get("chosen_mbz_index")
         chosen_id = global_tags.get("chosen_mbz_id")
@@ -170,7 +172,7 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
         <div class="card">
             <h3>LLM Metrics</h3>
             <p><strong>Identity Confidence:</strong> {p1_res.get('identity_confidence', 'N/A')}%<br>
-            <strong>Integrity Quality:</strong> {p1_res.get('integrity_quality', 'N/A')}%<br>
+            <strong>Integrity Quality:</strong> {quality}%<br>
             <strong>Decision Ratio:</strong> Arch {p1_res.get('archive_vs_review_ratio', {}).get('archive', 0)}% : Rev {p1_res.get('archive_vs_review_ratio', {}).get('review', 0)}%</p>
         </div>
     </div>
@@ -288,6 +290,7 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
                 .badge-fallback {{ background-color: #9b59b6; }}
                 .badge-mbz {{ background-color: #2ecc71; }}
                 .badge-trust {{ background-color: #f1c40f; color: #333; }}
+                .badge-duplicate {{ background-color: #e74c3c; }}
             </style>
         </head>
         <body>
@@ -324,6 +327,7 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
             if "fallback" in m_lower: badges.append('<span class="badge badge-fallback">Fallback</span>')
             if "mbz" in m_lower: badges.append('<span class="badge badge-mbz">MBZ Match</span>')
             if "trust" in m_lower: badges.append('<span class="badge badge-trust">Trust Tier</span>')
+            if "duplicate titles" in m_lower: badges.append('<span class="badge badge-duplicate">Duplicate Titles</span>')
             
             badge_str = "".join(badges)
             

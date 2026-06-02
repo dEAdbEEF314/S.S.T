@@ -1,8 +1,6 @@
 import logging
 from typing import Dict, Any, List, Optional, Tuple
-from pathlib import Path
 from collections import Counter
-import re
 
 from .ident.acoustid import AcoustIDIdentifier
 from .ident.mbz import MusicBrainzIdentifier
@@ -11,9 +9,10 @@ from .models import SteamMetadata
 logger = logging.getLogger("scout.virtual_album")
 
 class VirtualAlbumBuilder:
-    def __init__(self, acoustid_client: AcoustIDIdentifier, mbz_client: MusicBrainzIdentifier):
+    def __init__(self, acoustid_client: AcoustIDIdentifier, mbz_client: MusicBrainzIdentifier, fingerprint_all: bool = False):
         self.acoustid = acoustid_client
         self.mbz = mbz_client
+        self.fingerprint_all = fingerprint_all
 
     def build_fingerprint_album(self, track_groups: Dict[Tuple[int, str], List[Dict[str, Any]]], on_track_complete: Optional[callable] = None) -> Optional[Dict[str, Any]]:
         """
@@ -24,11 +23,28 @@ class VirtualAlbumBuilder:
         all_release_ids = []
         track_results = {}
         
-        # Step 1: Scan all tracks
+        # Step 1: Scan tracks (Full or Sampled)
         target_keys = list(track_groups.keys())
+        sampled_keys = target_keys
+        
+        # Apply sampling if not fingerprint_all and album is large
+        if not self.fingerprint_all and len(target_keys) > 3:
+            mid = len(target_keys) // 2
+            sampled_keys = [target_keys[0], target_keys[mid], target_keys[-1]]
+            logger.info(f"Sampling mode: Scanning {len(sampled_keys)}/{len(target_keys)} tracks.")
+        else:
+            logger.info(f"Full scan mode: Scanning all {len(target_keys)} tracks.")
+
         for i, key in enumerate(target_keys):
+            if key not in sampled_keys:
+                if on_track_complete:
+                    on_track_complete()
+                continue
+
             variants = track_groups[key]
             if not variants:
+                if on_track_complete:
+                    on_track_complete()
                 continue
             
             # Use the best quality file for fingerprinting
@@ -153,7 +169,8 @@ class VirtualAlbumBuilder:
                     "title": best_match["title"],
                     "duration_ms": best_match["duration_ms"],
                     "mbid": best_match["mbid"],
-                    "credits": best_match["credits"]
+                    "credits": best_match["credits"],
+                    "mbz_track_index": mb_all_tracks.index(best_match)
                 })
             else:
                 virtual_album["tracks"].append({
@@ -163,7 +180,8 @@ class VirtualAlbumBuilder:
                     "title": None,
                     "duration_ms": None,
                     "mbid": None,
-                    "credits": None
+                    "credits": None,
+                    "mbz_track_index": None
                 })
         
         # Physical confidence hint
@@ -189,9 +207,9 @@ class VirtualAlbumBuilder:
         for track in steam_meta.store_tracklist:
             virtual_album["tracks"].append({
                 "disc": int(track.get("disc", 1)),
-                "track_num": int(track.get("track_number", 0)),
-                "title": track.get("name"),
-                "duration_ms": None
+                "track_num": int(track.get("number") or track.get("track_number") or 0),
+                "title": track.get("title") or track.get("name"),
+                "duration_ms": (int(track.get("duration_s", 0)) * 1000) if track.get("duration_s") else None
             })
             
         return virtual_album

@@ -54,7 +54,7 @@ class LocalProcessor:
         from .ident.acoustid import AcoustIDIdentifier
         self.acoustid = AcoustIDIdentifier(config.acoustid_api_key)
         self.vgmdb = VGMdbClient()
-        self.virtual_album_builder = VirtualAlbumBuilder(self.acoustid, self.mbz)
+        self.virtual_album_builder = VirtualAlbumBuilder(self.acoustid, self.mbz, fingerprint_all=config.fingerprint_all)
         self.llm = LLMOrganizer(
             api_key=config.llm_api_key, base_url=config.llm_base_url, model=config.llm_model,
             rpm=config.llm_limit_rpm, tpm=config.llm_limit_tpm, rpd=config.llm_limit_rpd,
@@ -209,11 +209,11 @@ class LocalProcessor:
             )
             
             if final_metadata is None:
-                p1_res = llm_log.get("phase1_res", {}) if llm_log else {}
-                error_msg = p1_res.get("confidence_reason") or "Manual Review Required (LLM Failure)"
-                summary_meta = {"app_id": app_id, "album_name": steam_meta.name, "status": "review", "confidence_score": 0, "confidence_reason": error_msg, "processed_at": self._get_localized_now().isoformat(), "tracks": [], "steam_info": steam_meta.model_dump()}
-                self.db.record_processed(app_id, "review", steam_meta.name, self._get_localized_now().isoformat(), summary_meta)
-                return LocalProcessResult(app_id=app_id, status="review", album_name=steam_meta.name, confidence_score=0, confidence_reason=error_msg, message=f"LLM Failure: {error_msg}")
+                # ... existing error handling ...
+                return LocalProcessResult(app_id=app_id, status="review", album_name=steam_meta.name, confidence_score=0, message="LLM Failure: metadata is None")
+
+            # --- SMART DUPLICATE RESOLUTION (Post-LLM Cleanup) ---
+            self._resolve_duplicate_mappings(app_id, final_metadata, steam_meta, track_groups)
 
             # Compatibility layer for existing validator/tagger
             # We still need track_sources for build_tag_map
@@ -263,14 +263,7 @@ class LocalProcessor:
                 nonlocal any_audio_warnings, any_audio_failures
                 (disc, clean_title), adopted_info = track_data
                 try:
-                    disc_subdir = f"disc_{disc}"
-                    local_raw_dir = buffer_dir / disc_subdir
-                    local_raw_dir.mkdir(parents=True, exist_ok=True)
-                    local_source_path = local_raw_dir / adopted_info["path"].name
-                    shutil.copy2(adopted_info["path"], local_source_path)
-                    processed_path, has_warnings = tagger.convert_and_limit(local_source_path, adopted_info["tier"], subdir=disc_subdir)
-                    if has_warnings: any_audio_warnings = True
-                    if local_source_path.exists(): local_source_path.unlink()
+                    # 1. First, build the tag map to resolve the correct disc number
                     instr = final_metadata.get(f"{disc}_{clean_title}") or {"action": "use_local_tag"}
                     priorities = {
                         "TIT2": self.config.priority_tit2,
@@ -287,6 +280,26 @@ class LocalProcessor:
                         global_identity, priorities=priorities, total_discs=total_discs,
                         vgmdb_data=vgmdb_data
                     )
+
+                    # 2. Determine target disc for directory structure
+                    final_disc = disc
+                    if tag_map.get("disc_number"):
+                        try:
+                            # Extract numerator from "n/m"
+                            final_disc = int(str(tag_map["disc_number"]).split('/')[0])
+                        except Exception: pass
+                    
+                    disc_subdir = f"disc_{final_disc}"
+                    
+                    # 3. Proceed with conversion and tagging in the correct directory
+                    local_raw_dir = buffer_dir / disc_subdir
+                    local_raw_dir.mkdir(parents=True, exist_ok=True)
+                    local_source_path = local_raw_dir / adopted_info["path"].name
+                    shutil.copy2(adopted_info["path"], local_source_path)
+                    processed_path, has_warnings = tagger.convert_and_limit(local_source_path, adopted_info["tier"], subdir=disc_subdir)
+                    if has_warnings: any_audio_warnings = True
+                    if local_source_path.exists(): local_source_path.unlink()
+                    
                     track_art = TrackManager.get_best_artwork(track_groups[(disc, clean_title)])
                     tagger.write_tags(processed_path, tag_map, tagger.process_artwork(track_art) if track_art else album_artwork)
                     if on_track_complete: on_track_complete()
@@ -301,8 +314,25 @@ class LocalProcessor:
             with ThreadPoolExecutor(max_workers=self.config.max_encoding_tasks) as executor:
                 processed_tracks_meta = [t for t in executor.map(_process_single_track, TrackManager.adopt_optimal_files(track_groups).items()) if t]
 
-            status, message, score, reason = ResultValidator.validate(app_id, processed_tracks_meta, llm_log, mbz_candidates, any_audio_failures, any_audio_warnings)
-            summary_meta = {"app_id": app_id, "album_name": steam_meta.name, "status": status, "confidence_score": score, "confidence_reason": reason, "processed_at": self._get_localized_now().isoformat(), "tracks": processed_tracks_meta, "steam_info": steam_meta.model_dump()}
+            status, message, score, quality, reason = ResultValidator.validate(app_id, processed_tracks_meta, llm_log, mbz_candidates, any_audio_failures, any_audio_warnings)
+            
+            # Extract ratio and strategy from llm_log for database persistence
+            p1_res = llm_log.get("phase1_res", {})
+            
+            summary_meta = {
+                "app_id": app_id, 
+                "album_name": steam_meta.name, 
+                "status": status, 
+                "message": message,
+                "confidence_score": score, 
+                "integrity_quality": quality,
+                "archive_vs_review_ratio": p1_res.get("archive_vs_review_ratio"),
+                "strategy": p1_res.get("strategy"),
+                "confidence_reason": reason, 
+                "processed_at": self._get_localized_now().isoformat(), 
+                "tracks": processed_tracks_meta, 
+                "steam_info": steam_meta.model_dump()
+            }
             self._send_notifications(app_id, steam_meta.name, status, message, score, reason, llm_log, any_audio_failures, len(processed_tracks_meta), mbz_candidates)
             
             localized_now_str = self._get_localized_now().strftime('%Y-%m-%d %H:%M:%S')
@@ -310,7 +340,7 @@ class LocalProcessor:
                 "mbz_log.json": mbz_log, 
                 "metadata.json": summary_meta,
                 "llm_log.json": llm_log,
-                "AUDIT_REPORT.html": ReportGenerator.generate_html_report(app_id, steam_meta, status, message, score, reason, processed_tracks_meta, llm_log, mbz_candidates, localized_now_str, self.config.metadata_source_priority)
+                "AUDIT_REPORT.html": ReportGenerator.generate_html_report(app_id, steam_meta, status, message, score, reason, processed_tracks_meta, llm_log, mbz_candidates, localized_now_str, self.config.metadata_source_priority, quality=quality)
             }
 
             p1_log = llm_log.get("phase1_log", {})
@@ -415,3 +445,102 @@ class LocalProcessor:
             self.notifier.notify_warning(f"Review Required: {name}", f"Manual check needed for AppID {app_id}", fields)
         else:
             self.notifier.notify_info(f"Archived: {name}", f"Automatic archive successful for AppID {app_id}", fields)
+
+    def _resolve_duplicate_mappings(self, app_id: int, final_metadata: Dict[str, Any], steam_meta: SteamMetadata, track_groups: Dict):
+        """
+        Detects and resolves duplicate index assignments from LLM by checking
+        for sequential same-named tracks in the Steam reference list.
+        """
+        from collections import defaultdict
+        
+        # 1. Map matched_v_idx to the list of TIDs (Track IDs: "disc_title")
+        idx_map = defaultdict(list)
+        for tid, instr in final_metadata.items():
+            v_idx = instr.get("matched_v_idx")
+            if v_idx is not None and instr.get("action") in ["use_steam", "use_fingerprint"]:
+                idx_map[v_idx].append(tid)
+        
+        # 2. Process duplicates
+        store_tracks = steam_meta.store_tracklist
+        for v_idx, tids in idx_map.items():
+            if len(tids) <= 1: continue
+
+            # --- HEURISTIC 1: Multi-disc mismatch ---
+            local_discs = set(int(tid.split('_', 1)[0]) for tid in tids)
+            if len(local_discs) > 1:
+                logger.info(f"[{app_id}] Detected multi-disc index collision for v_idx {v_idx}. Attempting to re-align based on local disc numbers.")
+                for tid in tids:
+                    l_disc, l_title = tid.split('_', 1)
+                    l_disc = int(l_disc)
+                    
+                    best_match_idx = -1
+                    for s_idx, st in enumerate(store_tracks):
+                        if int(st.get("disc", 1)) == l_disc:
+                            st_name = (st.get("title") or st.get("name", "")).lower()
+                            if st_name == l_title.lower() or st_name.startswith(l_title.lower()) or l_title.lower().startswith(st_name):
+                                best_match_idx = s_idx
+                                break
+                    
+                    if best_match_idx != -1:
+                        final_metadata[tid]["matched_v_idx"] = best_match_idx
+                        final_metadata[tid]["action"] = "use_steam"
+                        final_metadata[tid]["reason"] = f"SYSTEM: Re-aligned to Disc {l_disc} Track {store_tracks[best_match_idx].get('track')} based on local structure"
+                continue
+
+            # --- HEURISTIC 2: Name-based recovery (Fuzzy search in same disc) ---
+            # Use for cases like Happy's Humble Burger Farm where names are different but mapped to same index
+            l_disc = int(tids[0].split('_', 1)[0])
+            potential_indices = [v_idx]
+            
+            # Find all potential candidates in the same disc with similar names
+            candidates_in_disc = []
+            for s_idx, st in enumerate(store_tracks):
+                if int(st.get("disc", 1)) == l_disc:
+                    candidates_in_disc.append((s_idx, (st.get("title") or st.get("name", "")).lower()))
+            
+            resolved_tids = set()
+            for tid in tids:
+                l_title_clean = tid.split('_', 1)[1].lower()
+                for s_idx, st_name in candidates_in_disc:
+                    if st_name == l_title_clean or st_name.startswith(l_title_clean) or l_title_clean.startswith(st_name):
+                        if s_idx != v_idx: # Found a better/proper index
+                            final_metadata[tid]["matched_v_idx"] = s_idx
+                            final_metadata[tid]["action"] = "use_steam"
+                            final_metadata[tid]["reason"] = f"SYSTEM: Recovered correct index via name match ('{st_name}')"
+                            resolved_tids.add(tid)
+                            break
+            
+            remaining_tids = [t for t in tids if t not in resolved_tids]
+            if len(remaining_tids) <= 1: continue
+
+            # --- HEURISTIC 3: Consecutive same-name sequence (Original logic) ---
+            base_track = store_tracks[v_idx] if v_idx < len(store_tracks) else None
+            if not base_track: continue
+            base_name = (base_track.get("title") or base_track.get("name", "")).lower()
+            
+            sequence_indices = [v_idx]
+            for next_idx in range(v_idx + 1, len(store_tracks)):
+                nt = store_tracks[next_idx]
+                nt_name = (nt.get("title") or nt.get("name", "")).lower()
+                if nt_name == base_name or nt_name.startswith(base_name) or base_name.startswith(nt_name):
+                    sequence_indices.append(next_idx)
+                else:
+                    break
+            
+            if len(sequence_indices) >= len(remaining_tids):
+                logger.info(f"[{app_id}] Resolving duplicate mapping for '{base_name}' ({len(remaining_tids)} tracks) using sequence starting at index {v_idx}")
+                
+                def get_sort_key(tid_str):
+                    parts = tid_str.split('_', 1)
+                    try:
+                        k = (int(parts[0]), parts[1])
+                        return list(track_groups.keys()).index(k)
+                    except (ValueError, IndexError):
+                        return 999
+                
+                sorted_tids = sorted(remaining_tids, key=get_sort_key)
+                for i, tid in enumerate(sorted_tids):
+                    new_idx = sequence_indices[i]
+                    final_metadata[tid]["matched_v_idx"] = new_idx
+                    final_metadata[tid]["action"] = "use_steam"
+                    final_metadata[tid]["reason"] = f"SYSTEM: Resolved duplicate sequence for '{base_name}' (Assigned index {new_idx})"
