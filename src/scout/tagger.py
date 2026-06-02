@@ -83,10 +83,11 @@ class AudioTagger:
             year_val = tag_map["year"][:4] if tag_map.get("year") else "0000"
             tags.add(TYER(encoding=3, text=year_val))
 
-            tags.add(TRCK(encoding=3, text=tag_map["track_number"]))
-            tags.add(TPOS(encoding=3, text=tag_map["disc_number"]))
-            tags.add(TCOM(encoding=3, text=tag_map["composer"]))
-            tags.add(TIT1(encoding=3, text=tag_map["grouping"]))
+            tags.add(TRCK(encoding=3, text=tag_map["track_number"] or "0"))
+            tags.add(TPOS(encoding=3, text=tag_map["disc_number"] or "1/1"))
+            if tag_map.get("composer"):
+                tags.add(TCOM(encoding=3, text=tag_map["composer"]))
+            tags.add(TIT1(encoding=3, text=tag_map["grouping"] or ""))
 
             # Comment logic
             comment_text = tag_map["comment"]

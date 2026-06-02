@@ -185,11 +185,12 @@ def main():
     parser.add_argument("--all", action="store_true", help="Process all unprocessed soundtracks")
     parser.add_argument("--limit", "-n", type=int)
     parser.add_argument("--force", "-f", action="store_true")
-    parser.add_argument("--appid", type=int)
+    parser.add_argument("--appid", type=str, help="Single AppID or comma-separated list of AppIDs")
     parser.add_argument("--dev", action="store_true", help="Run in development mode (DEBUG logs, unique log files)")
     parser.add_argument("--reset-db", action="store_true")
     parser.add_argument("--finalize", action="store_true", help="Ingest corrected metadata from review folders into DB")
     parser.add_argument("--fingerprint-all", action="store_true", help="Scan every track with AcoustID (slow but extremely precise)")
+    parser.add_argument("--yes", "-y", action="store_true", help="Bypass confirmation prompts (Automated mode)")
     args = parser.parse_args()
     console = Console()
 
@@ -206,7 +207,7 @@ def main():
         
         # Handle Fingerprint-all confirmation
         if args.fingerprint_all:
-            if handle_fingerprint_all_confirm(console):
+            if args.yes or handle_fingerprint_all_confirm(console):
                 config.fingerprint_all = True
             else:
                 return console.print("[yellow]Aborted.[/yellow]")
@@ -231,7 +232,7 @@ def main():
         db = DatabaseManager(Path(config.sst_db_path))
         if args.finalize: return handle_finalize(config, db, console)
         if args.all:
-            if not handle_all_confirm(console): return
+            if not (args.yes or handle_all_confirm(console)): return
 
         log_file = setup_logging(config, console, is_dev=args.dev)
         logger.info(f"SST starting. Log level: {config.log_level}. File: {log_file}")
@@ -248,7 +249,15 @@ def main():
         processor = LocalProcessor(config, db)
         runner = JobRunner(config, processor, console)
 
-        soundtracks = scanner.find_soundtracks(force=args.force, limit=args.limit, is_processed_callback=db.is_already_processed, target_appid=args.appid)
+        # Handle batch AppIDs
+        target_appids = None
+        if args.appid:
+            try:
+                target_appids = [int(aid.strip()) for aid in args.appid.split(',')]
+            except ValueError:
+                return console.print(f"[bold red]❌ Error: Invalid AppID list: {args.appid}[/bold red]")
+
+        soundtracks = scanner.find_soundtracks(force=args.force, limit=args.limit, is_processed_callback=db.is_already_processed, target_appids=target_appids)
         if not soundtracks: return logger.info("No soundtracks found.")
 
         start_time = datetime.now()
