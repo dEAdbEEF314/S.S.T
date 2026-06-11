@@ -47,7 +47,7 @@ class AcoustIDIdentifier:
             
             # Lookup AcoustID
             # meta="recordings releases" gives us MB Recording IDs and associated Release IDs
-            results = acoustid.lookup(self.api_key, fingerprint, duration, meta="recordings releases")
+            results = acoustid.lookup(self.api_key, fingerprint, duration, meta="recordings releases", timeout=10.0)
             logger.debug(f"AcoustID lookup completed for {file_path.name}.")
 
             candidates = []

@@ -11,7 +11,6 @@ from .models import SteamMetadata, LocalProcessResult
 from .tagger import AudioTagger
 from .llm import LLMOrganizer
 from .ident.mbz import MusicBrainzIdentifier
-from .ident.vgmdb import VGMdbClient
 from .notify import NotificationManager
 from .db import DatabaseManager
 from .builder import MetadataBuilder
@@ -53,7 +52,6 @@ class LocalProcessor:
         self.mbz = MusicBrainzIdentifier(config.mbz_app_name, config.mbz_app_version, config.mbz_contact, scoring_config=mbz_scoring)
         from .ident.acoustid import AcoustIDIdentifier
         self.acoustid = AcoustIDIdentifier(config.acoustid_api_key)
-        self.vgmdb = VGMdbClient()
         self.virtual_album_builder = VirtualAlbumBuilder(self.acoustid, self.mbz, fingerprint_all=config.fingerprint_all)
         self.llm = LLMOrganizer(
             api_key=config.llm_api_key, base_url=config.llm_base_url, model=config.llm_model,
@@ -76,93 +74,58 @@ class LocalProcessor:
         import os
         return datetime.now(timezone(timedelta(hours=9))) if os.environ.get("TZ") == "Asia/Tokyo" else datetime.now(timezone.utc)
 
-    def _check_fast_track(self, app_id: int, steam_meta: SteamMetadata, track_groups: Dict, mbz_candidates: List[Dict], vgmdb_data: Optional[Dict] = None) -> Tuple[bool, Optional[Dict], Optional[Dict]]:
-        if not mbz_candidates and not vgmdb_data: return False, None, None
+    def _check_fast_track(self, app_id: int, steam_meta: SteamMetadata, track_groups: Dict, mbz_candidates: List[Dict]) -> Tuple[bool, Optional[Dict], Optional[Dict]]:
+        if not mbz_candidates: return False, None, None
         
         best = mbz_candidates[0] if mbz_candidates else {}
         evidence = best.get("evidence", [])
         has_strong_link = any(e in evidence for e in ["DIRECT_STEAM_LINK", "DIRECT_STEAMDB_LINK"]) or any(e.startswith("ACOUSTID_MATCH") for e in evidence)
         
-        # If we have VGMdb data, it's a massive trust boost
-        if vgmdb_data:
-            has_strong_link = True
-            logger.info(f"[{app_id}] Fast-track: VGMdb bilingual metadata available.")
-
         if not has_strong_link: return False, None, None
         
         local_count = len(track_groups)
         mbz_count = best.get("track_count", 0)
         
         # Validation
-        if vgmdb_data:
-            # VGMdb tracks are 1-based in my fetch_bilingual_metadata return
-            if local_count != len(vgmdb_data["tracks"]):
-                logger.warning(f"[{app_id}] Fast-track aborted: Track count mismatch (Local: {local_count}, VGMdb: {len(vgmdb_data['tracks'])})")
-                return False, None, None
-        elif local_count != mbz_count: 
+        if local_count != mbz_count: 
             return False, None, None
 
         logger.info(f"[{app_id}] Fast-track enabled: Absolute evidence found.")
         
         # Global Identity Construction
-        if vgmdb_data:
-            global_id = {
-                "canonical_album_artist": vgmdb_data.get("artist_ja") or best.get("artist") or steam_meta.developer,
-                "canonical_genre": vgmdb_data.get("genre_ja") or steam_meta.genres[0] if steam_meta.genres else "Game Music",
-                "canonical_year": vgmdb_data.get("year") or (steam_meta.release_date[:4] if steam_meta.release_date else None) or best.get("year") or "0000",
-                "canonical_label": best.get("label") or steam_meta.label or steam_meta.publisher,
-                "chosen_mbz_index": 0,
-                "vgmdb_album_ja": vgmdb_data.get("album_ja"),
-                "vgmdb_album_en": vgmdb_data.get("album_en")
-            }
-        else:
-            global_id = {
-                "canonical_album_artist": best.get("artist") or steam_meta.developer,
-                "canonical_genre": steam_meta.genres[0] if steam_meta.genres else "Game Music",
-                "canonical_year": (steam_meta.release_date[:4] if steam_meta.release_date else None) or best.get("year") or "0000",
-                "canonical_label": best.get("label") or steam_meta.label or steam_meta.publisher,
-                "chosen_mbz_index": 0
-            }
+        global_id = {
+            "canonical_album_artist": best.get("artist") or steam_meta.developer,
+            "canonical_genre": steam_meta.genres[0] if steam_meta.genres else "Game Music",
+            "canonical_year": (steam_meta.release_date[:4] if steam_meta.release_date else None) or best.get("year") or "0000",
+            "canonical_label": best.get("label") or steam_meta.label or steam_meta.publisher,
+            "chosen_mbz_index": 0
+        }
         
         final_map = {}
         
         # Mapping Logic
-        if vgmdb_data:
-            # If we have VGMdb, we assume the order matches because we queried by DiscID (offsets)
-            # This is much safer than text matching.
-            for i, (key, variants) in enumerate(track_groups.items()):
-                disc_num, clean_title = key
-                tid = f"{disc_num}_{clean_title}"
-                # CDDB tracks are usually 0-indexed in raw, but my fetcher made it 1-based
-                final_map[tid] = {
-                    "action": "use_vgmdb", 
-                    "vgmdb_track_index": i + 1, 
-                    "override_title": vgmdb_data["tracks"].get(i + 1),
-                    "reason": "Fast-track: VGMdb DiscID Match"
-                }
-        else:
-            # Original MBZ name-based matching
-            mbz_tracks = best.get("tracks", [])
-            # Use alphanumeric normalization consistent with TrackManager
-            def n_alpha(s): return re.sub(r'[^a-z0-9]', '', str(s).lower())
-            norm_mbz = [n_alpha(t.get("title", "")) for t in mbz_tracks]
+        # Original MBZ name-based matching
+        mbz_tracks = best.get("tracks", [])
+        # Use alphanumeric normalization consistent with TrackManager
+        def n_alpha(s): return re.sub(r'[^a-z0-9]', '', str(s).lower())
+        norm_mbz = [n_alpha(t.get("title", "")) for t in mbz_tracks]
+        
+        for key, variants in track_groups.items():
+            disc_num, clean_title = key
+            tid = f"{disc_num}_{clean_title}"
+            norm_local = n_alpha(clean_title)
             
-            for key, variants in track_groups.items():
-                disc_num, clean_title = key
-                tid = f"{disc_num}_{clean_title}"
-                norm_local = n_alpha(clean_title)
-                
-                found_idx = -1
-                for idx, n_mbz in enumerate(norm_mbz):
-                    if n_mbz == norm_local:
-                        found_idx = idx
-                        break
-                
-                if found_idx == -1:
-                    logger.warning(f"[{app_id}] Fast-track mapping failed for: {clean_title}")
-                    return False, None, None
-                
-                final_map[tid] = {"action": "use_mbz", "mbz_track_index": found_idx, "reason": "Fast-track: Perfect MBZ name alignment"}
+            found_idx = -1
+            for idx, n_mbz in enumerate(norm_mbz):
+                if n_mbz == norm_local:
+                    found_idx = idx
+                    break
+            
+            if found_idx == -1:
+                logger.warning(f"[{app_id}] Fast-track mapping failed for: {clean_title}")
+                return False, None, None
+            
+            final_map[tid] = {"action": "use_mbz", "mbz_track_index": found_idx, "reason": "Fast-track: Perfect MBZ name alignment"}
             
         return True, final_map, global_id
 
@@ -208,12 +171,9 @@ class LocalProcessor:
                 app_id, v_steam, v_fingerprint, v_local, num_ctx=num_ctx
             )
             
-            if final_metadata is None:
-                # ... existing error handling ...
-                return LocalProcessResult(app_id=app_id, status="review", album_name=steam_meta.name, confidence_score=0, message="LLM Failure: metadata is None")
-
             # --- SMART DUPLICATE RESOLUTION (Post-LLM Cleanup) ---
-            self._resolve_duplicate_mappings(app_id, final_metadata, steam_meta, track_groups)
+            if final_metadata:
+                self._resolve_duplicate_mappings(app_id, final_metadata, steam_meta, track_groups)
 
             # Compatibility layer for existing validator/tagger
             # We still need track_sources for build_tag_map
@@ -235,19 +195,22 @@ class LocalProcessor:
             
             # Identity and strategy for builder
             p1_res = llm_log.get("phase1_res", {})
-            global_identity = p1_res.get("global_tags", {})
+            global_identity = p1_res.get("global_tags", {}) if p1_res else {}
             
             # For now, we skip the old MusicBrainz Alignment and VGMdb Integration sections
-            # but we need to ensure the variables are defined.
-            vgmdb_data = None 
             
             # --- END OF NEW FLOW ---
-            if final_metadata is None:
+            if not final_metadata:
                 p1_log = llm_log.get("phase1_log", {})
-                error_msg = p1_log.get("error") or "Manual Review Required"
-                summary_meta = {"app_id": app_id, "album_name": steam_meta.name, "status": "review", "confidence_score": 0, "confidence_reason": error_msg, "processed_at": self._get_localized_now().isoformat(), "tracks": [], "steam_info": steam_meta.model_dump()}
+                score = p1_res.get("identity_confidence", 0) if isinstance(p1_res, dict) else 0
+                error_msg = p1_res.get("confidence_reason") if isinstance(p1_res, dict) else (p1_log.get("error") or "Manual Review Required")
+                summary_meta = {"app_id": app_id, "album_name": steam_meta.name, "status": "review", "confidence_score": score, "confidence_reason": error_msg, "processed_at": self._get_localized_now().isoformat(), "tracks": [], "steam_info": steam_meta.model_dump()}
                 self.db.record_processed(app_id, "review", steam_meta.name, self._get_localized_now().isoformat(), summary_meta)
-                return LocalProcessResult(app_id=app_id, status="review", album_name=steam_meta.name, confidence_score=0, confidence_reason=error_msg, message=f"LLM Failure: {error_msg}")
+                
+                if final_metadata is None:
+                    return LocalProcessResult(app_id=app_id, status="review", album_name=steam_meta.name, confidence_score=0, confidence_reason=error_msg, message=f"LLM Failure: {error_msg}")
+                else:
+                    return LocalProcessResult(app_id=app_id, status="review", album_name=steam_meta.name, confidence_score=score, confidence_reason=error_msg, message=f"Low Confidence: {error_msg}")
 
             run_id = datetime.now().strftime('%H%M%S')
             temp_output = self.working_dir / f"final_{app_id}_{run_id}"
@@ -277,8 +240,7 @@ class LocalProcessor:
                     tag_map = MetadataBuilder.build_tag_map(
                         app_id, disc, clean_title, adopted_info, steam_meta, instr, 
                         mbz_candidates, track_sources, self.config.user_language_639_2, 
-                        global_identity, priorities=priorities, total_discs=total_discs,
-                        vgmdb_data=vgmdb_data
+                        global_identity, priorities=priorities, total_discs=total_discs
                     )
 
                     # 2. Determine target disc for directory structure

@@ -43,8 +43,7 @@ class MetadataBuilder:
         user_language_639_2: str,
         global_identity: Dict[str, Any] = {},
         priorities: Optional[Dict[str, str]] = None,
-        total_discs: int = 1,
-        vgmdb_data: Optional[Dict] = None
+        total_discs: int = 1
     ) -> Dict[str, Any]:
         """
         Constructs the ID3v2.3 tag map based on merged sources, SST.md definitions,
@@ -54,12 +53,12 @@ class MetadataBuilder:
         # Set default priorities if not passed
         if priorities is None:
             priorities = {
-                "TIT2": "FILE,EMBED,VDF,VGMDB,MBZ,PICS_API",
-                "TPE1": "EMBED,VGMDB,MBZ,PICS_API",
-                "TRCK": "VGMDB,PICS_API,MBZ,FILE,EMBED",
-                "TPOS": "VGMDB,PICS_API,EMBED,MBZ",
-                "TYER": "EMBED,VGMDB,MBZ,WEB_API",
-                "TPUB": "VGMDB,MBZ,PICS_API",
+                "TIT2": "FILE,EMBED,VDF,MBZ,PICS_API",
+                "TPE1": "EMBED,MBZ,PICS_API",
+                "TRCK": "PICS_API,MBZ,FILE,EMBED",
+                "TPOS": "PICS_API,EMBED,MBZ",
+                "TYER": "EMBED,MBZ,WEB_API",
+                "TPUB": "MBZ,PICS_API",
             }
 
         # --- 1. Prepare Data Extractors ---
@@ -146,7 +145,7 @@ class MetadataBuilder:
         chosen_src = "LLM_OVERRIDE" if res_title else "VDF"
         
         if not res_title:
-            tit2_priority = priorities.get("TIT2", "FILE,EMBED,VDF,VGMDB,MBZ,PICS_API")
+            tit2_priority = priorities.get("TIT2", "FILE,EMBED,VDF,MBZ,PICS_API")
             for src in tit2_priority.split(","):
                 src = src.strip().upper()
                 val = None
@@ -156,9 +155,6 @@ class MetadataBuilder:
                     val = local_tags.get("title")
                 elif src == "VDF":
                     val = clean_title
-                elif src == "VGMDB" and vgmdb_data:
-                    t_idx = instr.get("vdb_track_index") or instr.get("vgmdb_track_index")
-                    if t_idx: val = vgmdb_data["tracks"].get(str(t_idx))
                 elif src == "MBZ" and mbz_track:
                     val = mbz_track.get("title") if isinstance(mbz_track, dict) else str(mbz_track)
                 elif src == "PICS_API" and pics_track:
@@ -182,14 +178,12 @@ class MetadataBuilder:
 
         # 2.2 TPE1 (アーティスト)
         res_artist = None
-        tpe1_priority = priorities.get("TPE1", "EMBED,VGMDB,MBZ,PICS_API")
+        tpe1_priority = priorities.get("TPE1", "EMBED,MBZ,PICS_API")
         for src in tpe1_priority.split(","):
             src = src.strip().upper()
             val = None
             if src == "EMBED":
                 val = local_tags.get("artist")
-            elif src == "VGMDB" and vgmdb_data:
-                val = vgmdb_data.get("artist_ja") or vgmdb_data.get("artist_en")
             elif src == "MBZ" and mbz_album:
                 val = mbz_album.get("artist")
             elif src == "PICS_API":
@@ -210,13 +204,11 @@ class MetadataBuilder:
         # 2.3 TRCK (トラック番号)
         res_track = str(instr.get("override_track") or "")
         if not res_track or res_track == "0":
-            trck_priority = priorities.get("TRCK", "VGMDB,PICS_API,MBZ,FILE,EMBED")
+            trck_priority = priorities.get("TRCK", "PICS_API,MBZ,FILE,EMBED")
             for src in trck_priority.split(","):
                 src = src.strip().upper()
                 val = None
-                if src == "VGMDB" and vgmdb_data:
-                    val = instr.get("vgmdb_track_index")
-                elif src == "FILE":
+                if src == "FILE":
                     val = adopted_info.get("filename_track")
                 elif src == "EMBED":
                     val = local_tags.get("track_number")
@@ -234,13 +226,11 @@ class MetadataBuilder:
         # 2.4 TPOS (ディスク番号)
         res_disc = str(instr.get("override_disc") or "")
         if not res_disc or res_disc == "0":
-            tpos_priority = priorities.get("TPOS", "VGMDB,PICS_API,EMBED,MBZ")
+            tpos_priority = priorities.get("TPOS", "PICS_API,EMBED,MBZ")
             for src in tpos_priority.split(","):
                 src = src.strip().upper()
                 val = None
-                if src == "VGMDB" and vgmdb_data:
-                    val = str(disc)
-                elif src == "PICS_API" and pics_track:
+                if src == "PICS_API" and pics_track:
                     val = pics_track.get("disc")
                 elif src == "EMBED":
                     val = local_tags.get("disc_number")
@@ -276,13 +266,11 @@ class MetadataBuilder:
 
         # 2.5 TYER (発売年)
         res_year = None
-        tyer_priority = priorities.get("TYER", "EMBED,VGMDB,MBZ,WEB_API")
+        tyer_priority = priorities.get("TYER", "EMBED,MBZ,WEB_API")
         for src in tyer_priority.split(","):
             src = src.strip().upper()
             val = None
-            if src == "VGMDB" and vgmdb_data:
-                val = vgmdb_data.get("year")
-            elif src == "WEB_API":
+            if src == "WEB_API":
                 val = steam_meta.release_date
             elif src == "MBZ" and mbz_album:
                 val = mbz_album.get("year")
@@ -301,15 +289,11 @@ class MetadataBuilder:
 
         # 2.6 TPUB (レーベル)
         res_label = None
-        tpub_priority = priorities.get("TPUB", "VGMDB,MBZ,PICS_API")
+        tpub_priority = priorities.get("TPUB", "MBZ,PICS_API")
         for src in tpub_priority.split(","):
             src = src.strip().upper()
             val = None
-            if src == "VGMDB" and vgmdb_data:
-                dtitle = vgmdb_data.get("album_ja") or ""
-                cat_match = re.search(r'\[([^\]]+)\]', dtitle)
-                if cat_match: val = cat_match.group(1)
-            elif src == "MBZ" and mbz_album:
+            if src == "MBZ" and mbz_album:
                 val = mbz_album.get("label")
             elif src == "PICS_API":
                 val = steam_meta.label or global_identity.get("canonical_label") or steam_meta.publisher
@@ -351,7 +335,7 @@ class MetadataBuilder:
         if instr.get("override_disc"): res_disc = str(instr["override_disc"])
 
         # --- 4. Final System-level Cleaning (Trust Tier Logic) ---
-        trusted_sources = [s.strip().upper() for s in (priorities.get("TRUSTED_TITLE_SOURCES") or "VGMDB,MBZ,PICS_API").split(",")]
+        trusted_sources = [s.strip().upper() for s in (priorities.get("TRUSTED_TITLE_SOURCES") or "MBZ,PICS_API").split(",")]
         
         if chosen_src not in trusted_sources:
             res_title = MetadataBuilder._clean_title_logic(res_title, res_track)
@@ -394,14 +378,6 @@ class MetadataBuilder:
 
         # --- 7. Construct Final Map ---
         res_album = steam_meta.name
-        if vgmdb_data:
-            ja_alb = vgmdb_data.get("album_ja")
-            en_alb = vgmdb_data.get("album_en")
-            if ja_alb and en_alb and ja_alb != en_alb:
-                # Use bilingual format for album as well
-                res_album = f"{ja_alb} / {en_alb}"
-            else:
-                res_album = ja_alb or en_alb or steam_meta.name
 
         return {
             "title": (res_title or clean_title).strip(),

@@ -164,7 +164,7 @@ Generate an audit JSON object based on these three "Virtual Albums".
             global_res["archive_vs_review_ratio"] = {"archive": 0, "review": 100}
         
         if conf < 90:
-             return None, {"phase1_res": global_res, "phase1_log": global_log}
+             return {}, {"phase1_res": global_res, "phase1_log": global_log}
 
         # Phase 2: Track-by-Track Mapping with Chunking
         final_instructions = {}
@@ -632,6 +632,7 @@ RULES:
                         raise
                 
                 log_entry["error"] = f"HTTP {response.status_code}"
+                logger.warning(f"[{app_id}] LLM {self.llm_backend} attempt {attempt+1} failed with HTTP {response.status_code}: {response.text}")
                 if attempt < max_retries:
                     time.sleep(retry_delay)
                     retry_delay *= 1.5

@@ -1,11 +1,13 @@
 import os
 import shutil
 import glob
+import argparse
+import sqlite3
 from pathlib import Path
 from sst.config import Config
 from sst.utils import ensure_wsl_path
 
-def clean():
+def clean(keep_steam_cache=False):
     print("--- S.S.T System Cleanup Started ---")
     
     config = Config()
@@ -14,17 +16,27 @@ def clean():
 
     # 1. データベースのクリーンアップ (SST_DB_PATH に基づく)
     db_path = ensure_wsl_path(config.sst_db_path)
-    db_dir = db_path.parent
-    db_name = db_path.name
-    if db_dir.exists() and db_dir.is_dir():
-        for p in db_dir.glob(f"{db_name}*"):
-            try:
-                if p.is_file():
-                    p.unlink()
-                    print(f"Removed database file: {p}")
-                    deleted_count += 1
-            except Exception as e:
-                errors.append(f"Failed to remove database file {p}: {e}")
+    if keep_steam_cache:
+        try:
+            if db_path.exists() and db_path.is_file():
+                with sqlite3.connect(db_path) as conn:
+                    conn.execute("DELETE FROM processed_albums;")
+                print(f"Cleared processed_albums from database, kept steam cache: {db_path}")
+                deleted_count += 1
+        except Exception as e:
+            errors.append(f"Failed to clear processed_albums from database {db_path}: {e}")
+    else:
+        db_dir = db_path.parent
+        db_name = db_path.name
+        if db_dir.exists() and db_dir.is_dir():
+            for p in db_dir.glob(f"{db_name}*"):
+                try:
+                    if p.is_file():
+                        p.unlink()
+                        print(f"Removed database file: {p}")
+                        deleted_count += 1
+                except Exception as e:
+                    errors.append(f"Failed to remove database file {p}: {e}")
 
 
 
@@ -96,5 +108,9 @@ def clean():
             print(f"- {err}")
 
 if __name__ == "__main__":
-    clean()
+    parser = argparse.ArgumentParser(description="Clean S.S.T system files.")
+    parser.add_argument("--keep-steam-cache", action="store_true", help="Keep the Steam API/Store cache in the database")
+    args = parser.parse_args()
+    
+    clean(keep_steam_cache=args.keep_steam_cache)
 
