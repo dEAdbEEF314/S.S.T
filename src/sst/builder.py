@@ -3,7 +3,7 @@ import re
 from typing import Dict, Any, List, Optional
 from .models import SteamMetadata
 
-logger = logging.getLogger("scout.builder")
+logger = logging.getLogger("sst.builder")
 
 class MetadataBuilder:
     @staticmethod

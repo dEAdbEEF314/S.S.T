@@ -6,7 +6,7 @@ from .ident.acoustid import AcoustIDIdentifier
 from .ident.mbz import MusicBrainzIdentifier
 from .models import SteamMetadata
 
-logger = logging.getLogger("scout.virtual_album")
+logger = logging.getLogger("sst.virtual_album")
 
 class VirtualAlbumBuilder:
     def __init__(self, acoustid_client: AcoustIDIdentifier, mbz_client: MusicBrainzIdentifier, fingerprint_all: bool = False):

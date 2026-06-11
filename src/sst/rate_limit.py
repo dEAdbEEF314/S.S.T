@@ -6,7 +6,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Dict
 
-logger = logging.getLogger("scout.rate_limit")
+logger = logging.getLogger("sst.rate_limit")
 
 class DistributedRateLimiter:
     def __init__(self, rpm: int, tpm: int, rpd: int):

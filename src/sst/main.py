@@ -19,7 +19,7 @@ from .models import LocalProcessResult
 from .config import Config
 
 # Setup Logging
-logger = logging.getLogger("scout")
+logger = logging.getLogger("sst")
 
 def setup_logging(config: Config, console: Console, is_dev: bool = False):
     log_level_str = "DEBUG" if is_dev else config.log_level.upper()
@@ -202,8 +202,6 @@ def main():
     # Load configuration
     try:
         config = Config()
-        config.steam_language_full = {"ja": "japanese", "en": "english"}.get(config.user_language, "english")
-        config.user_language_639_2 = {"ja": "jpn", "en": "eng"}.get(config.user_language, "eng")
         
         # Handle Fingerprint-all confirmation
         if args.fingerprint_all:
@@ -243,7 +241,7 @@ def main():
             bridge_url=config.steam_pics_bridge_url,
             api_key=config.steam_web_api_key,
             override_library_path=config.steam_library_path,
-            cache_path="data/scout_cache.json", 
+            cache_path="data/sst_cache.json", 
             language=config.steam_language_full
         )
         processor = LocalProcessor(config, db)

@@ -4,7 +4,7 @@ import time
 from typing import Dict, Any, List
 from datetime import datetime
 
-logger = logging.getLogger("scout.notify")
+logger = logging.getLogger("sst.notify")
 
 class NotificationManager:
     def __init__(self, config: Any):

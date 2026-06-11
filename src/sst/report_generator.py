@@ -3,7 +3,7 @@ from typing import Dict, Any, List, Optional
 from pathlib import Path
 from .models import SteamMetadata
 
-logger = logging.getLogger("scout.report_generator")
+logger = logging.getLogger("sst.report_generator")
 
 class ReportGenerator:
     @staticmethod

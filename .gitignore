@@ -83,6 +83,7 @@ node_modules/
 # ── OS Generated ──────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+*.pid
 
 # ── AI Tooling (Internal skills and instructions) ───────────────────────────
 .gemini/
@@ -110,3 +111,4 @@ output_test/
 Maintenance/test_results_*/
 Maintenance/test_results_standard/
 Maintenance/test_results_fingerprint/
+Maintenance/*.txt

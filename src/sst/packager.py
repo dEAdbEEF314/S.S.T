@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import Dict, Any
 
-logger = logging.getLogger("scout.packager")
+logger = logging.getLogger("sst.packager")
 
 class PackageManager:
     @staticmethod

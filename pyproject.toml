@@ -1,29 +1,20 @@
 [project]
-name = "scout"
+name = "sst"
 version = "0.1.0"
-description = "Add your description here"
+description = "Steam Soundtrack Tagger"
 readme = "README.md"
 authors = [
     { name = "dEAdbEEF314", email = "deadbeef314@gmail.com" }
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "boto3>=1.42.89",
-    "eventemitter>=0.2.0",
-    "gevent>=26.4.0",
-    "json-repair>=0.59.5",
-    "minio>=7.2.20",
     "musicbrainzngs>=0.7.1",
     "mutagen>=1.47.0",
-    "pillow>=12.2.0",
-    "protobuf<3.21",
     "pyacoustid>=1.3.1",
     "pydantic-settings>=2.13.1",
     "python-dotenv>=1.2.2",
-    "python-magic>=0.4.27",
     "requests>=2.33.1",
     "rich>=15.0.0",
-    "steam>=1.4.4",
     "vdf>=3.4",
 ]
 

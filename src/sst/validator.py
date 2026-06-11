@@ -2,7 +2,7 @@ import re
 import logging
 from typing import Tuple, List, Dict, Any
 
-logger = logging.getLogger("scout.validator")
+logger = logging.getLogger("sst.validator")
 
 class ResultValidator:
     @staticmethod

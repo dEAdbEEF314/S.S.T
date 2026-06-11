@@ -6,7 +6,7 @@ import threading
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
-logger = logging.getLogger("scout.ident.acoustid")
+logger = logging.getLogger("sst.ident.acoustid")
 
 class AcoustIDIdentifier:
     _api_lock = threading.Lock()

@@ -12,8 +12,6 @@ class Config(BaseSettings):
     steam_pics_bridge_url: str = "http://localhost:8080/v1/info/"
     steam_web_api_key: Optional[str] = None
     user_language: str = "ja"
-    steam_language_full: str = "japanese"
-    user_language_639_2: str = "jpn"
     log_level: str = "INFO"
     llm_backend: str = "GEMINI"
     llm_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai"
@@ -31,9 +29,9 @@ class Config(BaseSettings):
     fingerprint_all: bool = False
     
     # Adaptive LLM Router Settings
-    llm_model_small: str = "qwen2.5:7b-sst"
-    llm_model_medium: str = "qwen3.5-9b-sst"
-    llm_model_large: str = "phi-4:14b"  # 16GB VRAMでの大型用想定
+    llm_model_small: str = "qwen2.5:7b"
+    llm_model_medium: str = "qwen3.5:9b"
+    llm_model_large: str = "phi4:14b"  # 16GB VRAMでの大型用想定
     
     # MusicBrainz Scoring Settings
     score_mbz_direct_steam_link: int = 500
@@ -55,27 +53,34 @@ class Config(BaseSettings):
     score_mbz_publisher_label_match: int = 100
 
     # Metadata Cleaning Settings
-    title_cleaning_trusted_sources: str = "VGMDB,MBZ,PICS_API"
+    title_cleaning_trusted_sources: str = "MBZ,PICS_API"
 
     mbz_app_name: str = "SST-Scout"
     mbz_app_version: str = "1.0.0"
     mbz_contact: str = "contact@example.lan"
     acoustid_api_key: Optional[str] = None
-    discogs_api_token: Optional[str] = None
     notify_enabled: bool = False
     notify_cooldown: int = 60
     discord_webhook_critical: Optional[str] = None
     discord_webhook_warning: Optional[str] = None
     discord_webhook_info: Optional[str] = None
     discord_webhook_completion: Optional[str] = None
-    metadata_source_priority: str = "VGMDB,MBZ,PICS_API,DISCOGS,STEAM_STORE,STEAM_TAGS,EMBEDDED"
+    metadata_source_priority: str = "MBZ,PICS_API,STEAM_STORE,STEAM_TAGS,EMBEDDED"
     
     # Tag-specific metadata priorities
-    priority_tit2: str = "VGMDB,MBZ,PICS_API,FILE,EMBED,VDF,DISCOGS"
-    priority_tpe1: str = "VGMDB,MBZ,PICS_API,EMBED,DISCOGS"
-    priority_trck: str = "VGMDB,PICS_API,MBZ,DISCOGS,FILE,EMBED"
-    priority_tpos: str = "VGMDB,PICS_API,EMBED,MBZ,DISCOGS"
-    priority_tyer: str = "VGMDB,MBZ,EMBED,DISCOGS,WEB_API"
-    priority_tpub: str = "VGMDB,MBZ,PICS_API,DISCOGS"
-    priority_apic: str = "MBZ,VGMDB,DISCOGS,PICS_API,WEB_API,EMBED"
+    priority_tit2: str = "MBZ,PICS_API,FILE,EMBED,VDF"
+    priority_tpe1: str = "MBZ,PICS_API,EMBED"
+    priority_trck: str = "PICS_API,MBZ,FILE,EMBED"
+    priority_tpos: str = "PICS_API,EMBED,MBZ"
+    priority_tyer: str = "MBZ,EMBED,WEB_API"
+    priority_tpub: str = "MBZ,PICS_API"
+    priority_apic: str = "MBZ,PICS_API,WEB_API,EMBED"
+
+    @property
+    def steam_language_full(self) -> str:
+        return {"ja": "japanese", "en": "english"}.get(self.user_language, "english")
+
+    @property
+    def user_language_639_2(self) -> str:
+        return {"ja": "jpn", "en": "eng"}.get(self.user_language, "eng")
 

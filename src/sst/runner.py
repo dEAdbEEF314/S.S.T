@@ -12,7 +12,7 @@ from .models import SteamMetadata, LocalProcessResult
 from .processor import LocalProcessor
 from .track_grouper import TrackManager
 
-logger = logging.getLogger("scout.runner")
+logger = logging.getLogger("sst.runner")
 
 class JobRunner:
     def __init__(self, config: Any, processor: LocalProcessor, console: Console):

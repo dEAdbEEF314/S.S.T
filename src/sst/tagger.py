@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
 
-logger = logging.getLogger("scout.tagger")
+logger = logging.getLogger("sst.tagger")
 
 class AudioTagger:
     def __init__(self, output_dir: Path):
@@ -36,7 +36,7 @@ class AudioTagger:
         if tier == "lossless":
             cmd += ["-write_id3v2", "1", "-id3v2_version", "3"]
         else:
-            cmd += ["-codec:a", "libmp3lame", "-qscale:a", "2", "-id3v2_version", "3"]
+            cmd += ["-codec:a", "libmp3lame", "-b:a", "320k", "-id3v2_version", "3"]
 
         cmd.append(str(target_path))
         

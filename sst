@@ -5,7 +5,7 @@
 # ==============================================================================
 
 # --- Configuration ---
-MAIN_MODULE="scout.main"
+MAIN_MODULE="sst.main"
 export PYTHONPATH="src"
 
 # --- Colors ---
@@ -148,7 +148,7 @@ if [ "$STATS_MODE" = true ]; then
 fi
 
 if [ "$LOGS_MODE" = true ]; then
-    run_uv -m scout.log_browser $LOGS_APPID
+    run_uv -m sst.log_browser $LOGS_APPID
     exit 0
 fi
 

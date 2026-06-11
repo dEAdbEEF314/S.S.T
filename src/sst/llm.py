@@ -8,7 +8,7 @@ from datetime import datetime
 
 from .rate_limit import DistributedRateLimiter
 
-logger = logging.getLogger("scout.llm")
+logger = logging.getLogger("sst.llm")
 
 class LLMOrganizer:
     def __init__(self, api_key: str, base_url: str, 
@@ -549,7 +549,18 @@ In these cases, set `strategy` to `LOCAL_BASED` and do NOT lower the score due t
         return all_instructions, {"phase1_res": global_res, "phase1_log": global_log, "chunks": full_logs}
 
     def _call_llm(self, app_id: int, prompt: str, num_ctx: Optional[int] = None) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
-        messages = [{"role": "user", "content": prompt}]
+        system_prompt = """You are a [Metadata Audit JSON Generator].
+Your ONLY output is a raw JSON object. 
+
+RULES:
+1. Start your response with "{" immediately.
+2. DO NOT use reasoning blocks, "Thinking Process", or any preamble.
+3. Output MUST be valid JSON.
+4. If uncertain, default to judgment "REVIEW" and confidence 0."""
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt}
+        ]
         log_entry = {"timestamp": datetime.utcnow().isoformat(), "prompt": prompt, "response": None, "error": None}
 
         logger.debug(f"[{app_id}] --- [LLM PROMPT START] ---\n{prompt}\n--- [LLM PROMPT END] ---")
