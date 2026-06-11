@@ -87,9 +87,7 @@ Thumbs.db
 
 # ── AI Tooling (Internal skills and instructions) ───────────────────────────
 .gemini/
-skills/
 # Note: .github/copilot-instructions.md is tracked, so no longer ignored here
-# skills/ is kept as ignored if it contains local-only custom skills
 
 # ── Legacy / Obsolete ─────────────────────────────────────────────────────────
 legacy/
