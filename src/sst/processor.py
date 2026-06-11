@@ -23,7 +23,7 @@ from .track_grouper import TrackManager
 from .validator import ResultValidator
 from .report_generator import ReportGenerator
 
-logger = logging.getLogger("scout.processor")
+logger = logging.getLogger("sst.processor")
 
 class LocalProcessor:
     def __init__(self, config: Any, db: DatabaseManager):

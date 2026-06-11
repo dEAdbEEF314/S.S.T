@@ -6,7 +6,7 @@ from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime
 from difflib import SequenceMatcher
 
-logger = logging.getLogger("scout.ident.mbz")
+logger = logging.getLogger("sst.ident.mbz")
 
 class MusicBrainzIdentifier:
     def __init__(self, app_name: str, version: str, contact: str, scoring_config: Optional[Dict[str, Any]] = None):

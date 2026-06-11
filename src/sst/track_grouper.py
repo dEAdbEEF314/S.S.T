@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
 from .ident.embedded import EmbeddedMetadataExtractor
 
-logger = logging.getLogger("scout.track_grouper")
+logger = logging.getLogger("sst.track_grouper")
 
 class TrackManager:
     @staticmethod

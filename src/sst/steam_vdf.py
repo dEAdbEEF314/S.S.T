@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Dict, Any, List
 import vdf
 
-logger = logging.getLogger("scout.steam_vdf")
+logger = logging.getLogger("sst.steam_vdf")
 
 def read_null_terminated_string(f) -> str:
     chars = []
