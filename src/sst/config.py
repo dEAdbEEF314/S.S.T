@@ -51,6 +51,7 @@ class Config(BaseSettings):
     score_mbz_direct_recording_match: int = 1000
     score_mbz_acoustid_release_match: int = 1000
     score_mbz_publisher_label_match: int = 100
+    min_mbz_search_score_threshold: int = 250
 
     # Metadata Cleaning Settings
     title_cleaning_trusted_sources: str = "MBZ,PICS_API"

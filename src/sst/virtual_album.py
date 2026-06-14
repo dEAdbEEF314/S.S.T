@@ -9,10 +9,11 @@ from .models import SteamMetadata
 logger = logging.getLogger("sst.virtual_album")
 
 class VirtualAlbumBuilder:
-    def __init__(self, acoustid_client: AcoustIDIdentifier, mbz_client: MusicBrainzIdentifier, fingerprint_all: bool = False):
+    def __init__(self, acoustid_client: AcoustIDIdentifier, mbz_client: MusicBrainzIdentifier, fingerprint_all: bool = False, min_mbz_search_score_threshold: int = 250):
         self.acoustid = acoustid_client
         self.mbz = mbz_client
         self.fingerprint_all = fingerprint_all
+        self.min_mbz_search_score_threshold = min_mbz_search_score_threshold
 
     def build_fingerprint_album(self, track_groups: Dict[Tuple[int, str], List[Dict[str, Any]]], on_track_complete: Optional[callable] = None) -> Optional[Dict[str, Any]]:
         """
@@ -189,6 +190,66 @@ class VirtualAlbumBuilder:
         virtual_album["physical_match_ratio"] = round(match_ratio, 1)
         virtual_album["match_hint"] = f"HIGH ({matched_count}/{local_track_count} tracks matched by duration)" if match_ratio > 80 else "LOW"
 
+        return virtual_album
+
+    def build_mbz_search_album(self, app_id: int, album_name: str, expected_track_count: int, steam_meta: SteamMetadata = None, local_baseline: Dict = None) -> Optional[Dict[str, Any]]:
+        """
+        Builds a virtual album by explicitly searching MusicBrainz with the album title and scoring candidates.
+        Provides a Semantic Truth (v_mbz_search) when audio fingerprinting is not available or incomplete.
+        """
+        logger.info(f"[{app_id}] Building MBZ_SEARCH virtual album via text search for '{album_name}'...")
+        
+        # We try to use the NWO Hybrid Scoring System from mbz.py
+        # It handles fetching url-relations and giving massive boosts to direct Steam URLs.
+        candidates, _ = self.mbz.search_release(
+            album_name=album_name,
+            expected_track_count=expected_track_count,
+            app_id=app_id,
+            parent_app_id=None,
+            year=steam_meta.release_date[:4] if steam_meta and steam_meta.release_date else None,
+            local_baseline=local_baseline
+        )
+        
+        if not candidates:
+            logger.warning(f"[{app_id}] No MBZ candidates found via text search.")
+            return None
+            
+        best = candidates[0]
+        score = best.get("score", 0)
+        
+        # --- Threshold Cutoff ---
+        # If the score is too low, it's likely noise (unrelated album that just happens to have similar words).
+        # We discard it to prevent LLM hallucinations.
+        if score < self.min_mbz_search_score_threshold:
+            logger.warning(f"[{app_id}] MBZ_SEARCH top candidate '{best.get('album')}' score ({score}) is below threshold ({self.min_mbz_search_score_threshold}). Discarding as noise.")
+            return None
+            
+        logger.info(f"[{app_id}] MBZ_SEARCH selected candidate: {best.get('album')} (Score: {score})")
+        
+        # Build the virtual album structure
+        virtual_album = {
+            "source": "MBZ_SEARCH",
+            "mbid": best.get("mbid"),
+            "album_name": best.get("album"),
+            "artist": best.get("artist"),
+            "year": best.get("year"),
+            "label": best.get("label"),
+            "score": score,
+            "evidence": best.get("evidence", []),
+            "tracks": []
+        }
+        
+        # Map the tracks
+        for idx, track in enumerate(best.get("tracks", [])):
+            virtual_album["tracks"].append({
+                "disc": 1, # Simplified, mbz text search tracks don't always retain disc cleanly in the summary list
+                "track_num": track.get("position"),
+                "title": track.get("title"),
+                "duration_ms": None, # Search summary often lacks duration
+                "mbid": None, # Recording ID not available in brief summary
+                "mbz_track_index": idx
+            })
+            
         return virtual_album
 
     def build_steam_album(self, steam_meta: SteamMetadata) -> Dict[str, Any]:

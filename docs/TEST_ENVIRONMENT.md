@@ -27,8 +27,7 @@
 - `LLM_BACKEND`: `GEMINI`, `OLLAMA` (Native Ollama 推奨) または `OPENAI_COMPATIBLE`。
 
 ## 5. 検証チェックリスト
-- [ ] Windows 側での自動 ZIP 展開（Python `zipfile` ライブラリ経由）。
-- [ ] 中間生成物（ZIPファイル）の自動削除。
+- [ ] ローカル出力先（`./output` 等）への正しい ZIP アーカイブの生成と保存（展開なし）。
 - [ ] `COMM` 欄の新しい書式（`[タグ1/ タグ2]`）の適用。
 - [ ] MP3 に対する正確な ID3v2.3 タグ付け。
 
@@ -63,7 +62,6 @@ A valid test environment MUST have:
 - `LLM_BACKEND`: `GEMINI`, `OLLAMA` (Native Ollama recommended), or `OPENAI_COMPATIBLE`.
 
 ## 5. Verification Checklist
-- [ ] Automatic ZIP extraction on Windows (via Python `zipfile` library).
-- [ ] Automatic deletion of intermediate ZIP files.
+- [ ] Correct generation and preservation of the ZIP archive to the local output directory (e.g., `./output`) without extraction.
 - [ ] Application of the new `COMM` format (`[tag1/ tag2]`).
 - [ ] Correct ID3v2.3 tagging for MP3.

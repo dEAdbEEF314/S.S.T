@@ -52,7 +52,7 @@ class LocalProcessor:
         self.mbz = MusicBrainzIdentifier(config.mbz_app_name, config.mbz_app_version, config.mbz_contact, scoring_config=mbz_scoring)
         from .ident.acoustid import AcoustIDIdentifier
         self.acoustid = AcoustIDIdentifier(config.acoustid_api_key)
-        self.virtual_album_builder = VirtualAlbumBuilder(self.acoustid, self.mbz, fingerprint_all=config.fingerprint_all)
+        self.virtual_album_builder = VirtualAlbumBuilder(self.acoustid, self.mbz, fingerprint_all=config.fingerprint_all, min_mbz_search_score_threshold=config.min_mbz_search_score_threshold)
         self.llm = LLMOrganizer(
             api_key=config.llm_api_key, base_url=config.llm_base_url, model=config.llm_model,
             rpm=config.llm_limit_rpm, tpm=config.llm_limit_tpm, rpd=config.llm_limit_rpd,
@@ -90,7 +90,7 @@ class LocalProcessor:
         if local_count != mbz_count: 
             return False, None, None
 
-        logger.info(f"[{app_id}] Fast-track enabled: Absolute evidence found.")
+        logger.info(f"[{app_id}] ファストトラックが有効になりました: 確実な証拠が見つかりました。")
         
         # Global Identity Construction
         global_id = {
@@ -122,7 +122,7 @@ class LocalProcessor:
                     break
             
             if found_idx == -1:
-                logger.warning(f"[{app_id}] Fast-track mapping failed for: {clean_title}")
+                logger.warning(f"[{app_id}] ファストトラックのマッピングに失敗しました: {clean_title}")
                 return False, None, None
             
             final_map[tid] = {"action": "use_mbz", "mbz_track_index": found_idx, "reason": "Fast-track: Perfect MBZ name alignment"}
@@ -136,12 +136,12 @@ class LocalProcessor:
         target_ctx = 32768
         
         if self.llm.model != target_model:
-            logger.info(f"Routing to stable model: {target_model} (tracks: {track_count})")
+            logger.info(f"安定したモデルにルーティングします: {target_model} (トラック数: {track_count})")
             self.llm.model = target_model
         return target_ctx
 
     def process_album(self, app_id: int, install_dir: Path, steam_meta: SteamMetadata, on_track_complete: Optional[callable] = None) -> LocalProcessResult:
-        logger.info(f"[{app_id}] --- Processing {steam_meta.name} ---")
+        logger.info(f"[{app_id}] --- 処理中: {steam_meta.name} ---")
         try:
             all_files = TrackManager.list_audio_files(install_dir)
             if not all_files: return LocalProcessResult(app_id=app_id, status="skip", album_name=steam_meta.name, message="No audio", confidence_score=0)
@@ -152,7 +152,7 @@ class LocalProcessor:
             num_ctx = self._auto_select_model(len(track_groups))
 
             # --- NEW EXPERIMENTAL VIRTUAL ALBUM FLOW ---
-            logger.info(f"[{app_id}] Building Virtual Albums for Identity Consolidation...")
+            logger.info(f"[{app_id}] アイデンティティ統合のために仮想アルバムを構築しています...")
             
             # 1. STEAM Virtual Album
             v_steam = self.virtual_album_builder.build_steam_album(steam_meta)
@@ -165,10 +165,28 @@ class LocalProcessor:
                 track_groups, on_track_complete=on_track_complete
             )
             
+            # 4. MBZ_SEARCH Virtual Album (Semantic Truth)
+            # Create a simple local_baseline for scoring
+            local_baseline = {
+                "publisher": steam_meta.publisher,
+                "year": steam_meta.release_date[:4] if steam_meta.release_date else None,
+                "tracks": [(t.get("title", ""), t.get("duration_ms", 0)) for t in v_local["tracks"]]
+            }
+            v_mbz_search = self.virtual_album_builder.build_mbz_search_album(
+                app_id, steam_meta.name, len(steam_meta.store_tracklist), steam_meta, local_baseline
+            )
+            
+            # Unification logic
+            if v_fingerprint and v_mbz_search and v_fingerprint.get("mbid") == v_mbz_search.get("mbid"):
+                logger.info(f"[{app_id}] FINGERPRINT and MBZ_SEARCH point to the same MBID. Creating VERIFIED Virtual Album.")
+                v_fingerprint["source"] = "VERIFIED_MBZ"
+                v_fingerprint["evidence"] = v_mbz_search.get("evidence", []) + ["AUDIO_TEXT_PERFECT_MATCH"]
+                v_mbz_search = None # Drop the duplicate
+            
             # --- LLM Consolidation via Virtual Albums ---
             mbz_log = {"status": "virtual_album_flow"} # Initialize for log bundle
             final_metadata, llm_log = self.llm.consolidate_virtual_albums(
-                app_id, v_steam, v_fingerprint, v_local, num_ctx=num_ctx
+                app_id, v_steam, v_fingerprint, v_mbz_search, v_local, num_ctx=num_ctx
             )
             
             # --- SMART DUPLICATE RESOLUTION (Post-LLM Cleanup) ---
@@ -189,8 +207,19 @@ class LocalProcessor:
                     "year": v_fingerprint["year"],
                     "label": v_fingerprint["label"],
                     "score": 1000, # Max score for majority vote winner
-                    "evidence": ["MAJORITY_VOTE_WINNER"],
+                    "evidence": v_fingerprint.get("evidence", ["MAJORITY_VOTE_WINNER"]),
                     "tracks": v_fingerprint["tracks"]
+                })
+            elif v_mbz_search:
+                mbz_candidates.append({
+                    "mbid": v_mbz_search["mbid"],
+                    "album": v_mbz_search["album_name"],
+                    "artist": v_mbz_search["artist"],
+                    "year": v_mbz_search["year"],
+                    "label": v_mbz_search["label"],
+                    "score": v_mbz_search["score"],
+                    "evidence": v_mbz_search.get("evidence", ["MBZ_SEARCH_WINNER"]),
+                    "tracks": v_mbz_search["tracks"]
                 })
             
             # Identity and strategy for builder
@@ -267,8 +296,8 @@ class LocalProcessor:
                     if on_track_complete: on_track_complete()
                     return {"file_path": f"{disc_subdir}/{processed_path.name}", "original_filename": local_source_path.name, "tags": tag_map, "source": instr.get("reason", "Fallback")}
                 except Exception as e:
-                    logger.error(f"[{app_id}] Track failure for {clean_title}: {e}")
-                    self.notifier.notify_critical(f"Track Error: {steam_meta.name}", str(e))
+                    logger.error(f"[{app_id}] トラック処理の失敗 {clean_title}: {e}")
+                    self.notifier.notify_critical(f"トラック処理エラー: {steam_meta.name}", str(e))
                     any_audio_failures = True
                     return None
 
@@ -276,7 +305,7 @@ class LocalProcessor:
             with ThreadPoolExecutor(max_workers=self.config.max_encoding_tasks) as executor:
                 processed_tracks_meta = [t for t in executor.map(_process_single_track, TrackManager.adopt_optimal_files(track_groups).items()) if t]
 
-            status, message, score, quality, reason = ResultValidator.validate(app_id, processed_tracks_meta, llm_log, mbz_candidates, any_audio_failures, any_audio_warnings)
+            status, message, score, quality, reason = ResultValidator.validate(app_id, processed_tracks_meta, llm_log, mbz_candidates, steam_meta, any_audio_failures, any_audio_warnings)
             
             # Extract ratio and strategy from llm_log for database persistence
             p1_res = llm_log.get("phase1_res", {})
@@ -313,13 +342,13 @@ class LocalProcessor:
             self.db.record_processed(app_id, status, steam_meta.name, self._get_localized_now().isoformat(), summary_meta)
             return LocalProcessResult(app_id=app_id, status=status, album_name=steam_meta.name, confidence_score=score, confidence_reason=reason, message=message)
         except Exception as e:
-            logger.error(f"[{app_id}] Critical failure: {e}", exc_info=True)
-            self.notifier.notify_critical(f"Process Failed: {app_id}", str(e))
+            logger.error(f"[{app_id}] 致命的な失敗: {e}", exc_info=True)
+            self.notifier.notify_critical(f"処理失敗: {app_id}", str(e))
             return LocalProcessResult(app_id=app_id, status="error", album_name=steam_meta.name, message=str(e))
         finally:
             is_debug = self.config.log_level.upper() == "DEBUG"
             if is_debug:
-                logger.info(f"[{app_id}] DEBUG mode: Preserving temporary directories: {getattr(locals().get('temp_output'), 'name', 'N/A')}, {getattr(locals().get('buffer_dir'), 'name', 'N/A')}")
+                logger.info(f"[{app_id}] DEBUG モード: 一時ディレクトリを保持しています: {getattr(locals().get('temp_output'), 'name', 'N/A')}, {getattr(locals().get('buffer_dir'), 'name', 'N/A')}")
             
             if 'temp_output' in locals() and temp_output.exists() and not is_debug:
                 shutil.rmtree(temp_output, ignore_errors=True)
@@ -339,7 +368,7 @@ class LocalProcessor:
                 for (disc, clean_title), files in track_groups.items():
                     art = TrackManager.get_best_artwork(files)
                     if art:
-                        logger.info(f"Adopted album artwork from EMBED source (track: {clean_title})")
+                        logger.info(f"EMBEDソースからアルバムアートワークを採用しました (トラック: {clean_title})")
                         return art
                         
             elif src == "MBZ" and mbz_candidates:
@@ -349,10 +378,10 @@ class LocalProcessor:
                     try:
                         r = requests.get(url, timeout=15)
                         if r.status_code == 200:
-                            logger.info("Adopted album artwork from MBZ source")
+                            logger.info("MBZソースからアルバムアートワークを採用しました")
                             return r.content
                     except Exception as e:
-                        logger.debug(f"Failed to fetch MBZ artwork: {e}")
+                        logger.debug(f"MBZアートワークの取得に失敗しました: {e}")
                         
             elif src in ["PICS_API", "WEB_API"]:
                 # 3. Try Steam APIs (header image)
@@ -363,10 +392,10 @@ class LocalProcessor:
                     try:
                         r = requests.get(url, timeout=15)
                         if r.status_code == 200:
-                            logger.info(f"Adopted album artwork from {src} source")
+                            logger.info(f"{src}ソースからアルバムアートワークを採用しました")
                             return r.content
                     except Exception as e:
-                        logger.debug(f"Failed to fetch Steam artwork ({src}): {e}")
+                        logger.debug(f"Steamアートワーク ({src}) の取得に失敗しました: {e}")
                         
         return None
 
@@ -404,9 +433,9 @@ class LocalProcessor:
             fields.append({"name": "🚨 CRITICAL ALERT", "value": "One or more tracks failed to encode correctly.", "inline": False})
         
         if status == "review":
-            self.notifier.notify_warning(f"Review Required: {name}", f"Manual check needed for AppID {app_id}", fields)
+            self.notifier.notify_warning(f"要レビュー: {name}", f"AppID {app_id} は手動確認が必要です", fields)
         else:
-            self.notifier.notify_info(f"Archived: {name}", f"Automatic archive successful for AppID {app_id}", fields)
+            self.notifier.notify_info(f"アーカイブ完了: {name}", f"AppID {app_id} の自動アーカイブに成功しました", fields)
 
     def _resolve_duplicate_mappings(self, app_id: int, final_metadata: Dict[str, Any], steam_meta: SteamMetadata, track_groups: Dict):
         """
@@ -430,7 +459,7 @@ class LocalProcessor:
             # --- HEURISTIC 1: Multi-disc mismatch ---
             local_discs = set(int(tid.split('_', 1)[0]) for tid in tids)
             if len(local_discs) > 1:
-                logger.info(f"[{app_id}] Detected multi-disc index collision for v_idx {v_idx}. Attempting to re-align based on local disc numbers.")
+                logger.info(f"[{app_id}] v_idx {v_idx} のマルチディスクインデックスの衝突を検出しました。ローカルのディスク番号に基づいて再配置を試みます。")
                 for tid in tids:
                     l_disc, l_title = tid.split('_', 1)
                     l_disc = int(l_disc)
@@ -446,7 +475,7 @@ class LocalProcessor:
                     if best_match_idx != -1:
                         final_metadata[tid]["matched_v_idx"] = best_match_idx
                         final_metadata[tid]["action"] = "use_steam"
-                        final_metadata[tid]["reason"] = f"SYSTEM: Re-aligned to Disc {l_disc} Track {store_tracks[best_match_idx].get('track')} based on local structure"
+                        final_metadata[tid]["reason"] = f"SYSTEM: ローカル構造に基づきDisc {l_disc} Track {store_tracks[best_match_idx].get('track')}に再配置しました"
                 continue
 
             # --- HEURISTIC 2: Name-based recovery (Fuzzy search in same disc) ---
@@ -468,7 +497,7 @@ class LocalProcessor:
                         if s_idx != v_idx: # Found a better/proper index
                             final_metadata[tid]["matched_v_idx"] = s_idx
                             final_metadata[tid]["action"] = "use_steam"
-                            final_metadata[tid]["reason"] = f"SYSTEM: Recovered correct index via name match ('{st_name}')"
+                            final_metadata[tid]["reason"] = f"SYSTEM: 曲名の一致により正しいインデックスを復元しました ('{st_name}')"
                             resolved_tids.add(tid)
                             break
             
@@ -490,7 +519,7 @@ class LocalProcessor:
                     break
             
             if len(sequence_indices) >= len(remaining_tids):
-                logger.info(f"[{app_id}] Resolving duplicate mapping for '{base_name}' ({len(remaining_tids)} tracks) using sequence starting at index {v_idx}")
+                logger.info(f"[{app_id}] インデックス {v_idx} から始まるシーケンスを使用して '{base_name}' ({len(remaining_tids)} トラック) の重複マッピングを解決しています")
                 
                 def get_sort_key(tid_str):
                     parts = tid_str.split('_', 1)
@@ -505,4 +534,4 @@ class LocalProcessor:
                     new_idx = sequence_indices[i]
                     final_metadata[tid]["matched_v_idx"] = new_idx
                     final_metadata[tid]["action"] = "use_steam"
-                    final_metadata[tid]["reason"] = f"SYSTEM: Resolved duplicate sequence for '{base_name}' (Assigned index {new_idx})"
+                    final_metadata[tid]["reason"] = f"SYSTEM: '{base_name}' の重複シーケンスを解決しました (インデックス {new_idx} を割り当て)"

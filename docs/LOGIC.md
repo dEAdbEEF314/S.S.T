@@ -11,7 +11,7 @@
 ### 1.1 パス解決ロジック
 - **`STEAM_INSTALL_PATH`**: Windows形式 (`C:\...`) または WSL形式 (`/mnt/...`) を許容。内部で `utils.ensure_wsl_path` を通じて WSL ネイティブパスに正規化される。
 - **`SST_WORKING_DIR`**: デフォルト `/tmp/sst-work`。音声変換や一時バッファに使用される。
-- **`SST_OUTPUT_DIR`**: 最終成果物の出力先。内部に `archive/` および `review/` フォルダが自動生成される。
+- **`SST_OUTPUT_DIR`**: 最終成果物（ZIPアーカイブ）の出力先。Windows側ディスクI/O負荷を避けるため、ローカルWSLパス（例: `./output`）の指定を推奨。内部に `archive/` および `review/` フォルダが自動生成され、その中に ZIPファイル が出力される。
 
 ### 1.2 メタデータ優先順位 (分離の三権分立)
 LLM（司法）への「憲法」として、以下の変数がプロンプトに注入される。

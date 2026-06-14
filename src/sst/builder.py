@@ -25,7 +25,7 @@ class MetadataBuilder:
                 # Only remove if it matches the actual track number (likely redundant)
                 if prefixed_num == clean_track_num:
                     cleaned = title[match.end():].strip()
-                    logger.debug(f"Cleaned redundant track number prefix: '{title}' -> '{cleaned}'")
+                    logger.debug(f"冗長なトラック番号のプレフィックスをクリーンアップしました: '{title}' -> '{cleaned}'")
                     return cleaned
         
         return title.strip()
@@ -90,7 +90,7 @@ class MetadataBuilder:
                 mbz_track = mbz_album["tracks"][t_idx]
             else:
                 if t_idx is not None:
-                    logger.warning(f"[{app_id}] MBZ track index {t_idx} out of range (max: {len(mbz_album.get('tracks', []))-1})")
+                    logger.warning(f"[{app_id}] MBZトラックインデックス {t_idx} が範囲外です (最大: {len(mbz_album.get('tracks', []))-1})")
                 mbz_track = None
 
         # PICS_API (Steam PICS Tracks Data)
@@ -107,7 +107,7 @@ class MetadataBuilder:
             if s_idx < len(steam_meta.store_tracklist):
                 pics_track = steam_meta.store_tracklist[s_idx]
                 if is_misidentified_fingerprint:
-                    logger.debug(f"[{app_id}] Corrected misidentified fingerprint action to Steam index {s_idx} for track '{clean_title}'")
+                    logger.debug(f"[{app_id}] トラック '{clean_title}' の誤認識されたフィンガープリントアクションをSteamインデックス {s_idx} に修正しました")
         
         if not pics_track:
             # Fallback to fuzzy matching
@@ -167,7 +167,7 @@ class MetadataBuilder:
                     if " / " in res_title and len(res_title) > 60:
                         parts = res_title.split(" / ", 1)
                         res_title = parts[0].strip()
-                        logger.debug(f"Bilingual title truncated to local only (length > 60): {res_title}")
+                        logger.debug(f"バイリンガルタイトルがローカルのみに切り詰められました (長さ > 60): {res_title}")
                     break
         
         if not res_title:
@@ -340,7 +340,7 @@ class MetadataBuilder:
         if chosen_src not in trusted_sources:
             res_title = MetadataBuilder._clean_title_logic(res_title, res_track)
         else:
-            logger.debug(f"Skipping title cleaning for trusted source: {chosen_src} ('{res_title}')")
+            logger.debug(f"信頼できるソースのタイトルクリーンアップをスキップします: {chosen_src} ('{res_title}')")
 
         # --- 5. Genre Logic ---
         all_genres = steam_meta.genres if steam_meta.genres else []
