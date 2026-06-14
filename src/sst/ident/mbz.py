@@ -9,8 +9,9 @@ from difflib import SequenceMatcher
 logger = logging.getLogger("sst.ident.mbz")
 
 class MusicBrainzIdentifier:
-    def __init__(self, app_name: str, version: str, contact: str, scoring_config: Optional[Dict[str, Any]] = None):
+    def __init__(self, app_name: str, version: str, contact: str, scoring_config: Optional[Dict[str, Any]] = None, db=None):
         musicbrainzngs.set_useragent(app_name, version, contact)
+        self.db = db
         self.scores = scoring_config or {
             "direct_steam_link": 500,
             "parent_steam_link": 300,
@@ -35,21 +36,53 @@ class MusicBrainzIdentifier:
         match = re.search(r'(\d{4})', str(date_str))
         return int(match.group(1)) if match else None
 
+    def _fetch_release(self, mbid: str, includes: List[str] = None) -> Optional[Dict[str, Any]]:
+        includes_str = ",".join(sorted(includes)) if includes else ""
+        cache_key = f"release_{mbid}_{includes_str}"
+        
+        if self.db:
+            cached = self.db.get_api_cache("mbz", cache_key)
+            if cached is not None: return cached
+            
+        try:
+            time.sleep(1.1)
+            res = musicbrainzngs.get_release_by_id(mbid, includes=includes)
+            release_data = res.get('release', {})
+            if self.db and release_data:
+                self.db.set_api_cache("mbz", cache_key, release_data)
+            return release_data
+        except Exception as e:
+            logger.warning(f"Failed to fetch details for {mbid}: {e}")
+            return None
+
+    def _fetch_recording(self, mbid: str, includes: List[str] = None) -> Optional[Dict[str, Any]]:
+        includes_str = ",".join(sorted(includes)) if includes else ""
+        cache_key = f"recording_{mbid}_{includes_str}"
+        
+        if self.db:
+            cached = self.db.get_api_cache("mbz", cache_key)
+            if cached is not None: return cached
+            
+        try:
+            time.sleep(1.1)
+            res = musicbrainzngs.get_recording_by_id(mbid, includes=includes)
+            rec_data = res.get('recording', {})
+            if self.db and rec_data:
+                self.db.set_api_cache("mbz", cache_key, rec_data)
+            return rec_data
+        except Exception as e:
+            logger.warning(f"Failed to fetch recording {mbid}: {e}")
+            return None
+
     def get_release_details(self, mbid: str) -> Optional[Dict[str, Any]]:
         """
         Fetches full details for a release, including relationships and tracks.
         """
-        try:
-            time.sleep(1.1)
-            include = [
-                "url-rels", "recordings", "artist-credits", "discids", "labels",
-                "recording-level-rels", "work-level-rels", "artist-rels", "tags"
-            ]
-            res = musicbrainzngs.get_release_by_id(mbid, includes=include)
-            return res.get('release', {})
-        except Exception as e:
-            logger.warning(f"Failed to fetch release details for {mbid}: {e}")
-            return None
+        include = [
+            "url-rels", "recordings", "artist-credits", "discids", "labels",
+            "recording-level-rels", "work-level-rels", "artist-rels", "tags"
+        ]
+        return self._fetch_release(mbid, includes=include)
 
     def fuzzy_match_album(self, local_tracks: List[Tuple[str, float]], mb_tracks: List[Tuple[str, float]], time_threshold_ms: int = 2000) -> float:
         """
@@ -104,14 +137,25 @@ class MusicBrainzIdentifier:
         }
         
         all_raw_releases = []
-        try:
-            time.sleep(1.1)
-            # 1. Primary: Text-based search
-            result = musicbrainzngs.search_releases(release=album_name, limit=20)
-            all_raw_releases = result.get('release-list', [])
-            log_data["attempts"].append({"query": album_name, "count": len(all_raw_releases)})
-        except Exception as e:
-            logger.error(f"MBZ search error: {e}")
+        search_cache_key = f"search_{album_name}"
+        cached_search = None
+        
+        if self.db:
+            cached_search = self.db.get_api_cache("mbz", search_cache_key)
+            if cached_search is not None:
+                all_raw_releases = cached_search
+                
+        if not all_raw_releases and cached_search is None:
+            try:
+                time.sleep(1.1)
+                # 1. Primary: Text-based search
+                result = musicbrainzngs.search_releases(release=album_name, limit=20)
+                all_raw_releases = result.get('release-list', [])
+                if self.db:
+                    self.db.set_api_cache("mbz", search_cache_key, all_raw_releases)
+                log_data["attempts"].append({"query": album_name, "count": len(all_raw_releases)})
+            except Exception as e:
+                logger.error(f"MBZ search error: {e}")
 
         # 2. Secondary: Ensure AcoustID-suggested Release IDs are evaluated
         if acoustid_release_ids:
@@ -119,19 +163,17 @@ class MusicBrainzIdentifier:
             for rid in acoustid_release_ids:
                 if rid not in current_ids:
                     try:
-                        time.sleep(1.1)
-                        res = musicbrainzngs.get_release_by_id(rid)
-                        if res.get('release'):
-                            all_raw_releases.append(res['release'])
+                        release = self._fetch_release(rid)
+                        if release:
+                            all_raw_releases.append(release)
                             log_data["attempts"].append({"query": f"AcoustID Release {rid}", "count": 1})
                     except Exception: pass
 
         # 3. Tertiary: Fallback to recording-based search if still empty
         if not all_raw_releases and acoustid_mbids:
             try:
-                time.sleep(1.1)
-                rec_res = musicbrainzngs.get_recording_by_id(acoustid_mbids[0], includes=["releases"])
-                all_raw_releases = rec_res.get("recording", {}).get("release-list", [])
+                rec_data = self._fetch_recording(acoustid_mbids[0], includes=["releases"])
+                all_raw_releases = rec_data.get("release-list", []) if rec_data else []
                 log_data["attempts"].append({"query": f"AcoustID Recording {acoustid_mbids[0]}", "count": len(all_raw_releases)})
             except Exception: pass
 
@@ -145,9 +187,8 @@ class MusicBrainzIdentifier:
             title_text = r.get('title', 'Unknown Title')
             logger.debug(f"[{i+1}/{len(all_raw_releases)}] Fetching details for MBZ Release: {title_text} ({mbid})...")
             try:
-                time.sleep(1.1)
-                full_r = musicbrainzngs.get_release_by_id(mbid, includes=["url-rels", "recordings", "artist-credits", "labels"])
-                release_data = full_r.get('release', {})
+                release_data = self._fetch_release(mbid, includes=["url-rels", "recordings", "artist-credits", "labels"])
+                if not release_data: continue
             except Exception as e:
                 logger.warning(f"Failed to fetch details for {mbid}: {e}")
                 continue

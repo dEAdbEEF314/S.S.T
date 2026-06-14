@@ -191,6 +191,7 @@ def main():
     parser.add_argument("--finalize", action="store_true", help="Ingest corrected metadata from review folders into DB")
     parser.add_argument("--fingerprint-all", action="store_true", help="Scan every track with AcoustID (slow but extremely precise)")
     parser.add_argument("--yes", "-y", action="store_true", help="Bypass confirmation prompts (Automated mode)")
+    parser.add_argument("--prefetch-only", action="store_true", help="Run only Phase 1 (Data Gathering & Caching) without invoking the LLM")
     args = parser.parse_args()
     console = Console()
 
@@ -258,6 +259,17 @@ def main():
         soundtracks = scanner.find_soundtracks(force=args.force, limit=args.limit, is_processed_callback=db.is_already_processed, target_appids=target_appids)
         if not soundtracks: return logger.info("サウンドトラックが見つかりませんでした。")
 
+        # --- Phase 1: Data Gathering (Pre-Fetch) ---
+        from .prefetcher import DataGatherer
+        gatherer = DataGatherer(config, processor.acoustid, processor.mbz, console)
+        gatherer.run(soundtracks)
+
+        if args.prefetch_only:
+            logger.info("事前フェッチ専用モードのため、LLM推論へ進まずに終了します。")
+            console.print("[bold green]✅ 事前フェッチ専用モードが完了しました。[/bold green]")
+            return
+
+        # --- Phase 2: LLM Processing ---
         start_time = datetime.now()
         results = runner.run(soundtracks)
         duration_str = str(datetime.now() - start_time).split('.')[0]
