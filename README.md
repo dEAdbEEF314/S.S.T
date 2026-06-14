@@ -10,24 +10,23 @@ Steam API、MusicBrainz、およびローカルの埋め込みタグからの情
 ## 🚀 システムアーキテクチャ: スタンドアロン・エッジ処理
 S.S.T は **ローカル完結型エッジプロセッサ** です。音声変換、LLMによる統合、タグ付けを含むすべての重い処理は、Steamライブラリが存在するローカルマシン（WSL2/Windows等）上で実行されます。これにより、ネットワークI/Oを最小限に抑え、プライバシーと制御を最大限に確保します。
 
-### コア・パイプライン
-1. **スキャン**: Steamライブラリをスキャンし、ローカルのSQLiteデータベースを参照して処理済みアルバムを特定。
-2. **情報補完 (3層APIアーキテクチャ)**:
-    - 階層1 (Official Store API): 日本語のアルバム名、公式ジャンル、リリース日。
-    - 階層2 (Local PICS Bridge): SteamCMD経由での極めて正確なトラックリスト。
-    - 階層3 (MusicBrainz / Local VDF): 外部DBおよびローカル `appinfo.vdf` からコミュニティタグを直接抽出・日本語化。
-3. **統合 (三権分立によるメタデータ評価)**:
-    - ユーザー（立法）が定めた優先順位に従い、LLM（司法）が情報を比較・推論し、システム（行政）が物理的なクリーンネス（トラック番号除去等）を強制執行。
-4. **処理**: 音声を変換（Lossless -> AIFF, Lossy -> MP3）し、DJ機材互換の厳格な ID3v2.3 タグを書き込み。
+### コア・パイプライン (Two-Phase Architecture)
+1. **スキャン**: Steamライブラリをスキャンし、ローカルのSQLiteデータベースを参照して未処理のアルバムを特定。
+2. **Phase 1: Data Gathering & Pre-Fetch (事前一括取得)**:
+    - LLMを待たせずに、対象アルバムの音声指紋(`fpcalc`)計算と外部API (AcoustID, MusicBrainz) からのメタデータ取得をマルチスレッドで一括実行し、ローカルDBへキャッシュします。
+3. **Phase 2: LLM Consolidation (推論と統合)**:
+    - 4つの仮想アルバム (STEAM公式, ローカル実体, 音声指紋, テキスト検索) を構築し、LLMが情報を比較・推論。
+    - ユーザー（立法）が定めた優先順位に従い、LLM（司法）が決定を下し、システム（行政）が物理的なクリーンネス（トラック番号除去等）を強制執行。
+4. **出力 (Read-Onlyライブラリ保護)**:
+    - Steamライブラリ内の実ファイルは絶対に書き換えず、変換やID3v2.3タグ付けを行いながら、直接指定された出力先 (`SST_OUTPUT_DIR`) にZIPアーカイブ等として出力します。
 
 ## ✨ 主な機能
+- **Two-Phase Pipeline**: ネットワークI/OとLLM推論を完全に分離。APIキャッシュとマルチスレッド・フェッチにより、LLMの待機時間を排除し全体の処理を高速化。
 - **Adaptive LLM Router**: 曲数に応じてモデルとコンテキストサイズを動的に切り替え、巨大なアルバムも安全に処理。
 - **三権分立ロジック**: DJ機材での視認性を絶対視し、公式名であっても `01. Title` などの Dirty Tags を強制的にクリーニング。
-- **ローカルVDF連携**: ネットワークへの依存を最小限に抑えつつ、親ゲームの「ユーザー定義タグ」をローカルファイルから高速に取得。
 - **インテリジェント・タグ・プルーニング**: ID3v2.3の制限を遵守するため、長すぎるタグを末尾からタグ単位で自動削除。
 - **Smart Duplicate Resolution**: LLMが誤認した重複トラックを、ディスク番号や名前ベースの再検索によって自動的に正しいエントリへ再配分。
-- **Maintenance ツールキット**: 大規模テストの結果分析、DB整合性チェック、プロトコル検証などの保守用スクリプトを `Maintenance/` ディレクトリに集約。
-- **Deterministic Fast-Track**: ソース間で情報が完全に一致している場合、LLMをバイパスして決定論的に高速処理。
+- **Maintenance ツールキット**: 大規模テストの結果分析、DB整合性チェックなどの保守用スクリプトを `Maintenance/` ディレクトリに集約。
 
 ## ✅ 確認が取れている実行環境
 - **OS**: Windows 11 / WSL2 (Ubuntu 24.04)
@@ -88,21 +87,22 @@ This tool was created for personal library organization and is shared as a backu
 ## 🚀 System Architecture: Standalone Edge Processing
 S.S.T is a **Local-only Edge Processor**. All heavy lifting—including audio conversion, LLM consolidation, and tagging—is performed locally on your machine (WSL2/Windows).
 
-### Core Pipeline
+### Core Pipeline (Two-Phase Architecture)
 1. **Scan**: Identifies unprocessed albums using a local SQLite database.
-2. **Enrich (3-Layer API)**:
-    - Layer 1 (Official Store API): Localized names, genres, and dates.
-    - Layer 2 (Local PICS Bridge): Accurate tracklists from Steam's internal DB.
-    - Layer 3 (MusicBrainz / Local VDF): Community tags directly from local `appinfo.vdf`.
-3. **Consolidate (Separation of Powers)**: LLM (Judiciary) infers titles based on user priority (Legislative), while the System (Executive) enforces physical cleanliness (No Dirty Tags).
-4. **Process**: Converts audio (Lossless to AIFF, Lossy to MP3) and writes strict ID3v2.3 tags.
+2. **Phase 1: Data Gathering & Pre-Fetch**:
+    - Generates audio fingerprints (`fpcalc`) and fetches metadata from external APIs (AcoustID, MusicBrainz) in parallel, caching the results in a local DB before invoking the LLM.
+3. **Phase 2: LLM Consolidation**:
+    - Constructs 4 Virtual Albums (STEAM, LOCAL, FINGERPRINT, MBZ_SEARCH) for comparison.
+    - LLM (Judiciary) infers titles based on user priority (Legislative), while the System (Executive) enforces physical cleanliness (No Dirty Tags).
+4. **Process (Strict Read-Only)**:
+    - The original Steam Library is never modified. Audio is converted and strict ID3v2.3 tags are written directly to the output directory (`SST_OUTPUT_DIR`), typically packaged as ZIP archives.
 
 ## ✨ Key Features
+- **Two-Phase Pipeline**: Separates network I/O and LLM inference. API caching and multi-threaded fetching eliminate LLM idle time.
 - **Adaptive LLM Router**: Dynamically switches models/context sizes for large albums.
 - **Strict Tag Enforcement**: Forcefully cleans titles like `01. Title` for maximum visibility on DJ gear.
-- **Local VDF Integration**: Fast retrieval of community tags from local Steam files, reducing network dependency.
+- **Smart Duplicate Resolution**: Automatically rectifies track misidentifications using disc numbers and fuzzy matching.
 - **Intelligent Tag Pruning**: Automatically removes tags from the end of the list to fit ID3v2.3 size limits.
-- **Deterministic Fast-Track**: Bypasses LLM when sources perfectly align for instant processing.
 
 ## ✅ Verified Environment
 - **OS**: Windows 11 / WSL2 (Ubuntu 24.04)
