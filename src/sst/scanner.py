@@ -33,10 +33,10 @@ class SteamScanner:
         appcache_path = self.install_path / "appcache" / "appinfo.vdf"
         if appcache_path.exists():
             self.appinfo_dict = SteamBinaryVDF.parse_appinfo(appcache_path)
-            logger.info(f"Loaded {len(self.appinfo_dict)} apps from local appinfo.vdf")
+            logger.info(f"ローカルの appinfo.vdf から {len(self.appinfo_dict)} 個のアプリを読み込みました")
         else:
             self.appinfo_dict = {}
-            logger.warning(f"appinfo.vdf not found at {appcache_path}. Falling back to basic scan.")
+            logger.warning(f"appinfo.vdf が {appcache_path} に見つかりません。基本スキャンにフォールバックします。")
 
     def _load_cache(self) -> dict:
         if self.cache_path.exists():
@@ -44,7 +44,7 @@ class SteamScanner:
                 with open(self.cache_path, "r", encoding="utf-8") as f:
                     return json.load(f)
             except Exception as e:
-                logger.error(f"Failed to load cache: {e}")
+                logger.error(f"キャッシュの読み込みに失敗しました: {e}")
         return {"enriched": {}}
 
     def _save_cache(self):
@@ -53,7 +53,7 @@ class SteamScanner:
             with open(self.cache_path, "w", encoding="utf-8") as f:
                 json.dump(self.cache, f, indent=2, ensure_ascii=False)
         except Exception as e:
-            logger.error(f"Failed to save cache: {e}")
+            logger.error(f"キャッシュの保存に失敗しました: {e}")
 
     def _load_tag_map(self) -> dict:
         tag_file = Path("data/steam_tags.json")
@@ -62,7 +62,7 @@ class SteamScanner:
                 with open(tag_file, "r", encoding="utf-8") as f:
                     return json.load(f)
             except Exception as e:
-                logger.error(f"Failed to load tag map: {e}")
+                logger.error(f"タグマップの読み込みに失敗しました: {e}")
         return {}
 
     def _discover_all_libraries(self, override_path: Optional[str]) -> List[Path]:
@@ -74,7 +74,7 @@ class SteamScanner:
             p = ensure_wsl_path(override_path)
             if p not in wsl_libs: wsl_libs.append(p)
         
-        logger.info(f"Initialized SteamScanner with {len(wsl_libs)} libraries.")
+        logger.info(f"{len(wsl_libs)} 個のライブラリで SteamScanner を初期化しました。")
         return wsl_libs
 
     def find_soundtracks(self, force: bool = False, limit: Optional[int] = None, is_processed_callback: Optional[callable] = None, target_appids: Optional[List[int]] = None) -> List[dict]:
@@ -90,7 +90,7 @@ class SteamScanner:
             if acf_dir.exists():
                 all_acf_files.extend(list(acf_dir.glob("appmanifest_*.acf")))
         
-        logger.info(f"Found {len(all_acf_files)} ACF files across {len(self.library_paths)} libraries.")
+        logger.info(f"{len(self.library_paths)} 個のライブラリから {len(all_acf_files)} 個の ACF ファイルを見つけました。")
 
         for acf_file in all_acf_files:
             if limit and len(soundtracks) >= limit: break
@@ -154,9 +154,9 @@ class SteamScanner:
                     "last_updated_acf": last_updated
                 })
             except Exception as e:
-                logger.error(f"Error processing ACF {acf_file}: {e}")
+                logger.error(f"ACF {acf_file} の処理中にエラーが発生しました: {e}")
 
-        logger.info(f"Scan complete. Found {len(soundtracks)} soundtracks to process.")
+        logger.info(f"スキャンが完了しました。処理対象のサウンドトラックが {len(soundtracks)} 個見つかりました。")
         return soundtracks
 
     def _get_local_metadata(self, app_id: int) -> dict:
@@ -267,7 +267,7 @@ class SteamScanner:
         if db_data:
             result["store_tracklist"] = db_data.get("tracklist", [])
             result["store_credits"] = db_data.get("credits", "")
-            logger.debug(f"Loaded store data from DB for {app_id}")
+            logger.debug(f"{app_id} のストアデータをDBから読み込みました")
 
         try:
             # Only fetch if missing or incomplete
@@ -304,9 +304,9 @@ class SteamScanner:
                             p_json = pr.json()
                             app_pics = p_json.get("data", {}).get(str(app_id), {})
                             if app_pics: break # Success
-                        logger.debug(f"Tier 2 attempt {attempt+1} failed (Status: {pr.status_code})")
+                        logger.debug(f"Tier 2 の試行 {attempt+1} が失敗しました (ステータス: {pr.status_code})")
                     except Exception as e:
-                        logger.debug(f"Tier 2 attempt {attempt+1} error: {e}")
+                        logger.debug(f"Tier 2 の試行 {attempt+1} エラー: {e}")
                     time.sleep(2 * (attempt + 1))
                 else:
                     app_pics = {} # All retries failed
@@ -329,7 +329,7 @@ class SteamScanner:
                                 "duration_s": t.get("s", "0")
                             })
                     except Exception as e:
-                        logger.debug(f"Error sorting PICS tracks: {e}")
+                        logger.debug(f"PICS トラックのソート中にエラーが発生しました: {e}")
                 
                 meta_section = album_meta.get("metadata", {})
                 credits_parts = []
@@ -363,7 +363,7 @@ class SteamScanner:
                                 tags_data = store_items[0].get("tags", [])
                                 result["tags"] = [t.get("name") for t in tags_data if t.get("name")]
                     except Exception as te:
-                        logger.debug(f"Official Tags fetch failed: {te}")
+                        logger.debug(f"公式タグの取得に失敗しました: {te}")
 
                 # 4. Save to Database (Extended Storage)
                 if result["store_tracklist"]:
@@ -377,7 +377,7 @@ class SteamScanner:
             
             return result
         except Exception as e:
-            logger.debug(f"Web enrichment failed for {app_id}: {e}")
+            logger.debug(f"{app_id} のウェブエンリッチメントに失敗しました: {e}")
             return None
 
     def _parse_acf(self, path: Path) -> Optional[dict]:
@@ -385,7 +385,7 @@ class SteamScanner:
             with open(path, "r", encoding="utf-8", errors="ignore") as f:
                 return vdf.load(f)
         except Exception as e:
-            logger.error(f"Failed to parse ACF {path}: {e}")
+            logger.error(f"ACF {path} の解析に失敗しました: {e}")
             return None
 
     def _is_soundtrack(self, manifest: dict, app_id: int) -> bool:

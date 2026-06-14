@@ -17,7 +17,6 @@
 ## 📂 Directory Layout
 
 - `src/scout/`: Core application logic.
-- `output/`: Processing artifacts (Archives and Reviews).
 - `data/`: Local state DB and cache.
 - `docs/`: Technical specifications and logic definitions.
 - `Maintenance/`: Test scripts, reproduction scripts, and temporary test data. All manual verification and investigative scripts MUST be placed here.

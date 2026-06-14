@@ -75,15 +75,16 @@ class LLMOrganizer:
             
         return v_copy
 
-    def consolidate_virtual_albums(self, app_id: int, v_steam: Dict, v_fingerprint: Optional[Dict], v_local: Dict, num_ctx: Optional[int] = None) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+    def consolidate_virtual_albums(self, app_id: int, v_steam: Dict, v_fingerprint: Optional[Dict], v_mbz_search: Optional[Dict], v_local: Dict, num_ctx: Optional[int] = None) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
         """
-        Consolidates the three virtual albums into a final tag set using LLM.
+        Consolidates the four virtual albums into a final tag set using LLM.
         """
         full_logs = []
         
         # Simplify albums to save context
         s_steam = self._simplify_v_album(v_steam, sampled=True)
         s_fingerprint = self._simplify_v_album(v_fingerprint, sampled=True)
+        s_mbz_search = self._simplify_v_album(v_mbz_search, sampled=True)
         s_local = self._simplify_v_album(v_local, sampled=True)
 
         # Phase 1: Identity & Global Tags
@@ -97,13 +98,17 @@ Generate an audit JSON object based on these three "Virtual Albums".
 ### 2. FINGERPRINT VIRTUAL ALBUM (Physical Waveform Match / Ground Truth)
 {json.dumps(s_fingerprint, ensure_ascii=False) if v_fingerprint else "NOT AVAILABLE"}
 
-### 3. LOCAL VIRTUAL ALBUM (Current File Tags/Filenames)
+### 3. MBZ_SEARCH VIRTUAL ALBUM (Semantic Truth / Text Match)
+{json.dumps(s_mbz_search, ensure_ascii=False) if v_mbz_search else "NOT AVAILABLE"}
+
+### 4. LOCAL VIRTUAL ALBUM (Current File Tags/Filenames)
 {json.dumps(s_local, ensure_ascii=False)}
 
 ### [MASTER AUDIT GUIDELINE]
 1. GROUND TRUTH: FINGERPRINT matches are based on physical waveforms. 
    If physical_match_ratio > 80%, set Identity Confidence to 95-100% even if names vary.
-2. STEAM-TRUST PATH: If FINGERPRINT is missing but STEAM tracklist structurally matches LOCAL (same count/order), TRUST STEAM as Ground Truth and set Identity Confidence to 100%.
+   If source is "VERIFIED_MBZ" (FINGERPRINT and MBZ_SEARCH match perfectly), use 100% confidence.
+2. STEAM-TRUST PATH: If STEAM tracklist structurally matches LOCAL (same count/order) and titles align, TRUST STEAM as Ground Truth and set Identity Confidence to 100%, EVEN IF FINGERPRINT is missing or has a low match ratio. FINGERPRINT incompleteness must NEVER lower the score when STEAM is a perfect structural match.
 3. DISC NUMBER FLEXIBILITY: LOCAL disc numbers (d) are often incorrect or defaulted to 1. 
    If STEAM or FINGERPRINT define multiple discs, you MUST re-assign tracks to the correct discs in Phase 2.
 4. IDENTITY ALIASES: Game Developer (Steam) == Artist (MBZ), Publisher (Steam) == Label (MBZ). 
@@ -118,8 +123,8 @@ Generate an audit JSON object based on these three "Virtual Albums".
   "identity_confidence": number (0-100 integer),
   "integrity_quality": number (0-100 integer),
   "archive_vs_review_ratio": {{"archive": number, "review": number}},
-  "confidence_reason": "English reasoning",
-  "strategy": "FINGERPRINT_BASED" | "STEAM_BASED" | "LOCAL_BASED" | "HYBRID",
+  "confidence_reason": "Reasoning in {self.user_language}",
+  "strategy": "FINGERPRINT_BASED" | "STEAM_BASED" | "LOCAL_BASED" | "MBZ_SEARCH_BASED" | "HYBRID",
   "semantic_label": "Label in {self.user_language}",
   "global_tags": {{
     "canonical_album_artist": "...",
@@ -138,19 +143,19 @@ Generate an audit JSON object based on these three "Virtual Albums".
              return None, {"phase1_res": None, "phase1_log": global_log}
 
         # --- SYSTEM-LEVEL HEURISTICS (PRE-NORMALIZE) ---
-        # 1. STEAM-TRUST Path: If FINGERPRINT is missing but STEAM count matches LOCAL count exactly
+        # 1. STEAM-TRUST Path: If STEAM count matches LOCAL count exactly
         # and LLM was conservative (conf < 95), trust the structural match.
-        if not v_fingerprint:
-            steam_count = len(v_steam.get("tracks", []))
-            local_count = len(v_local.get("tracks", []))
-            if steam_count > 0 and steam_count == local_count:
-                current_conf = global_res.get("identity_confidence", 0)
-                if current_conf < 95:
-                    logger.info(f"[{app_id}] Applying STEAM-TRUST: Structural match detected ({steam_count} tracks). Boosting confidence to 100%.")
-                    global_res["identity_confidence"] = 100
-                    global_res["archive_vs_review_ratio"] = {"archive": 100, "review": 0}
-                    global_res["strategy"] = "STEAM_BASED"
-                    global_res["confidence_reason"] = f"SYSTEM: Boosted to 100% via STEAM-TRUST (structural match with {steam_count} tracks)."
+        steam_count = len(v_steam.get("tracks", []))
+        local_count = len(v_local.get("tracks", []))
+        current_conf = global_res.get("identity_confidence", 0)
+        
+        if steam_count > 0 and steam_count == local_count:
+            if current_conf < 95 and (not v_fingerprint or current_conf >= 80):
+                logger.info(f"[{app_id}] Applying STEAM-TRUST: Structural match detected ({steam_count} tracks). Boosting confidence to 100%.")
+                global_res["identity_confidence"] = 100
+                global_res["archive_vs_review_ratio"] = {"archive": 100, "review": 0}
+                global_res["strategy"] = "STEAM_BASED"
+                global_res["confidence_reason"] = f"SYSTEM: STEAM-TRUSTにより確信度を100%に引き上げました ({steam_count}トラックとの構造的一致)"
 
         # Normalize confidence if in 0-1 range
         conf = int(global_res.get("identity_confidence", 0))
@@ -193,19 +198,20 @@ Generate an audit JSON object based on these three "Virtual Albums".
 
         ### REFERENCE VIRTUAL ALBUMS (TRACKS ONLY):
         STEAM: {json.dumps(ref_steam, ensure_ascii=False)}
-        FINGERPRINT (Ground Truth): {ref_fingerprint_str}
+        FINGERPRINT: {ref_fingerprint_str}
+        MBZ_SEARCH: {json.dumps(s_mbz_search.get("tracks", []) if s_mbz_search else [], ensure_ascii=False) if v_mbz_search else "NOT AVAILABLE"}
 
         ### LOCAL_CHUNK TO PROCESS:
         {json.dumps(s_chunk, ensure_ascii=False)}
 
         ### RULES:
-        1. Match LOCAL_CHUNK to FINGERPRINT (if available) first, then STEAM. NEVER select "use_fingerprint" if FINGERPRINT is NOT AVAILABLE.
+        1. Match LOCAL_CHUNK to FINGERPRINT (if available) first, then MBZ_SEARCH, then STEAM. NEVER select a "use_*" action for a source that is NOT AVAILABLE.
         2. **Unique Mapping**: Each track in the LOCAL_CHUNK MUST map to a **UNIQUE** reference track (v_idx). Do NOT map multiple local tracks to the same "matched_v_idx".
-        3. **Automatic Numbering**: If action is "use_steam" or "use_fingerprint", LEAVE "override_track" and "override_disc" as **null**. The system will automatically adopt the numbers from the reference album.
+        3. **Automatic Numbering**: If action is "use_steam", "use_fingerprint", or "use_mbz_search", LEAVE "override_track" and "override_disc" as **null**. The system will automatically adopt the numbers from the reference album.
 
 4. **Override Only When Necessary**: Use "override_track" or "override_disc" ONLY if the reference album has WRONG or MISSING numbers (e.g., track number is 0 or null).
 5. **Disc Alignment**: If the matched reference track belongs to a different disc than the local "d", you MUST ensure the final output reflects the correct disc.
-6. If action is "use_fingerprint" or "use_steam", MUST provide "matched_v_idx" from the respective reference album.
+6. If action is "use_fingerprint", "use_steam", or "use_mbz_search", MUST provide "matched_v_idx" from the respective reference album.
 7. No Duplicate Tracks: Ensure that the final mapping does not result in duplicate track numbers within the same disc.
 8. Output JSON ONLY. No preamble, no thinking.
 
@@ -214,7 +220,7 @@ Generate an audit JSON object based on these three "Virtual Albums".
 {{
   "track_instructions": {{
      "CHUNK_INDEX": {{
-        "action": "use_fingerprint" | "use_steam" | "use_local",
+        "action": "use_fingerprint" | "use_mbz_search" | "use_steam" | "use_local",
         "matched_v_idx": number | null,
         "override_title": string | null,
         "override_track": number | null,
@@ -222,7 +228,7 @@ Generate an audit JSON object based on these three "Virtual Albums".
         "composer": string | null,
         "lyricist": string | null,
         "arranger": string | null,
-        "reason": "English reasoning"
+        "reason": "Reasoning in {self.user_language}"
      }}
   }}
 }}
@@ -244,11 +250,15 @@ Generate an audit JSON object based on these three "Virtual Albums".
                     if matching_track:
                         tid = f"{matching_track['local_key'][0]}_{matching_track['local_key'][1]}"
                         
-                        # Pass through MBZ track index if matched with fingerprint
+                        # Pass through MBZ track index if matched with fingerprint or mbz_search
                         mv_idx = data.get("matched_v_idx")
                         if data.get("action") == "use_fingerprint" and mv_idx is not None:
                             if mv_idx < len(ref_fingerprint):
-                                data["mbz_track_index"] = ref_fingerprint[mv_idx].get("mbz_idx")
+                                data["mbz_track_index"] = ref_fingerprint[mv_idx].get("mbz_track_index")
+                        elif data.get("action") == "use_mbz_search" and mv_idx is not None and v_mbz_search:
+                            ref_mbz = self._simplify_v_album(v_mbz_search, sampled=False).get("tracks", [])
+                            if mv_idx < len(ref_mbz):
+                                data["mbz_track_index"] = ref_mbz[mv_idx].get("mbz_track_index")
                         
                         data.update({
                             "TPE2": global_res["global_tags"].get("canonical_album_artist"),
@@ -335,11 +345,10 @@ When conflicts or contradictions arise in specific fields, decide according to t
 These priorities are absolute guidelines for determining the "correct" answer in case of discrepancies.
 However, if a top-tier source contains track numbers like "01 - Title", you are expected to perform intellectual cleaning to extract only the pure title, possibly by comparing it with lower-tier clean sources.
 
-### [CRITICAL: Dirty Tags & Forced Cleaning]
-- **Supreme Command**: This system prioritizes "Visibility on DJ Equipment". If a title begins with a track number like "01 - " or "01. ", **you MUST remove it (cleaning), even if it is the official name in MusicBrainz or Steam Store.**
-- Titles that trigger the system's validation logic (Regex: `^(\\d+)([\\s.-]+)`) will be detected as "Dirty Tags" and the archive will be rejected.
-- Your task is to compare multiple sources and derive the "Purest Title (no numbers)". If top-tier sources are "dirty", adopt a cleaner lower-tier source or perform the cleaning yourself.
-- If a title is "01 - Title", you MUST output it as "Title". Failure to do so will result in your inference being rejected as "Low Quality".
+### [CRITICAL: Title Handling]
+- This system generally prioritizes "Visibility on DJ Equipment", meaning clean titles without redundant track numbers are preferred.
+- However, if a top-tier reliable source (like MusicBrainz or Steam Store) officially includes a track number prefix (e.g., "01. Title"), you MAY adopt it exactly as it is written in the official source.
+- Do your best to find a clean title if multiple sources are available, but do not aggressively clean if it contradicts the primary official source you have chosen to adopt.
 
 ### [Advanced Identification: AcoustID Bottom-Up Analysis]
 Pay attention to the "Evidence" in each MusicBrainz candidate:
@@ -386,13 +395,13 @@ In these cases, set `strategy` to `LOCAL_BASED` and do NOT lower the score due t
 {system_hint}
 
 ### MANDATORY OUTPUT FORMAT (JSON ONLY):
-**NOTE: All reasoning (reason, confidence_reason, mbz_choice_reason) MUST be output in ENGLISH for technical precision. However, metadata fields (semantic_label, global_tags.*) MUST use the user's language ({self.user_language}). Specifically for Japanese (ja), avoid Chinese-specific characters or vocabulary.**
+**NOTE: All reasoning (reason, confidence_reason, mbz_choice_reason) MUST be output in {self.user_language} for the final report. Metadata fields (semantic_label, global_tags.*) MUST also use the user's language ({self.user_language}). Specifically for Japanese (ja), avoid Chinese-specific characters or vocabulary.**
 ```json
 {
   "identity_confidence": number,
   "integrity_quality": number,
   "archive_vs_review_ratio": {"archive": number, "review": number},
-  "confidence_reason": "Detailed similarity analysis and reasoning (English)",
+  "confidence_reason": "Detailed similarity analysis and reasoning ({self.user_language})",
   "strategy": "MBZ_BASED" | "LOCAL_BASED" | "HYBRID" | "REVIEW_REQUIRED",
   "semantic_label": "Label in {self.user_language} (max 40 chars)",
   "global_tags": {
@@ -402,7 +411,7 @@ In these cases, set `strategy` to `LOCAL_BASED` and do NOT lower the score due t
     "canonical_label": "Label or Publisher name",
     "chosen_mbz_index": number | null,
     "chosen_mbz_id": "MusicBrainz Release ID | null",
-    "mbz_choice_reason": "English reason why this candidate was chosen over others"
+    "mbz_choice_reason": "Reason why this candidate was chosen over others ({self.user_language})"
   }
 }
 ```
@@ -471,7 +480,7 @@ In these cases, set `strategy` to `LOCAL_BASED` and do NOT lower the score due t
             ### INSTRUCTIONS:
             1. Parse the credits text (e.g., "Track 1 by X") and link it to the composer or artist of the corresponding track.
             2. Match the Steam official tracklist titles with the local tracks, and use the most reliable source.
-            3. **Title Cleaning (Absolute Command)**: Regardless of the source adopted, if a title begins with a track number like "01. " or "1- ", you MUST remove it.
+            3. **Title Handling**: You may keep track number prefixes in titles (e.g., "01. ") ONLY IF they are exactly present in the official Steam or MBZ tracklist you are adopting. Otherwise, clean them.
             4. **Track Number Completion & Invalidation**:
                - If the local track number is unknown (0 or null) and the title matches the Steam official tracklist, output that number as `override_track`.
             5. **Disc Number Maintenance & Completion (Critical)**:
@@ -492,7 +501,7 @@ In these cases, set `strategy` to `LOCAL_BASED` and do NOT lower the score due t
                     "override_title": string | null,
                     "override_track": number | null,
                     "override_disc": number | null,
-                    "reason": "Reasoning for the decision (English)"
+                    "reason": "Reasoning for the decision ({self.user_language})"
                  }}
               }}
             }}

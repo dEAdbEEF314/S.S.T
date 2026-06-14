@@ -45,7 +45,7 @@ class PackageManager:
             archive_result = shutil.make_archive(str(temp_zip_base), 'zip', source_dir)
             temp_zip_file = Path(archive_result)
 
-            # 4. Move to Windows destination (Handle WSL metadata issues)
+            # 4. Move to final destination
             try:
                 shutil.move(str(temp_zip_file), str(final_zip_path))
             except OSError as move_err:
@@ -53,32 +53,11 @@ class PackageManager:
                 shutil.copyfile(str(temp_zip_file), str(final_zip_path))
                 temp_zip_file.unlink()
             
-            # 5. Extraction (Using Python's zipfile for cross-platform reliability)
-            import zipfile
-            
-            if not final_zip_path.exists():
-                logger.error(f"ZIP file disappeared before extraction: {final_zip_path}")
-                return None
-
-            try:
-                extract_dir.mkdir(parents=True, exist_ok=True)
-                logger.debug(f"Extracting {final_zip_path} to {extract_dir} using zipfile...")
-                with zipfile.ZipFile(final_zip_path, 'r') as zip_ref:
-                    zip_ref.extractall(extract_dir)
-            except Exception as extract_err:
-                logger.error(f"Extraction failed for {app_id} using zipfile: {extract_err}")
-                logger.warning(f"ZIP file preserved for manual extraction: {final_zip_path}")
-                return None
-
-            # 6. Success: Remove the ZIP file (SPEC: Intermediate ZIP should be deleted after successful extraction)
-            try:
-                final_zip_path.unlink(missing_ok=True)
-                logger.info(f"Local package extracted and intermediate ZIP removed: {extract_dir}")
-            except Exception as unlink_err:
-                logger.warning(f"Failed to remove intermediate ZIP {final_zip_path}: {unlink_err}")
+            # 5. Success: Return the path to the preserved ZIP file (Windows bulk transfer is a future roadmap)
+            logger.info(f"Package successfully created as a ZIP archive: {final_zip_path}")
                 
-            return extract_dir
+            return final_zip_path
             
         except Exception as e:
-            logger.error(f"Failed to save and extract package for {app_id}: {e}")
+            logger.error(f"Failed to save package for {app_id}: {e}")
             return None

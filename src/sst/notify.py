@@ -34,7 +34,7 @@ class NotificationManager:
         now = time.time()
         if cooldown_key in self.last_sent:
             if now - self.last_sent[cooldown_key] < self.cooldown:
-                logger.debug(f"Notification suppressed due to cooldown: {cooldown_key}")
+                logger.debug(f"クールダウンのため通知が抑制されました: {cooldown_key}")
                 return
 
         # Prepare Embed
@@ -55,9 +55,9 @@ class NotificationManager:
             response = requests.post(webhook_url, json=payload, timeout=10)
             response.raise_for_status()
             self.last_sent[cooldown_key] = now
-            logger.debug(f"Discord notification sent: [{level}] {title}")
+            logger.debug(f"Discordへの通知を送信しました: [{level}] {title}")
         except Exception as e:
-            logger.error(f"Failed to send Discord notification: {e}")
+            logger.error(f"Discordへの通知送信に失敗しました: {e}")
 
     def notify_critical(self, title: str, message: str, fields: List[Dict[str, str]] = None):
         self.notify("critical", f"🚨 {title}", message, fields, color=0xe74c3c) # Red

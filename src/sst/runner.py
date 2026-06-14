@@ -26,7 +26,7 @@ class JobRunner:
         start_time = datetime.now()
 
         # Determine track counts for sorting and categorization
-        logger.info("Scanning track counts for adaptive routing...")
+        logger.info("適応型ルーティングのためにトラック数をスキャンしています...")
         for ost in soundtracks:
             install_dir = Path(ost["install_dir"])
             # Estimate track count by counting audio files
@@ -50,18 +50,18 @@ class JobRunner:
             cloud_workers = min(int(self.config.llm_limit_rpm * 0.5), cpu_count, 5)
             max_album_workers = max(max_album_workers, cloud_workers)
 
-        logger.info(f"Runner starting with {max_album_workers} workers. Using Adaptive Routing.")
+        logger.info(f"ランナーを {max_album_workers} ワーカーで開始します。適応型ルーティングを使用します。")
 
         def _process_single_album(ost, progress, overall_task):
             app_id = ost["app_id"]
             install_dir = Path(ost["install_dir"])
-            album_task = progress.add_task(f"[cyan]Mapping: {ost['name']}", total=None)
+            album_task = progress.add_task(f"[cyan]マッピング中: {ost['name']}", total=None)
 
             # Use dict unpacking to ensure all fields from ost are included in SteamMetadata
             steam_meta = SteamMetadata(**ost)
 
             all_files = TrackManager.list_audio_files(install_dir)
-            progress.update(album_task, description=f"[yellow]Processing: {ost['name']}", total=len(all_files))
+            progress.update(album_task, description=f"[yellow]処理中: {ost['name']}", total=len(all_files))
 
             result = self.processor.process_album(app_id, install_dir, steam_meta, on_track_complete=lambda: progress.advance(album_task))
             
@@ -85,7 +85,7 @@ class JobRunner:
                 BarColumn(), TaskProgressColumn(), TimeRemainingColumn(),
                 console=self.console, expand=True
             ) as progress:
-                overall_task = progress.add_task("[bold blue]Overall Progress", total=len(soundtracks))
+                overall_task = progress.add_task("[bold blue]全体の進捗", total=len(soundtracks))
                 
                 for tier_name, tier_soundtracks in tiers.items():
                     if not tier_soundtracks:
@@ -99,13 +99,13 @@ class JobRunner:
                     else: # LARGE
                         tier_workers = self.config.max_parallel_large
                     
-                    logger.info(f"--- Starting {tier_name} Tier ({len(tier_soundtracks)} albums) with {tier_workers} workers ---")
+                    logger.info(f"--- {tier_name} ティア ({len(tier_soundtracks)} アルバム) を {tier_workers} ワーカーで開始します ---")
                     with ThreadPoolExecutor(max_workers=tier_workers) as executor:
                         list(executor.map(lambda ost: _process_single_album(ost, progress, overall_task), tier_soundtracks))
                     
                     # Cool-down period between tiers to allow VRAM to clear
                     if self.config.llm_backend == "OLLAMA" and len(tier_soundtracks) > 0:
-                        logger.info(f"Cooling down after {tier_name} tier...")
+                        logger.info(f"{tier_name} ティアの後にクールダウンしています...")
                         import time
                         time.sleep(5)
         finally:

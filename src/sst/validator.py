@@ -2,11 +2,13 @@ import re
 import logging
 from typing import Tuple, List, Dict, Any
 
+from .models import SteamMetadata
+
 logger = logging.getLogger("sst.validator")
 
 class ResultValidator:
     @staticmethod
-    def validate(app_id: int, tracks: List[Dict[str, Any]], llm_log: Dict[str, Any], mbz_candidates: List[Dict[str, Any]], audio_fail: bool, audio_warn: bool) -> Tuple[str, str, int, int, str]:
+    def validate(app_id: int, tracks: List[Dict[str, Any]], llm_log: Dict[str, Any], mbz_candidates: List[Dict[str, Any]], steam_meta: SteamMetadata, audio_fail: bool, audio_warn: bool) -> Tuple[str, str, int, int, str]:
         p1_res = llm_log.get("phase1_res", {})
         id_conf = int(p1_res.get("identity_confidence", 0))
         quality = int(p1_res.get("integrity_quality", 0))
@@ -57,7 +59,8 @@ class ResultValidator:
             if match:
                 if match.group(2) == '.' and match.end() < len(title) and title[match.end()].isdigit(): continue
                 mbz_titles = [str(tr.get("title", "")).lower() for tr in mbz_release.get("tracks", [])] if mbz_release else []
-                if title.lower() in mbz_titles: continue
+                steam_titles = [str(tr.get("title", "")).lower() for tr in steam_meta.store_tracklist] if steam_meta and steam_meta.store_tracklist else []
+                if title.lower() in mbz_titles or title.lower() in steam_titles: continue
                 prefixed_num = match.group(1).lstrip('0') or '0'
                 clean_track_num = track_num.lstrip('0') or '0'
                 if prefixed_num == clean_track_num or any(s in match.group(2) for s in ['.', '-', '_']):

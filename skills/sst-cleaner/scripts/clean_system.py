@@ -7,7 +7,7 @@ from pathlib import Path
 from sst.config import Config
 from sst.utils import ensure_wsl_path
 
-def clean(keep_steam_cache=False):
+def clean(keep_steam_cache=True):
     print("--- S.S.T System Cleanup Started ---")
     
     config = Config()
@@ -109,8 +109,8 @@ def clean(keep_steam_cache=False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Clean S.S.T system files.")
-    parser.add_argument("--keep-steam-cache", action="store_true", help="Keep the Steam API/Store cache in the database")
+    parser.add_argument("--clear-steam-cache", action="store_true", help="Clear the Steam API/Store cache from the database (Default is to keep it)")
     args = parser.parse_args()
     
-    clean(keep_steam_cache=args.keep_steam_cache)
+    clean(keep_steam_cache=not args.clear_steam_cache)
 
