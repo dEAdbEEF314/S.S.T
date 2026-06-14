@@ -22,7 +22,8 @@ uv run python <path-to-skill>/scripts/clean_system.py
 ```
 
 オプション引数：
-- `--clear-steam-cache`: この引数を指定すると、SteamストアデータやPICSのキャッシュ(`steam_store_data`)も強制的に初期化されます。（デフォルトでは、APIリクエストを節約するためキャッシュは保持されます）
+- `--keep-prefetch`: 事前フェッチした情報（`api_cache`、`steam_store_data`）は維持したまま、履歴や出力物だけを初期化します。（※これがデフォルトの挙動です。明示的に指定したい場合に使用します）
+- `--clear-all-cache`: この引数を指定すると、事前フェッチされた情報を含むすべてのデータベース情報が完全に初期化されます。
 
 実行後、削除された項目数を確認し、ユーザーに報告してください。
 

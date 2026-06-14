@@ -7,7 +7,7 @@ from pathlib import Path
 from sst.config import Config
 from sst.utils import ensure_wsl_path
 
-def clean(keep_steam_cache=True):
+def clean(keep_cache=True):
     print("--- S.S.T System Cleanup Started ---")
     
     config = Config()
@@ -16,12 +16,12 @@ def clean(keep_steam_cache=True):
 
     # 1. データベースのクリーンアップ (SST_DB_PATH に基づく)
     db_path = ensure_wsl_path(config.sst_db_path)
-    if keep_steam_cache:
+    if keep_cache:
         try:
             if db_path.exists() and db_path.is_file():
                 with sqlite3.connect(db_path) as conn:
                     conn.execute("DELETE FROM processed_albums;")
-                print(f"Cleared processed_albums from database, kept steam cache: {db_path}")
+                print(f"Cleared processed_albums from database, kept pre-fetch & steam caches: {db_path}")
                 deleted_count += 1
         except Exception as e:
             errors.append(f"Failed to clear processed_albums from database {db_path}: {e}")
@@ -109,8 +109,11 @@ def clean(keep_steam_cache=True):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Clean S.S.T system files.")
-    parser.add_argument("--clear-steam-cache", action="store_true", help="Clear the Steam API/Store cache from the database (Default is to keep it)")
+    parser.add_argument("--keep-prefetch", action="store_true", help="Keep the pre-fetched API cache and Steam store data (Default behavior)")
+    parser.add_argument("--clear-all-cache", action="store_true", help="Clear ALL caches from the database")
+    parser.add_argument("--clear-steam-cache", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     
-    clean(keep_steam_cache=not args.clear_steam_cache)
+    keep_cache = not (args.clear_all_cache or args.clear_steam_cache)
+    clean(keep_cache=keep_cache)
 

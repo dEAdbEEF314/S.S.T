@@ -25,10 +25,12 @@ show_help() {
     echo "  -n, --limit N      Process N unprocessed soundtracks."
     echo "  -f, --force        Force re-processing of already completed albums."
     echo "      --appid ID     Process only a specific Steam AppID."
+    echo "      --fingerprint-all Scan every track with AcoustID (slow but extremely precise)."
     echo ""
     echo "Maintenance & Stats (Exclusive):"
     echo "      --finalize     Ingest corrected metadata from review folders (Requires 3 confirmations)."
     echo "      --delete-db    Reset the local database (Requires 3 confirmations)."
+    echo "      --prefetch-only Run only Phase 1 (Data Gathering & Caching) without invoking the LLM."
     echo "      --stats        Show processing statistics from the database."
     echo "      --logs [AppID] Browse processing history or show album details."
     echo ""
@@ -75,6 +77,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --delete-db)
             CMD_ARGS+=("--reset-db")
+            shift
+            ;;
+        --prefetch-only)
+            CMD_ARGS+=("--prefetch-only")
             shift
             ;;
         --stats)

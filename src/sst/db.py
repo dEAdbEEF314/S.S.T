@@ -34,6 +34,15 @@ class DatabaseManager:
                     scraped_at TEXT
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS api_cache (
+                    service TEXT,
+                    query_key TEXT,
+                    response_data TEXT,
+                    fetched_at TEXT,
+                    PRIMARY KEY (service, query_key)
+                )
+            """)
 
     def get_store_data(self, app_id: int) -> Optional[Dict[str, Any]]:
         """Retrieves cached Steam store data including PICS fields."""
@@ -80,3 +89,24 @@ class DatabaseManager:
                 (app_id, status, name, processed_at, json.dumps(summary_meta, ensure_ascii=False))
             )
         logger.debug(f"Recorded AppID {app_id} in DB with status: {status}")
+
+    def get_api_cache(self, service: str, query_key: str, ttl_days: int = 30) -> Optional[Any]:
+        """Retrieves cached API response if it is within the TTL."""
+        from datetime import datetime, timedelta
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.execute("SELECT response_data, fetched_at FROM api_cache WHERE service = ? AND query_key = ?", (service, query_key))
+            row = cur.fetchone()
+            if row:
+                fetched_at = datetime.fromisoformat(row[1])
+                if datetime.utcnow() - fetched_at <= timedelta(days=ttl_days):
+                    return json.loads(row[0])
+        return None
+
+    def set_api_cache(self, service: str, query_key: str, data: Any):
+        """Saves an API response to the cache."""
+        from datetime import datetime
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO api_cache (service, query_key, response_data, fetched_at) VALUES (?, ?, ?, ?)",
+                (service, query_key, json.dumps(data, ensure_ascii=False), datetime.utcnow().isoformat())
+            )

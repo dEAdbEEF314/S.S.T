@@ -12,18 +12,21 @@ flowchart TD
         Scanner["scanner.py\n(Identify unprocessed albums)"]
     end
 
-    subgraph DataGathering ["🔎 Data Gathering (Identity & Metadata)"]
+    subgraph Phase1 ["🚀 Phase 1: Data Gathering & Pre-Fetch"]
         SteamPICS["Steam PICS API / VDF\n(Store Tracklists)"]
         MusicBrainz["MusicBrainz API"]
         AcoustID["AcoustID API\n(Audio Fingerprinting)"]
         LocalAudio["Local MP3/FLAC/WAV\n(FFprobe duration/tags)"]
+        
+        Prefetcher["prefetcher.py\n(Concurrent API Fetching)"]
+        APICache[(Local SQLite Cache\nacoustid_cache, mbz_cache)]
         
         IdentMBZ["mbz.py"]
         IdentAcoustID["acoustid.py"]
         IdentEmbedded["embedded.py"]
     end
 
-    subgraph Processing ["🧠 Processing & Reasoning (LLM)"]
+    subgraph Phase2 ["🧠 Phase 2: Processing & Reasoning (LLM)"]
         Builder["builder.py\n(Create Virtual Albums)"]
         VirtualAlbums{{"Virtual Albums\n(STEAM, FINGERPRINT, MBZ_SEARCH, LOCAL)"}}
         LLM["llm.py\n(Gemini / Ollama)"]
@@ -31,33 +34,29 @@ flowchart TD
         DuplicateResolver["processor.py\n(Smart Duplicate Resolution)"]
     end
 
-    subgraph Execution ["⚙️ Execution & Validation"]
-        Tagger["tagger.py\n(FFmpeg encode/tag)"]
-        TempDir[/"Temp Buffer Dir"/]
-        Validator["validator.py\n(Physical Validation)"]
-    end
-
-    subgraph Output ["📤 Output Phase (Packaging)"]
-        Packager["packager.py"]
-        Archive[("✅ Archive\n/output/archive/")]
-        Review[("⚠️ Review\n/output/review/")]
-        Discord(("Discord Webhook\n(Notifications)"))
-    end
-
     %% Define connections
     SteamLib --> Scanner
     DB --> Scanner
-    Scanner -->|AppID Queue| DataGathering
+    Scanner -->|AppID Queue| Phase1
 
-    SteamPICS --> IdentMBZ
-    MusicBrainz --> IdentMBZ
-    AcoustID --> IdentAcoustID
     LocalAudio --> IdentEmbedded
     LocalAudio --> IdentAcoustID
+    
+    IdentAcoustID <--> APICache
+    IdentMBZ <--> APICache
+    
+    Prefetcher -->|Trigger fpcalc & API| IdentAcoustID
+    Prefetcher -->|Trigger search| IdentMBZ
+    
+    AcoustID -->|Response| IdentAcoustID
+    MusicBrainz -->|Response| IdentMBZ
+    SteamPICS --> IdentMBZ
 
-    IdentMBZ --> Builder
-    IdentAcoustID --> Builder
-    IdentEmbedded --> Builder
+    Phase1 -->|All Data Cached| Phase2
+
+    IdentMBZ -.->|Read Cache| Builder
+    IdentAcoustID -.->|Read Cache| Builder
+    IdentEmbedded -.-> Builder
 
     Builder --> VirtualAlbums
     VirtualAlbums -->|Prompt Injection| LLM

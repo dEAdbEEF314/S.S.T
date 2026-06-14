@@ -49,9 +49,9 @@ class LocalProcessor:
             "acoustid_release_match": config.score_mbz_acoustid_release_match,
             "publisher_label_match": config.score_mbz_publisher_label_match
         }
-        self.mbz = MusicBrainzIdentifier(config.mbz_app_name, config.mbz_app_version, config.mbz_contact, scoring_config=mbz_scoring)
+        self.mbz = MusicBrainzIdentifier(config.mbz_app_name, config.mbz_app_version, config.mbz_contact, scoring_config=mbz_scoring, db=self.db)
         from .ident.acoustid import AcoustIDIdentifier
-        self.acoustid = AcoustIDIdentifier(config.acoustid_api_key)
+        self.acoustid = AcoustIDIdentifier(config.acoustid_api_key, db=self.db)
         self.virtual_album_builder = VirtualAlbumBuilder(self.acoustid, self.mbz, fingerprint_all=config.fingerprint_all, min_mbz_search_score_threshold=config.min_mbz_search_score_threshold)
         self.llm = LLMOrganizer(
             api_key=config.llm_api_key, base_url=config.llm_base_url, model=config.llm_model,

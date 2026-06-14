@@ -12,8 +12,9 @@ class AcoustIDIdentifier:
     _api_lock = threading.Lock()
     _last_call_time = 0.0
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, db=None):
         self.api_key = api_key or os.getenv("ACOUSTID_API_KEY")
+        self.db = db
         if not self.api_key:
             logger.warning("ACOUSTID_API_KEY not found. AcoustID matching will be disabled.")
 
@@ -40,15 +41,27 @@ class AcoustIDIdentifier:
             # Generate fingerprint using fpcalc via the acoustid library
             duration, fingerprint = acoustid.fingerprint_file(str(file_path))
             
-            # Global Rate Limit Enforcement
-            self._wait_for_rate_limit()
+            # Check DB Cache
+            results = None
+            if self.db:
+                cached_res = self.db.get_api_cache("acoustid", fingerprint)
+                if cached_res:
+                    results = cached_res
+                    logger.debug(f"AcoustID cache hit for {file_path.name}.")
             
-            logger.debug(f"Fingerprint generated ({duration:.2f}s). Looking up AcoustID...")
-            
-            # Lookup AcoustID
-            # meta="recordings releases" gives us MB Recording IDs and associated Release IDs
-            results = acoustid.lookup(self.api_key, fingerprint, duration, meta="recordings releases", timeout=10.0)
-            logger.debug(f"AcoustID lookup completed for {file_path.name}.")
+            if not results:
+                # Global Rate Limit Enforcement
+                self._wait_for_rate_limit()
+                
+                logger.debug(f"Fingerprint generated ({duration:.2f}s). Looking up AcoustID...")
+                
+                # Lookup AcoustID
+                # meta="recordings releases" gives us MB Recording IDs and associated Release IDs
+                results = acoustid.lookup(self.api_key, fingerprint, duration, meta="recordings releases", timeout=10.0)
+                logger.debug(f"AcoustID lookup completed for {file_path.name}.")
+                
+                if self.db and results.get("status") == "ok":
+                    self.db.set_api_cache("acoustid", fingerprint, results)
 
             candidates = []
             if results.get("status") == "ok":
