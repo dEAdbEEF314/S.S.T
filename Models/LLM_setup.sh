@@ -44,16 +44,12 @@ ollama pull qwen2.5:7b   # For Small
 ollama pull qwen3.5:9b   # For Medium
 ollama pull phi4:14b     # For Large
 
-# 4. Create SST Custom Models
-echo "--- 🛠️ Creating SST Custom Models ---"
-# Note: Modelfiles should be in English to reduce overhead.
-./Models/build_lightweight_sst.sh
 
 echo -e "\n--- ✅ Setup Complete! ---"
 echo "Make sure to update your .env file:"
 echo "LLM_BACKEND=OLLAMA"
 echo "LLM_BASE_URL=http://localhost:11434"
-echo "LLM_DRAFT_MODEL=qwen2.5:1.5b-sst"
+echo "LLM_DRAFT_MODEL=qwen2.5:1.5b"
 echo "MAX_PARALLEL_ALBUMS=2"
 echo "------------------------------------------"
 echo "Tip: For massive context with limited VRAM, consider setting:"
