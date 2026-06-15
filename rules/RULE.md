@@ -9,7 +9,6 @@
 ## 2. アーキテクチャと依存関係
 - **ディレクトリ構造**: 
   - `src/sst/`: コアロジック (scanner, processor, llm, tagger, db, etc.)
-  - `Maintenance/`: デバッグ・テスト用スクリプト群
   - `output/`: 処理結果 (`archive`, `review` フォルダへ振り分け)
   - `data/`: SQLite DB (`sst_local_state.db`) やキャッシュファイル
 - **主要な外部依存**:
