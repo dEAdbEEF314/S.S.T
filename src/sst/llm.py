@@ -41,6 +41,51 @@ class LLMOrganizer:
         self.priority_apic = priority_apic
         self.limiter = DistributedRateLimiter(rpm, tpm, rpd)
 
+    def check_availability(self) -> bool:
+        """起動時にLLMサービスの可用性をチェックする"""
+        try:
+            if self.llm_backend == "OLLAMA":
+                url = f"{self.base_url}/api/tags"
+                response = requests.get(url, timeout=5)
+                if response.status_code == 200:
+                    logger.info(f"Ollamaサーバーとの接続に成功しました: {self.base_url}")
+                    return True
+                else:
+                    logger.error(f"Ollamaサーバーから予期せぬ応答がありました: HTTP {response.status_code}")
+                    return False
+
+            elif self.llm_backend in ["GEMINI", "OPENAI_COMPATIBLE"]:
+                if not self.api_key or self.api_key == "your_api_key":
+                    logger.error(f"{self.llm_backend} のAPIキーが設定されていません。.env ファイルを確認してください。")
+                    return False
+                
+                # Modelsエンドポイントで簡易接続テスト
+                if self.llm_backend == "GEMINI":
+                    url = f"{self.base_url}/v1beta/openai/models"
+                else:
+                    url = f"{self.base_url}/v1/models"
+                    
+                headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+                response = requests.get(url, headers=headers, timeout=10)
+                
+                if response.status_code == 200:
+                    logger.info(f"{self.llm_backend} との接続およびAPIキーの有効性を確認しました。")
+                    return True
+                elif response.status_code in [401, 403]:
+                    logger.error(f"{self.llm_backend} のAPIキーが無効です (HTTP {response.status_code})。.env を確認してください。")
+                    return False
+                else:
+                    logger.warning(f"{self.llm_backend} のAPIキーチェックで予期せぬ応答がありました (HTTP {response.status_code})。")
+                    return True # Some compatible servers might not implement /models properly
+
+            else:
+                logger.error(f"未知のLLM_BACKENDです: {self.llm_backend}")
+                return False
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"LLMサーバー ({self.llm_backend}) との接続テストに失敗しました: {e}")
+            return False
+
     def _simplify_v_album(self, v: Optional[Dict], sampled: bool = False) -> Optional[Dict]:
         if not v: return None
         v_copy = v.copy()

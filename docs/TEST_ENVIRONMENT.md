@@ -11,8 +11,7 @@
 ## 2. インフラストラクチャ (Local Environment)
 「究極データ取得モード」の検証には、以下のコンポーネントが稼働している必要があります：
 - **PICS Bridge (Docker)**: `steamcmd/api:latest` (Port 8080)。
-- **Ollama (Native WSL2)**: ローカルLLM推論エンジン。`Models/LLM_setup.sh` で構築。
-- **zstd**: Ollamaモデルの展開に必須。
+- **LLMサービス**: ユーザー各自で用意した環境 (Gemini, Ollama, OpenAI互換API) が稼働し、`.env` で設定されていること。
 
 ## 3. データソース (検証ターゲット)
 テストは、以下の代表的な AppID に対して実行することを推奨します：
@@ -46,8 +45,7 @@ This document defines the standard test environment for validating S.S.T's stand
 ## 2. Infrastructure (Local Environment)
 For the "Ultimate Data Mode", the following components must be active:
 - **PICS Bridge (Docker)**: `steamcmd/api:latest` (Port 8080).
-- **Ollama (Native WSL2)**: Local LLM inference engine, set up via `Models/LLM_setup.sh`.
-- **zstd**: Required for extracting Ollama models.
+- **LLM Service**: Your own LLM environment (Gemini, Ollama, OpenAI-compatible APIs) running and configured in `.env`.
 
 ## 3. Data Sources (Validation Targets)
 Tests should be run against these representative AppIDs:

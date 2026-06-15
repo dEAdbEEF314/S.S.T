@@ -259,6 +259,12 @@ def main():
         soundtracks = scanner.find_soundtracks(force=args.force, limit=args.limit, is_processed_callback=db.is_already_processed, target_appids=target_appids)
         if not soundtracks: return logger.info("サウンドトラックが見つかりませんでした。")
 
+        if not args.prefetch_only:
+            console.print("[dim]LLMサービスの可用性を確認しています...[/dim]")
+            if not processor.llm.check_availability():
+                console.print("[bold red]❌ LLMサービスの準備ができていません。設定(.env)やサーバーの起動状態を確認してください。[/bold red]")
+                return
+
         # --- Phase 1: Data Gathering (Pre-Fetch) ---
         from .prefetcher import DataGatherer
         gatherer = DataGatherer(config, processor.acoustid, processor.mbz, console)
