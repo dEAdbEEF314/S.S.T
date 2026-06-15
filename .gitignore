@@ -105,8 +105,5 @@ Models/*.pdf
 .aider*
 output_test/
 
-# ── Maintenance Test Results (Large Audio Data) ─────────────────────────────
-Maintenance/test_results_*/
-Maintenance/test_results_standard/
-Maintenance/test_results_fingerprint/
-Maintenance/*.txt
+# ── Maintenance Scripts & Tests ─────────────────────────────
+Maintenance/

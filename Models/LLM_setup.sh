@@ -11,10 +11,6 @@ echo "--- 🚀 S.S.T Local LLM (Native Ollama) Setup Started ---"
 
 # 1. Install Dependencies & Ollama
 echo "--- 📦 Checking Dependencies... ---"
-if ! command -v zstd &> /dev/null; then
-    echo "Installing zstd..."
-    sudo apt-get update && sudo apt-get install -y zstd
-fi
 
 if ! command -v ollama &> /dev/null; then
     echo "--- 📦 Installing Ollama... ---"
