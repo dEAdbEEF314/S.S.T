@@ -270,20 +270,20 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
             <meta charset="UTF-8">
             <title>S.S.T Batch Processing Report</title>
             <style>
-                body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; max-width: 1400px; margin: 0 auto; padding: 20px; background-color: #f4f7f6; }}
-                h1 {{ color: #2c3e50; border-bottom: 2px solid #2c3e50; padding-bottom: 10px; }}
-                .summary {{ background: #fff; padding: 15px; border-radius: 8px; margin-bottom: 20px; display: flex; gap: 40px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
+                body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #cdd6f4; max-width: 1400px; margin: 0 auto; padding: 20px; background-color: #1e1e2e; }}
+                h1 {{ color: #cdd6f4; border-bottom: 2px solid #cdd6f4; padding-bottom: 10px; }}
+                .summary {{ background: #313244; padding: 15px; border-radius: 8px; margin-bottom: 20px; display: flex; gap: 40px; box-shadow: 0 2px 4px rgba(0,0,0,0.5); }}
                 .summary-item {{ font-size: 1.2em; font-weight: bold; }}
-                .archive {{ color: #27ae60; }}
-                .review {{ color: #e67e22; }}
-                .error {{ color: #e74c3c; }}
-                table {{ width: 100%; border-collapse: collapse; background: #fff; box-shadow: 0 2px 4px rgba(0,0,0,0.1); border-radius: 8px; overflow: hidden; }}
-                th {{ background-color: #2c3e50; color: #fff; text-align: left; padding: 12px; font-size: 0.9em; }}
-                td {{ padding: 12px; border-bottom: 1px solid #eee; vertical-align: top; font-size: 0.85em; }}
-                tr:hover {{ background-color: #f9f9f9; }}
-                .status-archive {{ color: #27ae60; font-weight: bold; }}
-                .status-review {{ color: #e67e22; font-weight: bold; }}
-                .status-error {{ color: #e74c3c; font-weight: bold; }}
+                .archive {{ color: #a6e3a1; }}
+                .review {{ color: #f9e2af; }}
+                .error {{ color: #f38ba8; }}
+                table {{ width: 100%; border-collapse: collapse; background: #313244; box-shadow: 0 2px 4px rgba(0,0,0,0.5); border-radius: 8px; overflow: hidden; }}
+                th {{ background-color: #45475a; color: #cdd6f4; text-align: left; padding: 12px; font-size: 0.9em; }}
+                td {{ padding: 12px; border-bottom: 1px solid #45475a; vertical-align: top; font-size: 0.85em; }}
+                tr:hover {{ background-color: #585b70; }}
+                .status-archive {{ color: #a6e3a1; font-weight: bold; }}
+                .status-review {{ color: #f9e2af; font-weight: bold; }}
+                .status-error {{ color: #f38ba8; font-weight: bold; }}
                 .reason-box {{ white-space: pre-wrap; word-break: break-all; }}
                 .badge {{ display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 0.75em; margin-right: 5px; color: #fff; margin-bottom: 5px; }}
                 .badge-acoustid {{ background-color: #3498db; }}

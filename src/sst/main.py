@@ -280,13 +280,15 @@ def main():
         results = runner.run(soundtracks)
         duration_str = str(datetime.now() - start_time).split('.')[0]
 
-        # Generate Batch Report (Result.html)
+        # Generate Batch Report
         from .report_generator import ReportGenerator
         from .utils import ensure_wsl_path
         output_root = ensure_wsl_path(config.sst_output_dir)
         output_root.mkdir(parents=True, exist_ok=True)
-        ReportGenerator.generate_batch_report(results, output_root / "Result.html")
-        logger.info(f"バッチレポートが生成されました: {output_root / 'Result.html'}")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_path = output_root / f"Result_{timestamp}.html"
+        ReportGenerator.generate_batch_report(results, report_path)
+        logger.info(f"バッチレポートが生成されました: {report_path}")
 
         console.print(f"\n[bold blue]🏁 完了！ 合計時間: {duration_str}[/bold blue]\n")
         
