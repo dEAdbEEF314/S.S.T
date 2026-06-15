@@ -129,17 +129,6 @@ class LocalProcessor:
             
         return True, final_map, global_id
 
-    def _auto_select_model(self, track_count: int) -> int:
-        if self.config.llm_backend != "OLLAMA": return 8192
-        # All tiers now use qwen2.5:7b-sst for stability against reasoning blocks
-        target_model = self.config.llm_model_small # This defaults to qwen2.5:7b-sst
-        target_ctx = 32768
-        
-        if self.llm.model != target_model:
-            logger.info(f"安定したモデルにルーティングします: {target_model} (トラック数: {track_count})")
-            self.llm.model = target_model
-        return target_ctx
-
     def process_album(self, app_id: int, install_dir: Path, steam_meta: SteamMetadata, on_track_complete: Optional[callable] = None) -> LocalProcessResult:
         logger.info(f"[{app_id}] --- 処理中: {steam_meta.name} ---")
         try:
@@ -149,7 +138,7 @@ class LocalProcessor:
             max_local_disc = max((d for d, _ in track_groups.keys()), default=1) if track_groups else 1
             max_store_disc = max((int(t.get("disc", 1)) for t in steam_meta.store_tracklist), default=1) if steam_meta.store_tracklist else 1
             total_discs = max(max_local_disc, max_store_disc)
-            num_ctx = self._auto_select_model(len(track_groups))
+            num_ctx = 32768 if self.config.llm_backend == "OLLAMA" else None
 
             # --- NEW EXPERIMENTAL VIRTUAL ALBUM FLOW ---
             logger.info(f"[{app_id}] アイデンティティ統合のために仮想アルバムを構築しています...")

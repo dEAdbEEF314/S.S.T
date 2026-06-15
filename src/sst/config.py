@@ -20,7 +20,7 @@ class Config(BaseSettings):
     llm_limit_rpm: int = 15
     llm_limit_tpm: int = 10000000
     llm_limit_rpd: int = 1500
-    llm_draft_model: Optional[str] = None
+
     max_parallel_albums: int = 2
     max_parallel_small: int = 4
     max_parallel_medium: int = 2
@@ -28,10 +28,7 @@ class Config(BaseSettings):
     max_encoding_tasks: int = 4
     fingerprint_all: bool = False
     
-    # Adaptive LLM Router Settings
-    llm_model_small: str = "qwen2.5:7b"
-    llm_model_medium: str = "qwen3.5:9b"
-    llm_model_large: str = "phi4:14b"  # 16GB VRAMでの大型用想定
+
     
     # MusicBrainz Scoring Settings
     score_mbz_direct_steam_link: int = 500
