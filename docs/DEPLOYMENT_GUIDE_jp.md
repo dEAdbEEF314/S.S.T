@@ -13,7 +13,6 @@
 ## 2. 前提条件
 
 - **WSL2 (Ubuntu等)**: Python 3.12 および `uv` がインストールされていること。
-- **zstd**: Ollamaモデル展開用に必須。
 - **Docker Desktop**: Windows 側でインストールされ、WSL2 連携が有効であること。
 - **Steam Web API Key**: [こちら](https://steamcommunity.com/dev/apikey)から取得してください。
 
@@ -28,16 +27,7 @@
 docker run --name sst-pics-bridge -d -p 8080:8000 --restart unless-stopped steamcmd/api:latest
 ```
 
-### 3.2 ローカルLLM (Ollama Native)
-LLMによる推論をローカルで行うため、Ollamaと専用モデルをセットアップします。
 
-```bash
-# セットアップスクリプトの実行 (zstdのインストール、モデルの取得、SST専用モデルの作成)
-chmod +x Models/LLM_setup.sh Models/build_lightweight_sst.sh
-./Models/LLM_setup.sh
-```
-
----
 
 ## 4. ステップ 2: S.S.T の環境設定 (.env)
 
@@ -49,6 +39,11 @@ STEAM_WEB_API_KEY=あなたのAPIキー
 
 # PICS Bridge URL (デフォルトで http://localhost:8080/v1/info/)
 STEAM_PICS_BRIDGE_URL=http://localhost:8080/v1/info/
+
+# LLM設定 (各自で用意したサービスを設定)
+LLM_BACKEND=GEMINI
+LLM_BASE_URL=https://generativelanguage.googleapis.com
+LLM_API_KEY=your_api_key
 
 # Steam dynamicstore クッキー (任意: 所有権チェック用)
 # ブラウザのデベロッパーツールで store.steampowered.com の steamLoginSecure の値をコピー

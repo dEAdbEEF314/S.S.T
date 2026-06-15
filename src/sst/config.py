@@ -14,7 +14,7 @@ class Config(BaseSettings):
     user_language: str = "ja"
     log_level: str = "INFO"
     llm_backend: str = "GEMINI"
-    llm_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai"
+    llm_base_url: str = "https://generativelanguage.googleapis.com"
     llm_api_key: Optional[str] = None
     llm_model: str = "gemini-1.5-pro"
     llm_limit_rpm: int = 15
