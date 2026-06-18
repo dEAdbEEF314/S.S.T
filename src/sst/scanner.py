@@ -16,10 +16,11 @@ logger = logging.getLogger(__name__)
 MUSIC_EXTENSIONS = {".flac", ".wav", ".mp3", ".aiff", ".m4a"}
 
 class SteamScanner:
-    def __init__(self, install_path: str, db: DatabaseManager, bridge_url: str, api_key: Optional[str] = None, override_library_path: Optional[str] = None, cache_path: str = "data/scout_cache.json", language: str = "japanese"):
+    def __init__(self, install_path: str, db: DatabaseManager, bridge_url: str, bridge_api_key: Optional[str] = None, api_key: Optional[str] = None, override_library_path: Optional[str] = None, cache_path: str = "data/scout_cache.json", language: str = "japanese"):
         self.install_path = ensure_wsl_path(install_path)
         self.db = db
         self.bridge_url = bridge_url if bridge_url.endswith("/") else bridge_url + "/"
+        self.bridge_api_key = bridge_api_key
         self.api_key = api_key
         self.cache_path = Path(cache_path)
         self.language = language
@@ -296,10 +297,17 @@ class SteamScanner:
                 # --- Tier 2: PICS Data via (Local/Remote) Bridge API ---
                 pics_url = f"{self.bridge_url}{app_id}"
                 
+                pics_headers = common_headers.copy()
+                if self.bridge_api_key:
+                    if self.bridge_api_key.startswith("Bearer "):
+                        pics_headers["Authorization"] = self.bridge_api_key
+                    else:
+                        pics_headers["X-API-Key"] = self.bridge_api_key
+
                 # Retry logic for Tier 2 (Critical for structured data)
                 for attempt in range(3):
                     try:
-                        pr = session.get(pics_url, headers=common_headers, timeout=30)
+                        pr = session.get(pics_url, headers=pics_headers, timeout=30)
                         if pr.status_code == 200:
                             p_json = pr.json()
                             app_pics = p_json.get("data", {}).get(str(app_id), {})

@@ -10,6 +10,7 @@ class Config(BaseSettings):
     sst_output_dir: str = "output"
     steam_login_secure: Optional[str] = None
     steam_pics_bridge_url: str = "http://localhost:8080/v1/info/"
+    steam_pics_bridge_api_key: Optional[str] = None
     steam_web_api_key: Optional[str] = None
     user_language: str = "ja"
     log_level: str = "INFO"
