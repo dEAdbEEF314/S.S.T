@@ -40,13 +40,17 @@ class AudioTagger:
 
         cmd.append(str(target_path))
         
-        process = subprocess.run(cmd, capture_output=True, text=True)
+        # Capture output as binary to avoid UnicodeDecodeError when paths contain non-UTF-8 characters
+        process = subprocess.run(cmd, capture_output=True)
         has_warnings = False
         if process.stderr:
+            # Decode safely by ignoring characters that cannot be decoded as UTF-8
+            stderr_str = process.stderr.decode('utf-8', errors='ignore')
             # Check for critical decoding errors
-            if "Decoding error" in process.stderr or "invalid rice order" in process.stderr:
-                logger.warning(f"FFmpeg warnings for {source_path.name}: {process.stderr}")
+            if "Decoding error" in stderr_str or "invalid rice order" in stderr_str:
+                logger.warning(f"FFmpeg warnings for {source_path.name}: {stderr_str}")
                 has_warnings = True
+
         
         return target_path, has_warnings
 
@@ -67,27 +71,26 @@ class AudioTagger:
             
             tags = audio.tags
 
-            # Standard Tags (Encoding 3 = UTF-16 or UTF-8 depending on ID3 version, 
-            # for ID3v2.3 it's generally UTF-16 with BOM)
-            tags.add(TIT2(encoding=3, text=tag_map["title"]))
-            tags.add(TPE1(encoding=3, text=tag_map["artist"]))
-            tags.add(TALB(encoding=3, text=tag_map["album"]))
-            tags.add(TPE2(encoding=3, text=tag_map["album_artist"]))
-            tags.add(TCON(encoding=3, text=tag_map["genre"]))
+            # Standard Tags (Encoding 1 = UTF-16 with BOM for ID3v2.3 compliance)
+            tags.add(TIT2(encoding=1, text=tag_map["title"]))
+            tags.add(TPE1(encoding=1, text=tag_map["artist"]))
+            tags.add(TALB(encoding=1, text=tag_map["album"]))
+            tags.add(TPE2(encoding=1, text=tag_map["album_artist"]))
+            tags.add(TCON(encoding=1, text=tag_map["genre"]))
 
             # Label/Publisher (TPUB)
             if tag_map.get("label"):
-                tags.add(TPUB(encoding=3, text=tag_map["label"]))
+                tags.add(TPUB(encoding=1, text=tag_map["label"]))
 
             # Handle Year (Strictly TYER for ID3v2.3)
             year_val = tag_map["year"][:4] if tag_map.get("year") else "0000"
-            tags.add(TYER(encoding=3, text=year_val))
+            tags.add(TYER(encoding=1, text=year_val))
 
-            tags.add(TRCK(encoding=3, text=tag_map["track_number"] or "0"))
-            tags.add(TPOS(encoding=3, text=tag_map["disc_number"] or "1/1"))
+            tags.add(TRCK(encoding=1, text=tag_map["track_number"] or "0"))
+            tags.add(TPOS(encoding=1, text=tag_map["disc_number"] or "1/1"))
             if tag_map.get("composer"):
-                tags.add(TCOM(encoding=3, text=tag_map["composer"]))
-            tags.add(TIT1(encoding=3, text=tag_map["grouping"] or ""))
+                tags.add(TCOM(encoding=1, text=tag_map["composer"]))
+            tags.add(TIT1(encoding=1, text=tag_map["grouping"] or ""))
 
             # Comment logic
             comment_text = tag_map["comment"]
@@ -102,13 +105,13 @@ class AudioTagger:
                         tags_list.pop()
                     comment_text = f"{prefix}{'/ '.join(tags_list)}{suffix}"
 
-            # Add the single consolidated comment in the specified user language
-            tags.add(COMM(encoding=3, lang=tag_map["language"], desc="", text=comment_text))
+            # Add the single consolidated comment in the specified user language (encoding=1 for UTF-16)
+            tags.add(COMM(encoding=1, lang=tag_map["language"], desc="", text=comment_text))
 
-            # Artwork
+            # Artwork (APIC frame uses encoding=1 for description if present, though Front Cover desc is standard ASCII)
             if artwork_path and artwork_path.exists():
                 with open(artwork_path, "rb") as f:
-                    tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Front Cover', data=f.read()))
+                    tags.add(APIC(encoding=1, mime='image/jpeg', type=3, desc='Front Cover', data=f.read()))
 
             # Force save as ID3v2.3 for maximum compatibility (including Windows Explorer)
             audio.save(v2_version=3)

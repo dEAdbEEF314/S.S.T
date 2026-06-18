@@ -240,6 +240,7 @@ def main():
             install_path=config.steam_install_path, 
             db=db,
             bridge_url=config.steam_pics_bridge_url,
+            bridge_api_key=config.steam_pics_bridge_api_key,
             api_key=config.steam_web_api_key,
             override_library_path=config.steam_library_path,
             cache_path="data/sst_cache.json", 
