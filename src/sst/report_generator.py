@@ -141,6 +141,7 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
                 <td>{tg.get('album_artist', '')}</td>
                 <td>{tg.get('genre', '')}</td>
                 <td>{tg.get('year', '')}</td>
+                <td style="font-weight: 500; color: var(--accent-blue);">{t.get('title_source', 'UNKNOWN')}</td>
                 <td style="font-size: 0.75rem; color: #8b949e;">{t.get('source', '')}</td>
             </tr>"""
 
@@ -180,6 +181,12 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
     <div class="card">
         <h3>Judgment Reasoning & Strategy</h3>
         <div class="reason-box">{display_reason}</div>
+        
+        <div style="margin-top: 15px; border-top: 1px solid var(--border-color); padding-top: 15px; font-size: 0.85rem; color: #8b949e;">
+            <strong style="color: var(--accent-yellow);">⚙️ System Merge Note:</strong><br>
+            本システムは、LLMが選択した MusicBrainz (MBZ) のリリースデータをベースに動作しますが、元のリリース曲順がローカルファイルと異なる場合は、**再生時間（Duration）に基づき物理的に自動整列（Duration Alignment）**した上でマッピングを行っています。<br>
+            また、最終的なタグの値は `.env` の優先度（`METADATA_SOURCE_PRIORITY`）に基づいて、項目ごとに最適なソース（MBZやSteamなど）から動的にブレンドおよびフォールバックされます。そのため、MBZが選ばれた場合でも、データ不存在や優先度に応じてSteam等の情報が一部適用されることがあります。
+        </div>
     </div>
 
     <div class="grid" style="margin-top: 20px;">
@@ -208,6 +215,7 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
                     <th>Album Artist</th>
                     <th>Genre</th>
                     <th>Year</th>
+                    <th>Title Source</th>
                     <th>Source</th>
                 </tr>
             </thead>
