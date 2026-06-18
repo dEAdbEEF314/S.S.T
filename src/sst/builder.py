@@ -394,6 +394,7 @@ class MetadataBuilder:
             "disc_number": f"{res_disc}/{actual_total_discs}",
             "language": user_language_639_2,
             "mbid": mbz_candidates[0].get("mbid") if mbz_candidates else None,
-            "steam_appid": app_id
+            "steam_appid": app_id,
+            "title_source": chosen_src
         }
 

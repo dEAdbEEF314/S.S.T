@@ -283,7 +283,13 @@ class LocalProcessor:
                     track_art = TrackManager.get_best_artwork(track_groups[(disc, clean_title)])
                     tagger.write_tags(processed_path, tag_map, tagger.process_artwork(track_art) if track_art else album_artwork)
                     if on_track_complete: on_track_complete()
-                    return {"file_path": f"{disc_subdir}/{processed_path.name}", "original_filename": local_source_path.name, "tags": tag_map, "source": instr.get("reason", "Fallback")}
+                    return {
+                        "file_path": f"{disc_subdir}/{processed_path.name}", 
+                        "original_filename": local_source_path.name, 
+                        "tags": tag_map, 
+                        "source": instr.get("reason", "Fallback"),
+                        "title_source": tag_map.get("title_source", "UNKNOWN")
+                    }
                 except Exception as e:
                     logger.error(f"[{app_id}] トラック処理の失敗 {clean_title}: {e}")
                     self.notifier.notify_critical(f"トラック処理エラー: {steam_meta.name}", str(e))
