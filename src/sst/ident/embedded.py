@@ -27,6 +27,7 @@ class EmbeddedMetadataExtractor:
                 "artist": audio.get("artist", [None])[0],
                 "album": audio.get("album", [None])[0],
                 "track_number": audio.get("tracknumber", [None])[0],
+                "disc_number": audio.get("discnumber", [None])[0],
                 "year": audio.get("date", [None])[0],
                 "comment": audio.get("comment", [None])[0],
                 "has_artwork": False
