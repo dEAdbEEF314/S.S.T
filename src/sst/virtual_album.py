@@ -290,12 +290,33 @@ class VirtualAlbumBuilder:
         
         for key, variants in track_groups.items():
             best = variants[0]
+            meta = best.get("meta", {})
+            
+            # Resolve track number: prioritize tag, fallback to filename_track
+            track_num = None
+            meta_track = meta.get("track_number")
+            if meta_track:
+                try:
+                    t_str = str(meta_track).split('/')[0]
+                    if t_str.isdigit():
+                        track_num = int(t_str)
+                except Exception:
+                    pass
+            
+            if track_num is None:
+                track_num = best.get("filename_track")
+                
             virtual_album["tracks"].append({
                 "local_key": key,
                 "disc": key[0],
-                "track_num": None, 
+                "track_num": track_num, 
                 "title": key[1],
                 "duration_ms": int(best["duration"] * 1000)
             })
+            
+        # Sort tracks by (disc, track_num)
+        virtual_album["tracks"].sort(
+            key=lambda t: (t["disc"], t["track_num"] if t["track_num"] is not None else 999)
+        )
             
         return virtual_album
