@@ -19,9 +19,52 @@ class AudioTagger:
             return art_path
         except Exception: return None
 
+    def _get_audio_properties(self, path: Path) -> Tuple[int, int]:
+        """
+        Gets (sample_rate, bit_depth) using ffprobe.
+        Returns (0, 0) on failure.
+        """
+        import json
+        try:
+            cmd = [
+                "ffprobe", "-v", "error", 
+                "-select_streams", "a:0", 
+                "-show_entries", "stream=sample_rate,bits_per_sample,sample_fmt", 
+                "-of", "json", 
+                str(path)
+            ]
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            data = json.loads(res.stdout)
+            streams = data.get("streams", [])
+            if not streams:
+                return 0, 0
+            
+            stream = streams[0]
+            sample_rate = int(stream.get("sample_rate", 0))
+            
+            bit_depth = 0
+            bits = stream.get("bits_per_sample")
+            if bits:
+                bit_depth = int(bits)
+            else:
+                fmt = stream.get("sample_fmt", "")
+                if "16" in fmt:
+                    bit_depth = 16
+                elif "24" in fmt:
+                    bit_depth = 24
+                elif "32" in fmt or "flt" in fmt:
+                    bit_depth = 32
+                elif "dbl" in fmt or "64" in fmt:
+                    bit_depth = 64
+            
+            return sample_rate, bit_depth
+        except Exception:
+            return 0, 0
+
     def convert_and_limit(self, source_path: Path, tier: str, subdir: str = "") -> Tuple[Path, bool]:
         """
         Converts to AIFF (lossless) or MP3 (lossy) using FFmpeg.
+        Enforces 24-bit / 48 kHz maximum limits for lossless files.
         Returns (output_path, has_warnings).
         """
         target_ext = ".aif" if tier == "lossless" else ".mp3"
@@ -35,6 +78,19 @@ class AudioTagger:
         # Enforce ID3v2.3 for both AIFF and MP3
         if tier == "lossless":
             cmd += ["-write_id3v2", "1", "-id3v2_version", "3"]
+            
+            # Check source properties for conditional downsampling
+            rate, depth = self._get_audio_properties(source_path)
+            if rate > 0:
+                # 1. Limit sampling rate to 48 kHz
+                if rate > 48000:
+                    cmd += ["-ar", "48000"]
+                    logger.info(f"Downsampling {source_path.name} from {rate}Hz to 48000Hz.")
+                
+                # 2. Limit bit depth to 24-bit
+                if depth > 24:
+                    cmd += ["-acodec", "pcm_s24be"]
+                    logger.info(f"Reducing bit depth of {source_path.name} from {depth}-bit to 24-bit.")
         else:
             cmd += ["-codec:a", "libmp3lame", "-b:a", "320k", "-id3v2_version", "3"]
 
@@ -51,7 +107,6 @@ class AudioTagger:
                 logger.warning(f"FFmpeg warnings for {source_path.name}: {stderr_str}")
                 has_warnings = True
 
-        
         return target_path, has_warnings
 
     def write_tags(self, file_path: Path, tag_map: Dict[str, Any], artwork_path: Optional[Path] = None):

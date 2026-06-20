@@ -303,7 +303,7 @@ Generate an audit JSON object based on these three "Virtual Albums".
                         elif data.get("action") == "use_mbz_search" and mv_idx is not None and v_mbz_search:
                             ref_mbz = self._simplify_v_album(v_mbz_search, sampled=False).get("tracks", [])
                             if mv_idx < len(ref_mbz):
-                                data["mbz_track_index"] = ref_mbz[mv_idx].get("mbz_track_index")
+                                data["mbz_track_index"] = ref_mbz[mv_idx].get("mbz_idx")
                         
                         data.update({
                             "TPE2": global_res["global_tags"].get("canonical_album_artist"),
@@ -647,7 +647,7 @@ RULES:
 
         for attempt in range(max_retries + 1):
             try:
-                response = requests.post(url, headers=headers, json=payload, timeout=300)
+                response = requests.post(url, headers=headers, json=payload, timeout=600)
                 if response.status_code == 200:
                     res_json = response.json()
                     message = res_json.get("message", {})

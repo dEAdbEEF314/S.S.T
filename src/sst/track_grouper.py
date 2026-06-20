@@ -10,7 +10,7 @@ logger = logging.getLogger("sst.track_grouper")
 class TrackManager:
     @staticmethod
     def list_audio_files(directory: Path) -> List[Path]:
-        exts = {".flac", ".wav", ".mp3", ".ogg", ".aac", ".m4a", ".aiff"}
+        exts = {".flac", ".wav", ".mp3", ".ogg", ".aac", ".m4a", ".aiff", ".aif"}
         return [p for p in directory.rglob("*") if p.suffix.lower() in exts and not p.name.startswith(".") and "__MACOSX" not in p.parts]
 
     @staticmethod
@@ -74,7 +74,16 @@ class TrackManager:
             stem = re.sub(r'\s*0+(\d+)', r' \1', stem)
             norm_stem = stem.strip()
             
-            t_num_val = t_num.group(1).lstrip('0') or '0' if t_num else None
+            t_num_val = None
+            if t_num:
+                t_num_val = t_num.group(1).lstrip('0') or '0'
+            elif meta.get("track_number"):
+                try:
+                    t_str = str(meta.get("track_number")).split('/')[0].strip()
+                    if t_str.isdigit():
+                        t_num_val = str(int(t_str))
+                except Exception:
+                    pass
             
             raw_tracks.append({
                 "path": f, "meta": meta, "duration": TrackManager.get_duration(f), 
@@ -120,27 +129,47 @@ class TrackManager:
                 groups[(track["disc"], track["norm_stem"])] = [track]
 
         # Post-process: Split groups that have different track numbers but same stem
+        priorities = TrackManager.get_audio_format_priority()
+        def sort_key(v):
+            fmt = v["format"].lower()
+            try:
+                return priorities.index(fmt)
+            except ValueError:
+                return 999
+
         final_groups = {}
         for (disc, norm_stem), variants in groups.items():
-            t_nums = {v["t_num_val"] for v in variants if v["t_num_val"] is not None}
+            sorted_variants = sorted(variants, key=sort_key)
+            t_nums = {v["t_num_val"] for v in sorted_variants if v["t_num_val"] is not None}
             if len(t_nums) <= 1:
-                final_groups[(disc, norm_stem)] = variants
+                final_groups[(disc, norm_stem)] = sorted_variants
             else:
-                for v in variants:
-                    final_track_id = f"{norm_stem} {v['t_num_val']}" if v["t_num_val"] else f"{norm_stem} unnum {variants.index(v)}"
+                for v in sorted_variants:
+                    final_track_id = f"{norm_stem} {v['t_num_val']}" if v["t_num_val"] else f"{norm_stem} unnum {sorted_variants.index(v)}"
                     final_groups[(disc, final_track_id)] = [v]
                     
         return final_groups
 
     @staticmethod
+    def get_audio_format_priority() -> List[str]:
+        import os
+        priority_str = os.getenv("AUDIO_FORMAT_PRIORITY", "flac,alac,aiff,wav,mp3,m4a,ogg")
+        return [fmt.strip().lower() for fmt in priority_str.split(",") if fmt.strip()]
+
+    @staticmethod
     def adopt_optimal_files(track_groups: Dict) -> Dict:
         adopted = {}
         for key, variants in track_groups.items():
-            chosen = next((v for v in variants if v["format"] in ["flac", "wav", "aiff", "alac"]), None)
-            if chosen: adopted[key] = {"path": chosen["path"], "tier": "lossless", "filename_track": chosen["filename_track"]}
-            else:
-                chosen = next((v for v in variants if v["format"] in ["ogg", "aac", "m4a"]), variants[0])
-                adopted[key] = {"path": chosen["path"], "tier": "lossy" if chosen["format"] != "mp3" else "mp3", "filename_track": chosen["filename_track"]}
+            # variants はすでに group_by_logical_track 側でソートされているため、
+            # 先頭のファイルが最優先フォーマットとなる
+            chosen = variants[0]
+            
+            is_lossless = chosen["format"] in ["flac", "wav", "aiff", "alac", "aif"]
+            adopted[key] = {
+                "path": chosen["path"],
+                "tier": "lossless" if is_lossless else ("lossy" if chosen["format"] != "mp3" else "mp3"),
+                "filename_track": chosen["filename_track"]
+            }
         return adopted
 
     @staticmethod
