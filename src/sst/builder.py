@@ -109,7 +109,7 @@ class MetadataBuilder:
                 if is_misidentified_fingerprint:
                     logger.debug(f"[{app_id}] トラック '{clean_title}' の誤認識されたフィンガープリントアクションをSteamインデックス {s_idx} に修正しました")
         
-        if not pics_track:
+        if not pics_track and instr.get("action") not in ["use_mbz_search", "use_local"]:
             # Fallback to fuzzy matching
             fuzzy_clean_title = re.sub(r'^(\d+[\s._-]+)+', '', clean_title)
             fuzzy_clean_title = re.sub(r'\.[a-zA-Z0-9]+$', '', fuzzy_clean_title)

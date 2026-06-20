@@ -70,12 +70,22 @@ S.S.T automatically adopts the highest quality file for each logical track.
 
 | Tier | Category | Input Formats | Final Output Format |
 | :--- | :--- | :--- | :--- |
-| **Tier 1** | **Lossless** | FLAC, WAV, AIFF, ALAC | **AIFF (.aif)** |
+| **Tier 1** | **Lossless** | FLAC, WAV, AIFF, AIF, ALAC | **AIFF (.aif)** |
 | **Tier 2** | **Lossy High** | OGG, AAC, M4A | **MP3 (.mp3)** |
 | **Tier 3** | **Standard** | MP3 | **MP3 (.mp3)** |
 
-### 1.1 Deduplication Logic
-The system merges tracks by stripping quality tags like `(AIFF)` or `[FLAC]` from filenames. If multiple formats exist for the same track, the highest tier is prioritized.
+### 1.05 Audio Downsampling & Resampling Limits
+To ensure maximum compatibility with hardware media players (such as DJ CDJs) and prevent unnecessary file bloat:
+* **Maximum Output Limits**: 24-bit / 48 kHz.
+* **Conditional Downsampling**: Lossless source audio exceeding 24-bit depth or 48 kHz sampling rate (e.g. 24-bit/96kHz, 32-bit/192kHz) is dynamically downsampled to **24-bit / 48 kHz** during AIFF conversion using FFmpeg.
+* **No Upsampling**: Source audio already below the limits (e.g. 16-bit / 44.1 kHz CD quality) **must not** be upsampled to 24-bit/48kHz. It is converted to AIFF while preserving its original sampling rate and bit depth.
+### 1.1 Deduplication Logic & Tag Merging
+The system identifies and groups identical logical tracks across multiple physical files using a hybrid mapping strategy:
+1. **Track Number & Duration Matching**: Prioritizes mapping based on the track number. It extracts track numbers from the beginning of filenames, falling back to embedded metadata (`track_number` tag) if the filename lacks prefix numbers. If the duration difference is less than 1.0 second, they are merged.
+2. **Fuzzy Name Matching**: Standardizes filenames by removing noise and album names, then groups files if the name similarity is >= 85% and the duration difference is < 1.0 second.
+3. **Format Priority & Merging**: If multiple formats (variants) exist for the same track:
+   - The final audio source is adopted based on the order defined in the `.env` variable `AUDIO_FORMAT_PRIORITY` (default: `flac,alac,aiff,wav,mp3,m4a,ogg`).
+   - Metadata is merged across all variants in the priority order. Missing metadata in higher-priority formats (e.g. WAV having no tags) is automatically backfilled and merged from lower-priority formats (e.g. MP3) that contain embedded tags.
 
 ---
 

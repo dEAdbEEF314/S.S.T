@@ -13,7 +13,7 @@ from .db import DatabaseManager
 logger = logging.getLogger(__name__)
 
 # Target music extensions
-MUSIC_EXTENSIONS = {".flac", ".wav", ".mp3", ".aiff", ".m4a"}
+MUSIC_EXTENSIONS = {".flac", ".wav", ".mp3", ".aiff", ".aif", ".m4a", ".ogg"}
 
 class SteamScanner:
     def __init__(self, install_path: str, db: DatabaseManager, bridge_url: str, bridge_api_key: Optional[str] = None, api_key: Optional[str] = None, override_library_path: Optional[str] = None, cache_path: str = "data/scout_cache.json", language: str = "japanese"):
