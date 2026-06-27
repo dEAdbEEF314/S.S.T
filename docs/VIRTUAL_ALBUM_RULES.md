@@ -1,6 +1,6 @@
 # 仮想アルバム (Virtual Album) 監査・統合ルール
 
-本ドキュメントは、LLMが3つの仮想アルバム（STEAM, FINGERPRINT, LOCAL）を監査・統合する際の基準を定義します。
+本ドキュメントは、LLMが4つの仮想アルバム（STEAM, FINGERPRINT, MBZ_SEARCH, LOCAL）を監査・統合する際の基準を定義します。
 
 ## 1. 監査基準 (Audit Criteria)
 
@@ -26,5 +26,6 @@
 
 ## 3. アーカイブ判定 (Judgement)
 
-*   **ARCHIVE**: Identity Confidence >= 95 且つ Integrity Quality >= 90 の場合に選択。
+*   **ARCHIVE (通常パス)**: Identity Confidence >= 100 かつ Integrity Quality >= 95 の場合に選択。
+*   **ARCHIVE (STEAM-TRUST パス)**: Identity Confidence >= 100 かつ Steam/LOCAL が構造一致し、物理同定が欠落している場合に限り、Integrity Quality の閾値を 75 まで緩和。
 *   **REVIEW**: 上記を満たさない場合、または内容に明らかな矛盾（全く別の作品など）を感じる場合に選択。

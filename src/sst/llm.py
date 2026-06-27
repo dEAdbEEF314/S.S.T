@@ -17,6 +17,14 @@ class LLMOrganizer:
                  user_language: str = "ja",
                  llm_backend: str = "GEMINI",
                  draft_model: Optional[str] = None,
+                 ollama_num_ctx: int = 32768,
+                 ollama_num_predict: int = 4096,
+                 chunk_size_virtual: int = 20,
+                 chunk_size_metadata_ollama: int = 10,
+                 chunk_size_metadata_cloud: int = 30,
+                 chunk_adaptive: bool = True,
+                 chunk_output_tokens_per_track: int = 180,
+                 chunk_output_safety_ratio: float = 0.75,
                  metadata_source_priority: str = "MBZ,STEAM_PICS,STEAM_STORE,STEAM_TAGS,EMBEDDED",
                  priority_tit2: str = "FILE,EMBED,VDF,MBZ,PICS_API",
                  priority_tpe1: str = "EMBED,MBZ,PICS_API",
@@ -29,6 +37,14 @@ class LLMOrganizer:
         self.api_key = api_key
         self.model = model
         self.draft_model = draft_model
+        self.ollama_num_ctx = ollama_num_ctx
+        self.ollama_num_predict = ollama_num_predict
+        self.chunk_size_virtual = chunk_size_virtual
+        self.chunk_size_metadata_ollama = chunk_size_metadata_ollama
+        self.chunk_size_metadata_cloud = chunk_size_metadata_cloud
+        self.chunk_adaptive = chunk_adaptive
+        self.chunk_output_tokens_per_track = max(1, chunk_output_tokens_per_track)
+        self.chunk_output_safety_ratio = max(0.2, min(0.95, chunk_output_safety_ratio))
         self.user_language = user_language
         self.llm_backend = llm_backend.upper()
         self.metadata_source_priority = metadata_source_priority
@@ -40,6 +56,23 @@ class LLMOrganizer:
         self.priority_tpub = priority_tpub
         self.priority_apic = priority_apic
         self.limiter = DistributedRateLimiter(rpm, tpm, rpd)
+
+    def _adaptive_chunk_size(self, base_chunk_size: int) -> int:
+        if not self.chunk_adaptive or self.llm_backend != "OLLAMA":
+            return max(1, base_chunk_size)
+
+        safe_output_budget = int(self.ollama_num_predict * self.chunk_output_safety_ratio)
+        by_output = max(1, safe_output_budget // self.chunk_output_tokens_per_track)
+        return max(1, min(base_chunk_size, by_output))
+
+    @staticmethod
+    def _is_truncation_log(log_data: Dict[str, Any]) -> bool:
+        if not isinstance(log_data, dict):
+            return False
+        if log_data.get("error_code") == "response_truncated":
+            return True
+        err = str(log_data.get("error") or "").lower()
+        return "truncat" in err or "max_tokens" in err or "length" in err
 
     def check_availability(self) -> bool:
         """起動時にLLMサービスの可用性をチェックする"""
@@ -158,7 +191,7 @@ Generate an audit JSON object based on these three "Virtual Albums".
    If STEAM or FINGERPRINT define multiple discs, you MUST re-assign tracks to the correct discs in Phase 2.
 4. IDENTITY ALIASES: Game Developer (Steam) == Artist (MBZ), Publisher (Steam) == Label (MBZ). 
    These are NOT contradictions.
-5. JUDGEMENT: Choose ARCHIVE if Confidence >= 95 and Quality >= 90. 
+5. JUDGEMENT: Choose ARCHIVE if Confidence >= 100 and Quality >= 95. 
    When ARCHIVE is chosen, you MUST set "archive_vs_review_ratio" to {{"archive": 100, "review": 0}}.
 
 
@@ -195,7 +228,7 @@ Generate an audit JSON object based on these three "Virtual Albums".
         current_conf = global_res.get("identity_confidence", 0)
         
         if steam_count > 0 and steam_count == local_count:
-            if current_conf < 95 and (not v_fingerprint or current_conf >= 80):
+            if current_conf < 100 and (not v_fingerprint or current_conf >= 80):
                 logger.info(f"[{app_id}] Applying STEAM-TRUST: Structural match detected ({steam_count} tracks). Boosting confidence to 100%.")
                 global_res["identity_confidence"] = 100
                 global_res["archive_vs_review_ratio"] = {"archive": 100, "review": 0}
@@ -213,7 +246,7 @@ Generate an audit JSON object based on these three "Virtual Albums".
         if not isinstance(ratio, dict) or not ratio:
             global_res["archive_vs_review_ratio"] = {"archive": 0, "review": 100}
         
-        if conf < 90:
+        if conf < 100:
              return {}, {"phase1_res": global_res, "phase1_log": global_log}
 
         # Phase 2: Track-by-Track Mapping with Chunking
@@ -225,9 +258,12 @@ Generate an audit JSON object based on these three "Virtual Albums".
         ref_fingerprint = self._simplify_v_album(v_fingerprint, sampled=False).get("tracks", []) if v_fingerprint else []
         ref_fingerprint_str = json.dumps(ref_fingerprint, ensure_ascii=False) if v_fingerprint else "NOT AVAILABLE"
 
-        chunk_size = 20
-        for i in range(0, len(local_tracks), chunk_size):
-            chunk = local_tracks[i:i + chunk_size]
+        base_chunk_size = self.chunk_size_virtual
+        i = 0
+        while i < len(local_tracks):
+            dynamic_base = self._adaptive_chunk_size(base_chunk_size)
+            current_chunk_size = min(dynamic_base, len(local_tracks) - i)
+            chunk = local_tracks[i:i + current_chunk_size]
             s_chunk = []
             for idx, t in enumerate(chunk):
                 s_chunk.append({
@@ -280,6 +316,17 @@ Generate an audit JSON object based on these three "Virtual Albums".
 ```
 """
             track_res, track_log = self._call_llm(app_id, mapping_prompt, num_ctx=num_ctx)
+
+            # If output was truncated, retry this segment with smaller chunks.
+            if not track_res and self._is_truncation_log(track_log) and current_chunk_size > 1:
+                shrink_to = max(1, current_chunk_size // 2)
+                logger.warning(
+                    f"[{app_id}] LLM response appears truncated for virtual chunk at index={i}. "
+                    f"Reducing chunk size {current_chunk_size} -> {shrink_to}."
+                )
+                base_chunk_size = shrink_to
+                continue
+
             full_logs.append(track_log)
             
             if track_res and "track_instructions" in track_res:
@@ -321,6 +368,8 @@ Generate an audit JSON object based on these three "Virtual Albums".
                             "semantic_label": global_res["semantic_label"]
                         })
                         final_instructions[tid] = data
+
+            i += len(chunk)
 
         return final_instructions, {"phase1_res": global_res, "logs": full_logs}
 
@@ -476,7 +525,7 @@ In these cases, set `strategy` to `LOCAL_BASED` and do NOT lower the score due t
         id_conf = int(global_res.get("identity_confidence", 0))
         archive_ratio = int(global_res.get("archive_vs_review_ratio", {}).get("archive", 0))
         
-        if id_conf < 95 or archive_ratio < 90 or global_res.get("strategy") == "REVIEW_REQUIRED":
+        if id_conf < 100 or archive_ratio < 90 or global_res.get("strategy") == "REVIEW_REQUIRED":
             return {}, {"phase1_res": global_res, "phase1_log": global_log}
 
         # --- Phase 2: Sequential Track Mapping ---
@@ -492,10 +541,12 @@ In these cases, set `strategy` to `LOCAL_BASED` and do NOT lower the score due t
         stable_to_logical = {f"idx_{i}": tid for i, tid in enumerate(track_ids)}
         logical_to_stable = {tid: sid for sid, tid in stable_to_logical.items()}
         
-        chunk_size = 10 if self.llm_backend == "OLLAMA" else 30
-
-        for i in range(0, len(track_ids), chunk_size):
-            chunk = track_ids[i:i + chunk_size]
+        base_chunk_size = self.chunk_size_metadata_ollama if self.llm_backend == "OLLAMA" else self.chunk_size_metadata_cloud
+        i = 0
+        while i < len(track_ids):
+            dynamic_base = self._adaptive_chunk_size(base_chunk_size)
+            current_chunk_size = min(dynamic_base, len(track_ids) - i)
+            chunk = track_ids[i:i + current_chunk_size]
             
             # Create context with explicit local disc/track info
             chunk_context = {}
@@ -554,6 +605,15 @@ In these cases, set `strategy` to `LOCAL_BASED` and do NOT lower the score due t
             """
             res, log_data = self._call_llm(app_id, mapping_prompt, num_ctx=num_ctx)
 
+            if not res and self._is_truncation_log(log_data) and current_chunk_size > 1:
+                shrink_to = max(1, current_chunk_size // 2)
+                logger.warning(
+                    f"[{app_id}] LLM response appears truncated for metadata chunk at index={i}. "
+                    f"Reducing chunk size {current_chunk_size} -> {shrink_to}."
+                )
+                base_chunk_size = shrink_to
+                continue
+
             human_chunk_context = {stable_to_logical[sid]: ctx for sid, ctx in chunk_context.items()}
             human_mapping_prompt = mapping_prompt.replace(chunk_json, json.dumps(human_chunk_context, indent=2, ensure_ascii=False))
             log_data["human_prompt"] = human_mapping_prompt
@@ -600,6 +660,8 @@ In these cases, set `strategy` to `LOCAL_BASED` and do NOT lower the score due t
                     })
                     all_instructions[tid] = data
 
+            i += len(chunk)
+
         return all_instructions, {"phase1_res": global_res, "phase1_log": global_log, "chunks": full_logs}
 
     def _call_llm(self, app_id: int, prompt: str, num_ctx: Optional[int] = None) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
@@ -628,7 +690,7 @@ RULES:
 
         if self.llm_backend == "OLLAMA":
             url = f"{self.base_url}/api/chat"
-            options = {"temperature": 0.0, "num_predict": 4096}
+            options = {"temperature": 0.0, "num_predict": self.ollama_num_predict}
             if num_ctx:
                 options["num_ctx"] = num_ctx
             payload = {
@@ -653,6 +715,19 @@ RULES:
                     message = res_json.get("message", {})
                     content = message.get("content", "")
                     thinking = message.get("thinking", "")
+                    done_reason = res_json.get("done_reason")
+                    log_entry["meta"] = {
+                        "done": res_json.get("done"),
+                        "done_reason": done_reason,
+                        "prompt_eval_count": res_json.get("prompt_eval_count"),
+                        "eval_count": res_json.get("eval_count"),
+                    }
+
+                    if done_reason in {"length", "max_tokens"}:
+                        log_entry["error"] = f"response truncated by backend (done_reason={done_reason})"
+                        log_entry["error_code"] = "response_truncated"
+                        logger.warning(f"[{app_id}] LLM output truncated by backend: done_reason={done_reason}")
+                        return None, log_entry
                     
                     if self.llm_backend != "OLLAMA":
                         content = res_json.get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -683,6 +758,7 @@ RULES:
                             raise ValueError("No valid JSON object found in response")
                     except Exception as e:
                         logger.warning(f"[{app_id}] JSON strict parsing failed: {e}")
+                        log_entry["error_code"] = "json_parse_error"
                         raise
                 
                 log_entry["error"] = f"HTTP {response.status_code}"

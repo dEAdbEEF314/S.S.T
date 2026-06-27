@@ -19,7 +19,7 @@ flowchart TD
         LocalAudio["Local MP3/FLAC/WAV\n(FFprobe duration/tags)"]
         
         Prefetcher["prefetcher.py\n(Concurrent API Fetching)"]
-        APICache[(Local SQLite Cache\nacoustid_cache, mbz_cache)]
+        APICache[(Local SQLite Cache\napi_cache (service, query_key))]
         
         IdentMBZ["mbz.py"]
         IdentAcoustID["acoustid.py"]
@@ -61,7 +61,7 @@ flowchart TD
     Builder --> VirtualAlbums
     VirtualAlbums -->|Prompt Injection| LLM
     
-    LLM -->|Phase 1: Confidence < 90| Review
+    LLM -->|Phase 1: Confidence < 100| Review
     LLM -->|Phase 2: Timeout/Error| Review
     LLM -->|Phase 2: Success| LLMResult
     

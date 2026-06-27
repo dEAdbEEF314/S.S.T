@@ -41,15 +41,16 @@
 ## 2. 信頼度ゲートによる意思決定（絶対的信頼）
 以下のゲート方式スコアリングを遵守しなければなりません：
 - **ARCHIVE**: Identity Confidence == 100 かつ Integrity Quality >= 95。
+- **ARCHIVE (STEAM-TRUST 例外)**: Identity Confidence == 100 かつ Steam/LOCAL が構造一致し、物理同定が欠落している場合は Integrity Quality >= 75 を許容。
 - **REVIEW**: 上記を満たさない場合、またはソース仕様にない "Dirty Tags"（曲名への番号混入）がある場合。
 
 ## 3. 必須のレビュー・ワークフロー
-1. **システムのアクション**: 不確実なアイテムをフォルダ展開済みの状態で `review/` へ出力する。
+1. **システムのアクション**: 不確実なアイテムを `output/review/` 配下へ ZIP アーカイブとして出力する。
 2. **ユーザーのアクション**: **MP3tag** 等を使用して手動でメタデータを修正する。
-3. **確定（Finalization）**: `./sst --finalize` を実行し、修正されたタグをデータベースに一括取り込みする。
+3. **修正結果の取り込み**: 現時点では未定義・未実装。将来機能として扱う。
 
 ## 4. パイプラインと安全性
-- **3段階確認**: `--delete-db` および `--finalize` 実行時には、3 ステップの確認を必須とする。
+- **3段階確認**: `--reset-db` 実行時には 3 ステップの確認を必須とする。
 - **ファストトラック**: MusicBrainz 内に直接リンクがあり、かつ曲数が全ソースで一致する場合にのみ LLM をバイパスする。
 - **バッファの分離**: すべての一時処理は `/tmp/sst-work/buffer_*` で行い、ワークスペースを汚染してはならない。
 
@@ -68,7 +69,7 @@
 
 すべての意思決定は以下の問いに答えなければなりません：
 1. それは **Steam PICS** または **MusicBrainz** のデータによって裏付けられているか？
-2. **100/95 の閾値**を満たしているか？
+2. **通常は 100/95 の閾値**を満たしているか？（STEAM-TRUST 例外では Quality 75 まで緩和可能）
 3. それは再現可能か？
 
 いずれかの答えが「いいえ」の場合 → **REVIEW**。
@@ -129,15 +130,16 @@ If data is missing: **DO NOT GUESS**.
 ## 2. Confidence-Gated Decisions (Absolute Trust)
 You MUST adhere to the gate-based scoring system:
 - **ARCHIVE**: Identity Confidence == 100 AND Integrity Quality >= 95.
+- **ARCHIVE (STEAM-TRUST exception)**: If Identity Confidence == 100, Steam/LOCAL are structurally aligned, and fingerprint evidence is missing, Integrity Quality >= 75 is allowed.
 - **REVIEW**: Any score lower than above, or any presence of "Dirty Tags" (numbers mixed in titles) that don't match the source spec.
 
 ## 3. Mandatory Review Workflow
-1.  **System Action**: Move uncertain items to `review/` as extracted folders.
+1.  **System Action**: Output uncertain items as ZIP archives under `output/review/`.
 2.  **User Action**: Correct metadata manually using tools like **MP3tag**.
-3.  **Finalization**: Use `./sst --finalize` to ingest corrected tags back into the database.
+3.  **Ingestion of corrected results**: Currently undefined/unimplemented. Treat this as future work.
 
 ## 4. Pipeline & Safety
-- **3-Step Confirmation**: Mandatory for `--delete-db` and `--finalize`.
+- **3-Step Confirmation**: Mandatory for `--reset-db`.
 - **Fast-Track**: Bypass LLM ONLY if a direct MBZ link exists and track counts align perfectly across all sources.
 - **Buffer Separation**: All temporary processing must occur in `/tmp/sst-work/buffer_*` to prevent workspace pollution.
 
@@ -156,7 +158,7 @@ You MUST adhere to the gate-based scoring system:
 
 Every decision must answer:
 1. Is it supported by **Official Steam PICS** or **MusicBrainz**?
-2. Does it meet the **100/95 threshold**?
+2. Does it meet the **100/95 threshold** in the normal path? (STEAM-TRUST exception may relax Quality to 75.)
 3. Is it reproducible?
 
 If ANY answer is no → **REVIEW**.

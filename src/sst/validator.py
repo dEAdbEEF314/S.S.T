@@ -88,19 +88,19 @@ class ResultValidator:
         elif audio_warn: issues.append("Audio quality warning")
 
         # --- 3. Confidence & Quality Thresholds ---
-        quality_threshold = 90
+        quality_threshold = 95
         if is_steam_trust and id_conf >= 100:
-            quality_threshold = 80 # Relaxed for perfect Steam matches without fingerprint
+            quality_threshold = 75 # Relaxed for perfect Steam matches without fingerprint
             
         # Decision Logic: Prioritize scores over LLM's explicit ratio if they are high enough
-        is_score_perfect = (id_conf >= 95 and quality >= quality_threshold)
+        is_score_perfect = (id_conf >= 100 and quality >= quality_threshold)
         llm_wants_review = (ratio.get("archive", 0) < 50 or strategy == "REVIEW_REQUIRED")
 
         if not is_score_perfect and llm_wants_review:
             issues.append("LLM's decision (Low Confidence/Ratio)")
         elif quality < quality_threshold:
             issues.append(f"Quality too low ({quality}%)")
-        elif id_conf < 95:
+        elif id_conf < 100:
             issues.append(f"Confidence too low ({id_conf}%)")
 
         # --- 4. Final Status Determination ---

@@ -10,7 +10,7 @@ class PackageManager:
     @staticmethod
     def save_local_package(app_id: int, status: str, album_name: str, source_dir: Path, logs: Dict[str, Any], output_root: str):
         """
-        Creates a ZIP archive, moves it to the target Windows output, and extracts it.
+        Creates a ZIP archive and preserves it under the configured output root.
         """
         from .utils import ensure_wsl_path
         import subprocess

@@ -7,6 +7,15 @@ Steam API、MusicBrainz、およびローカルの埋め込みタグからの情
 ## 📝 はじめに
 このシステムは、作者が自分自身の音楽ライブラリを整理するために作成したツールを、バックアップとしてGitHubに公開しているものです。`LICENSE.md` の内容に従う限り、どなたでも自由に使用・改変いただけます。
 
+- 最新のドキュメント整合チェック結果: `report/doc_consistency_check_20260627.md`
+
+### ドキュメント導線
+- コア仕様: `docs/SST.md`, `docs/LOGIC.md`, `docs/TAGGING_RULE.md`
+- 運用/環境: `docs/DEPLOYMENT_GUIDE_jp.md`, `docs/TEST_ENVIRONMENT.md`, `docs/error_handling.md`
+- 補助仕様: `docs/Virtual_Album.md`, `docs/data_flow_diagram.md`, `docs/cache_architecture.md`, `docs/api_rate_limit.md`, `docs/discord_integration.md`, `docs/smart_duplicate_resolution.md`, `docs/wsl_path_conversion.md`
+- エージェント向け: `docs/AGENT_GUIDE.md`, `docs/VIRTUAL_ALBUM_RULES.md`
+- 提案メモ（歴史資料）: `docs/archive/Inference_Optimization.md`, `docs/archive/Parallel_Optimization.md`
+
 ## 🚀 システムアーキテクチャ: ハイブリッド・エッジ処理
 S.S.T は **ハイブリッド・エッジプロセッサ** です。音声変換やデータ取得などの重い処理はローカルマシン上で実行し、LLM推論はユーザーの好みに応じてクラウドAPI（Gemini等）またはローカル環境（Ollama）を選択して実行します。これにより、環境に応じたパフォーマンスとプライバシーのバランスを実現します。
 
@@ -59,9 +68,9 @@ DJ機材での視認性と情報の網羅性を両立した形式を採用して
 - **セパレータ**: タグ区切りには `/ ` を使用。
 - **自動調整**: 文字数制限（約2000バイト）を超える場合、`[ ]` 内のタグを後ろからタグ単位で削除して収めます。
 
-## ⚠️ レビューと確定
-- **失敗の隔離**: 確証がないアルバムは自動的に `output/review/` に隔離。理由は `AUDIT_REPORT.html` に記載。
-- **Finalize**: 手動修正後、`./sst --finalize` を実行してDBを更新。
+## ⚠️ レビュー
+- **失敗の隔離**: 確証がないアルバムは `output/review/` 配下へ ZIP で保存。理由は `AUDIT_REPORT.html` に記載。
+- **手動修正**: `output/review/` 配下の対象 ZIP を展開してメタデータ修正を行います。修正結果の自動取り込み機能は将来対応です。
 
 ## ❤️ 最後に
 もし、このシステムがあなたの役に立ち、気に入っていただけたなら、**明日あなたの周りで見かける「誰か困っている人」を、ほんの少しだけ助けてあげてください。** それがこのシステムへの一番の対価です。
@@ -74,6 +83,15 @@ S.S.T is a high-precision, standalone CLI tool that automatically identifies, en
 
 ## 📝 Introduction
 This tool was created for personal library organization and is shared as a backup. You are free to use and modify it per `LICENSE.md`.
+
+- Latest documentation consistency check: `report/doc_consistency_check_20260627.md`
+
+### Documentation Map
+- Core specs: `docs/SST.md`, `docs/LOGIC.md`, `docs/TAGGING_RULE.md`
+- Operations/Environment: `docs/DEPLOYMENT_GUIDE_jp.md`, `docs/TEST_ENVIRONMENT.md`, `docs/error_handling.md`
+- Supporting specs: `docs/Virtual_Album.md`, `docs/data_flow_diagram.md`, `docs/cache_architecture.md`, `docs/api_rate_limit.md`, `docs/discord_integration.md`, `docs/smart_duplicate_resolution.md`, `docs/wsl_path_conversion.md`
+- Agent-facing: `docs/AGENT_GUIDE.md`, `docs/VIRTUAL_ALBUM_RULES.md`
+- Proposal notes (historical): `docs/archive/Inference_Optimization.md`, `docs/archive/Parallel_Optimization.md`
 
 ## 🚀 System Architecture: Hybrid Edge Processing
 S.S.T is a **Hybrid Edge Processor**. Audio conversion and data gathering are performed locally, while LLM inference can be offloaded to cloud APIs (like Gemini) or run locally (via Ollama) depending on your preference for performance or privacy.
@@ -127,9 +145,9 @@ Optimized for both information density and DJ gear compatibility.
 - **Separator**: Uses `/ ` as the tag delimiter.
 - **Auto-Pruning**: If the tag exceeds ID3v2.3 limits (~2000 bytes), community tags are removed from the end of the `[ ]` section one-by-one.
 
-## ⚠️ Review & Finalization
-- **Isolation**: Ambiguous metadata triggers a move to `output/review/`. Reasoning is provided in `AUDIT_REPORT.html`.
-- **Finalize**: After manual correction, run `./sst --finalize` to update the database.
+## ⚠️ Review
+- **Isolation**: Ambiguous metadata is preserved as ZIP archives under `output/review/`. Reasoning is provided in `AUDIT_REPORT.html`.
+- **Manual correction**: Extract and correct target ZIPs under `output/review/`. Automated ingestion of corrected results is planned as a future feature.
 
 ## ❤️ A Final Request
 If you find this system useful, **please help someone in need tomorrow, even in a small way.** That is the best way to "pay" for this software.
