@@ -78,67 +78,6 @@ def render_summary_table(results: List[LocalProcessResult], lang: str, console: 
     for r in reviews: table.add_row(str(r.app_id), r.album_name, r.status.capitalize(), f"{r.confidence_score}%", r.message)
     console.print(table)
 
-def handle_finalize(config: Config, db: DatabaseManager, console: Console):
-    from .tagger import AudioTagger
-    from .utils import ensure_wsl_path
-    from datetime import timezone, timedelta
-    
-    review_dir = ensure_wsl_path(config.sst_output_dir) / "review"
-    if not review_dir.exists():
-        return console.print(f"[yellow]レビューディレクトリが見つかりません: {review_dir}[/yellow]")
-
-    folders = [f for f in review_dir.iterdir() if f.is_dir()]
-    if not folders:
-        return console.print("[yellow]レビューディレクトリにアルバムが見つかりません。[/yellow]")
-
-    console.print(f"[bold red]!!! 警告: {len(folders)} 件のアルバムをレビューからファイナライズします !!![/bold red]")
-    console.print("[dim]ファイルからメタデータを取り込み、データベースの履歴を更新します。[/dim]")
-    
-    # 3-Step Confirmation
-    if not Confirm.ask("[Step 1/3] ファイナライズを続行しますか？", console=console): return
-    if input("[Step 2/3] 続行するには 'YES' と入力してください: ") != 'YES': return
-    if input("[Step 3/3] 確認するには 'FINALIZE' と入力してください: ") != 'FINALIZE': return
-
-    console.print(f"[bold blue]{len(folders)} 件のアルバムをファイナライズしています...[/bold blue]")
-    
-    for album_dir in folders:
-        # Extract AppID from folder name (format: APPID_Name)
-        try:
-            app_id = int(album_dir.name.split('_')[0])
-        except (ValueError, IndexError):
-            console.print(f"[red]スキップ {album_dir.name}: AppIDを抽出できませんでした。[/red]")
-            continue
-
-        audio_files = []
-        for ext in [".mp3", ".aif", ".flac", ".wav"]:
-            audio_files.extend(list(album_dir.rglob(f"*{ext}")))
-        
-        if not audio_files:
-            console.print(f"[yellow]スキップ {album_dir.name}: オーディオファイルが見つかりません。[/yellow]")
-            continue
-
-        # Extract metadata from the first audio file as a representative
-        representative_tags = AudioTagger.read_tags(audio_files[0])
-        album_name = representative_tags.get("album") or album_dir.name.split('_', 1)[1].replace('_', ' ')
-        
-        processed_at = datetime.now(timezone(timedelta(hours=9))).isoformat()
-        
-        # Build a minimal summary_meta based on what we can see now
-        summary_meta = {
-            "app_id": app_id,
-            "album_name": album_name,
-            "status": "archive",
-            "processed_at": processed_at,
-            "tracks": [{"file_path": str(p.relative_to(album_dir)), "tags": AudioTagger.read_tags(p)} for p in audio_files],
-            "note": "Finalized by user review"
-        }
-        
-        db.record_processed(app_id, "archive", album_name, processed_at, summary_meta)
-        console.print(f"[green]✓ {album_name} (AppID: {app_id}) がファイナライズされ、アーカイブとして記録されました。[/green]")
-
-    console.print("\n[bold green]ファイナライズが完了しました。S.S.Tのデータベースが更新されました。[/bold green]")
-    console.print("[dim]注意: ファイルは削除されていません。これでライブラリに移動できます。[/dim]")
-
 def fetch_steam_userdata(config: Config, console: Console):
     if not config.steam_login_secure:
         return
@@ -188,7 +127,6 @@ def main():
     parser.add_argument("--appid", type=str, help="Single AppID or comma-separated list of AppIDs")
     parser.add_argument("--dev", action="store_true", help="Run in development mode (DEBUG logs, unique log files)")
     parser.add_argument("--reset-db", action="store_true")
-    parser.add_argument("--finalize", action="store_true", help="Ingest corrected metadata from review folders into DB")
     parser.add_argument("--fingerprint-all", action="store_true", help="Scan every track with AcoustID (slow but extremely precise)")
     parser.add_argument("--yes", "-y", action="store_true", help="Bypass confirmation prompts (Automated mode)")
     parser.add_argument("--prefetch-only", action="store_true", help="Run only Phase 1 (Data Gathering & Caching) without invoking the LLM")
@@ -196,7 +134,7 @@ def main():
     console = Console()
 
     # If no specific action is provided, show help and exit (safety gate)
-    if not any([args.all, args.limit, args.appid, args.reset_db, args.finalize]):
+    if not any([args.all, args.limit, args.appid, args.reset_db]):
         parser.print_help()
         return
 
@@ -219,17 +157,15 @@ def main():
     
     # --- Singleton Lock ---
     lock_file = Path("data/sst.lock")
-    if not args.finalize: # Finalize is quick and often manual
-        if lock_file.exists():
-            # Check if the process is actually running (simple PID check could be added, but for now just block)
-            console.print("[bold red]❌ エラー: S.S.Tの別のインスタンスが既に実行中です。[/bold red]")
-            console.print(f"[dim]実行されていないことが確実な場合は、手動で {lock_file} を削除してください。[/dim]")
-            return
-        lock_file.touch()
+    if lock_file.exists():
+        # Check if the process is actually running (simple PID check could be added, but for now just block)
+        console.print("[bold red]❌ エラー: S.S.Tの別のインスタンスが既に実行中です。[/bold red]")
+        console.print(f"[dim]実行されていないことが確実な場合は、手動で {lock_file} を削除してください。[/dim]")
+        return
+    lock_file.touch()
 
     try:
         db = DatabaseManager(Path(config.sst_db_path))
-        if args.finalize: return handle_finalize(config, db, console)
         if args.all:
             if not (args.yes or handle_all_confirm(console)): return
 
@@ -315,7 +251,7 @@ def main():
         logger.error(f"致命的なシステムエラー: {e}", exc_info=True)
         console.print(f"[bold red]致命的なエラー: {e}[/bold red]")
     finally:
-        if not args.finalize and lock_file.exists():
+        if lock_file.exists():
             lock_file.unlink()
 
 if __name__ == "__main__":

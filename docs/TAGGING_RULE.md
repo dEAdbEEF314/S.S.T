@@ -28,8 +28,8 @@ DJ機材および Windows エクスプローラーとの最大互換性を確保
 
 | ID3 フレーム | フィールド | 内容 / フォーマットルール |
 | :--- | :--- | :--- |
-| **TIT2** | 曲名 | **バイリンガル・タイトル (Plan B)**: `{Local} / {English}`<br>※VGMdb/MBZ/Steamから取得。結合後 60文字を超える場合は `{Local}` のみを優先。 |
-| **TPE1** | アーティスト | VGMdb/MusicBrainz のクレジット（最優先）または Steam 開発元。 |
+| **TIT2** | 曲名 | **バイリンガル・タイトル (Plan B)**: `{Local} / {English}`<br>※MBZ/Steam/ローカル情報から構築。結合後 60文字を超える場合は `{Local}` のみを優先。 |
+| **TPE1** | アーティスト | MusicBrainz クレジット（最優先）または Steam 開発元。 |
 | **TALB** | アルバム名 | Steam 公式タイトルまたはバイリンガル・タイトル. |
 | **TPE2** | アルバムアーティスト | `開発元, 出版社` |
 | **TCON** | ジャンル | `STEAM VGM, [全ジャンル]` (カンマ区切り) |
@@ -46,8 +46,9 @@ DJ機材および Windows エクスプローラーとの最大互換性を確保
 
 ## 3. 実装要件
 
-- **ディレクトリ構成**: 
-  - 最終出力は `{SST_OUTPUT_DIR}/{archive | review}/{app_id}_{Album_name}/disc_{DiscNumber}/{filename}` の形式で保存されます。
+- **出力形式**: 
+  - 最終成果物は `{SST_OUTPUT_DIR}/{archive | review}/{app_id}_{Album_name}.zip` の ZIP アーカイブとして保存されます。
+  - `disc_{DiscNumber}/{filename}` は ZIP 内部の構成です。
 - **レポート形式**:
   - 各アルバムの処理結果は、リッチな装飾を施した **HTML 形式 (`AUDIT_REPORT.html`)** で出力されます。従来の Markdown 形式は廃止またはこの HTML に統合されます。
 - **セパレータ**:
@@ -98,8 +99,8 @@ To ensure maximum compatibility with DJ hardware and Windows Explorer, the **ID3
 
 | ID3 Frame | Field | Content / Format Rule |
 | :--- | :--- | :--- |
-| **TIT2** | Title | **Bilingual Title (Plan B)**: `{Local} / {English}`<br>Retrieved from VGMdb/MBZ/Steam. If the combined title exceeds 60 characters, defaults to `{Local}` only. |
-| **TPE1** | Artist | VGMdb/MusicBrainz credits (Priority) or Steam developer. |
+| **TIT2** | Title | **Bilingual Title (Plan B)**: `{Local} / {English}`<br>Built from MBZ/Steam/local sources. If the combined title exceeds 60 characters, defaults to `{Local}` only. |
+| **TPE1** | Artist | MusicBrainz credits (Priority) or Steam developer. |
 | **TALB** | Album | Official Steam title or Bilingual Title. |
 | **TPE2** | Album Artist | `Developer, Publisher` |
 | **TCON** | Genre | `STEAM VGM, [All Genres]` (comma separated) |
@@ -116,8 +117,9 @@ To ensure maximum compatibility with DJ hardware and Windows Explorer, the **ID3
 
 ## 3. Implementation Requirements
 
-- **Directory Structure**:
-  - Final outputs are saved as `{SST_OUTPUT_DIR}/{archive | review}/{app_id}_{Album_name}/disc_{DiscNumber}/{filename}`.
+- **Output Format**:
+  - Final artifacts are preserved as ZIP archives: `{SST_OUTPUT_DIR}/{archive | review}/{app_id}_{Album_name}.zip`.
+  - `disc_{DiscNumber}/{filename}` is the internal structure inside each ZIP.
 - **Report Format**:
   - Processing results for each album are output in a rich **HTML format (`AUDIT_REPORT.html`)**. Legacy Markdown reports are deprecated or integrated into this HTML.
 - **Separators**:

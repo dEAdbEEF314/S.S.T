@@ -28,8 +28,7 @@ show_help() {
     echo "      --fingerprint-all Scan every track with AcoustID (slow but extremely precise)."
     echo ""
     echo "Maintenance & Stats (Exclusive):"
-    echo "      --finalize     Ingest corrected metadata from review folders (Requires 3 confirmations)."
-    echo "      --delete-db    Reset the local database (Requires 3 confirmations)."
+    echo "      --reset-db     Reset the local database (Requires 3 confirmations)."
     echo "      --prefetch-only Run only Phase 1 (Data Gathering & Caching) without invoking the LLM."
     echo "      --stats        Show processing statistics from the database."
     echo "      --logs [AppID] Browse processing history or show album details."
@@ -71,11 +70,7 @@ while [[ $# -gt 0 ]]; do
             CMD_ARGS+=("--appid" "$2")
             shift 2
             ;;
-        --finalize)
-            CMD_ARGS+=("--finalize")
-            shift
-            ;;
-        --delete-db)
+        --reset-db)
             CMD_ARGS+=("--reset-db")
             shift
             ;;

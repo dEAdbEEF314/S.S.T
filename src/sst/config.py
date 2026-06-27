@@ -21,6 +21,14 @@ class Config(BaseSettings):
     llm_limit_rpm: int = 15
     llm_limit_tpm: int = 10000000
     llm_limit_rpd: int = 1500
+    llm_ollama_num_ctx: int = 32768
+    llm_ollama_num_predict: int = 4096
+    llm_chunk_size_virtual: int = 20
+    llm_chunk_size_metadata_ollama: int = 10
+    llm_chunk_size_metadata_cloud: int = 30
+    llm_chunk_adaptive: bool = True
+    llm_chunk_output_tokens_per_track: int = 180
+    llm_chunk_output_safety_ratio: float = 0.75
 
     max_parallel_albums: int = 2
     max_parallel_small: int = 4

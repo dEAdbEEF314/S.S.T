@@ -19,15 +19,46 @@ MusicBrainzやAcoustID、Steam PICSといった外部APIへの通信は、ネッ
 ## 4. LLM推論のエラーとタイムアウト
 LLM（ローカルまたはクラウド）の推論プロセスは、最も時間がかかり不安定になりやすいポイントです。
 
-* **リトライ機構**: `src/sst/llm.py` における推論リクエストは、通信タイムアウト（デフォルト `300秒`）や、LLMが不正なJSONフォーマットを返却した場合に備え、最大3回のリトライが行われます。
+* **リトライ機構**: `src/sst/llm.py` における推論リクエストは、通信タイムアウト（デフォルト `600秒`）や、LLMが不正なJSONフォーマットを返却した場合に備え、最大3回のリトライが行われます。
 * **推論失敗時のフォールバック**: リトライ上限に達しても有効な応答が得られなかった場合（Phase 2 タイムアウト等）、推論結果は `None` としてプロセッサに返却されます。
 * **Reviewへの降格**: プロセッサは推論結果が `None` または空辞書であること検知すると、処理を中止し、該当のアルバムを未処理状態のまま `Review` ディレクトリへ送ります（Discord連携が有効な場合は通知はスキップされ、静かに隔離されます）。
+* **切断検知 (`done_reason`)**: OLLAMA応答で `done_reason=length|max_tokens` を検知した場合、`response_truncated` として扱い、通常のJSONパース失敗とは分離して記録されます。
+* **チャンク自動縮小リトライ**: 切断が検知されたチャンクは、その場でチャンクサイズを半分にして再試行されます。これにより、長文応答による欠落をランタイムで縮退回復します。
+
+## 4.1 LLM可変設定（運用チューニング）
+
+LLM切断再発時は `.env` で以下を調整し、再発率を比較します。
+
+* `LLM_OLLAMA_NUM_CTX`
+* `LLM_OLLAMA_NUM_PREDICT`
+* `LLM_CHUNK_SIZE_VIRTUAL`
+* `LLM_CHUNK_SIZE_METADATA_OLLAMA`
+* `LLM_CHUNK_SIZE_METADATA_CLOUD`
+* `LLM_CHUNK_ADAPTIVE`
+* `LLM_CHUNK_OUTPUT_TOKENS_PER_TRACK`
+* `LLM_CHUNK_OUTPUT_SAFETY_RATIO`
 
 ## 5. Validatorによる論理エラーの安全装置 (Fail-safe)
 Pythonの例外（Exception）としてシステムが落ちるわけではありませんが、LLMが「論理的に破綻したメタデータ（例: Track番号の重複、タグのゴミ）」を生成してしまった場合のエラーハンドリングです。
 
 * **動作**: `src/sst/validator.py` が最終チェックを行い、論理エラーを検知した場合は `issues` リストに内容を追記します。
 * **降格処理**: `issues` が1つでも存在する場合、システムは「Archive」プロセスを即座に破棄し、「Review」へとステータスをダウングレードさせます。これにより、破壊されたタグ情報のままライブラリに書き込まれる事故（データ汚染）を物理的に防ぎます。
+
+## 5.1 判定しきい値
+
+* **通常パス**: `identity_confidence >= 100` かつ `integrity_quality >= 95`
+* **STEAM-TRUST パス**: `identity_confidence >= 100` の場合、品質しきい値を `75` まで緩和
+
+## 5.2 Review診断トレース
+
+`process_album` は `diagnostics` を DB 保存メタデータに付与し、Review根因の追跡を可能にします。
+
+* `diagnostics.trace`
+* `diagnostics.review_cause_code`
+* `diagnostics.upstream_cause_code`
+* `diagnostics.packager_invoked`
+
+分析は `Maintenance/analyze_processing_results.py` で集計し、原因分布や DB/出力整合を確認できます。
 
 ## 6. 通知レベルとの連動
 * **WARNING**: Validatorによって論理エラーとしてReviewに降格した場合、Discord Webhookを通じて理由と共に警告が送信されます。

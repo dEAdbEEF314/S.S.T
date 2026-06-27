@@ -83,6 +83,14 @@ class DatabaseManager:
 
     def record_processed(self, app_id: int, status: str, name: str, processed_at: str, summary_meta: Dict):
         """Saves or updates a processing result."""
+        if status == "review" and not summary_meta.get("message"):
+            diag = summary_meta.get("diagnostics", {})
+            logger.warning(
+                "Review metadata missing message for AppID %s (cause=%s, upstream=%s)",
+                app_id,
+                diag.get("review_cause_code"),
+                diag.get("upstream_cause_code"),
+            )
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO processed_albums (app_id, status, album_name, processed_at, metadata_json) VALUES (?, ?, ?, ?, ?)",
