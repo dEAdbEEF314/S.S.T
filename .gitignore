@@ -107,6 +107,7 @@ output_test/
 
 # ── Maintenance Scripts & Tests ─────────────────────────────
 Maintenance/
+tests/
 
 # ── Work Directory ─────────────────────────────
 sst-work/
