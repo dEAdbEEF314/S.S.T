@@ -255,7 +255,7 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
 
         action_required = ""
         if status == "review":
-            action_required = f"## 🛠️ Action Required\n- [ ] Open the output ZIP file and inspect the tags.\n- [ ] Use MP3tag to verify track titles and artists against the [Steam Store](https://store.steampowered.com/app/{app_id}).\n- [ ] If tags are incorrect, fix them and run `./sst --finalize` to update the database.\n"
+            action_required = f"## 🛠️ Action Required\n- [ ] Open the output ZIP file and inspect the tags.\n- [ ] Use MP3tag to verify track titles and artists against the [Steam Store](https://store.steampowered.com/app/{app_id}).\n"
 
         display_reason = reason
         if is_fast:

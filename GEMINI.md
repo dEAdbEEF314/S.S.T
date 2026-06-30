@@ -13,10 +13,11 @@
 - **Logic Priority**: Archive reliability is paramount. If metadata is ambiguous, route to `Review`.
 - **Mandatory Change History Recording**: Whenever you make changes, modifications, new additions, or deletions to any code or files in this workspace (except for system cleanup performed before tests), you MUST append an entry to `CHANGE_HISTORY.md`. Each entry must include: "Date and time (YYYY/MM/DD hh:mm:ss), name of the modified file, and details of the changes (in Japanese)." Always append new entries to the end of the file to maintain chronological order.
 - **Installed tools**: rg, fd, uv, ruff, jq, pytest are already installed. If there are any other tools you would like to install, please explain what they are to the user and ask if they would like to install them.
+- **Missing tools**: 実行しようとしたツールやコマンドが「コマンドが見つかりません (command not found)」というエラーで失敗した場合、ユーザーに対してそのツールのインストールをリクエストしてください。
 
 ## 📂 Directory Layout
 
 - `src/scout/`: Core application logic.
 - `data/`: Local state DB and cache.
 - `docs/`: Technical specifications and logic definitions.
-- `Maintenance/`: Test scripts, reproduction scripts, and temporary test data. All manual verification and investigative scripts MUST be placed here.
+- `tests/`: Test scripts, reproduction scripts, and temporary test data. All manual verification and investigative scripts MUST be placed here.

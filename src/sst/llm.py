@@ -194,6 +194,7 @@ Generate an audit JSON object based on these three "Virtual Albums".
 5. JUDGEMENT: Choose ARCHIVE if Confidence >= 100 and Quality >= 95. 
    When ARCHIVE is chosen, you MUST set "archive_vs_review_ratio" to {{"archive": 100, "review": 0}}.
 
+**NOTE: All reasoning and text values (confidence_reason, semantic_label, global_tags) MUST be output in the language code: {self.user_language}. If {self.user_language} is "ja" (Japanese), you MUST write in native Japanese and strictly avoid Chinese characters or vocabulary.**
 
 ### OUTPUT FORMAT (JSON ONLY, NO PREAMBLE, NO THINKING):
 ```json
@@ -295,6 +296,8 @@ Generate an audit JSON object based on these three "Virtual Albums".
 6. If action is "use_fingerprint", "use_steam", or "use_mbz_search", MUST provide "matched_v_idx" from the respective reference album.
 7. No Duplicate Tracks: Ensure that the final mapping does not result in duplicate track numbers within the same disc.
 8. Output JSON ONLY. No preamble, no thinking.
+
+**NOTE: All reasoning (reason) MUST be output in the language code: {self.user_language}. If {self.user_language} is "ja" (Japanese), you MUST write in native Japanese and strictly avoid Chinese characters or vocabulary.**
 
 ### MANDATORY OUTPUT FORMAT (JSON ONLY):
 ```json

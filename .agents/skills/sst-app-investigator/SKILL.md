@@ -9,12 +9,12 @@ This skill provides the procedures and tools to investigate why a specific Steam
 
 ## 🛠️ Automated Investigation Tool
 
-You can use the automated script in `Maintenance/investigate_app.py` to check the DB record and ZIP log bundle at once.
+You can use the automated script in `tests/investigate_app.py` to check the DB record and ZIP log bundle at once.
 
 ### Usage
 Run the following command in the workspace root:
 ```bash
-uv run python Maintenance/investigate_app.py <AppID>
+uv run python tests/investigate_app.py <AppID>
 ```
 
 ### Example Output
