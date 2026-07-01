@@ -1,6 +1,16 @@
 import logging
 import re
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
+from .config import (
+    PriorityConfig,
+    DEFAULT_PRIORITY_TIT2,
+    DEFAULT_PRIORITY_TPE1,
+    DEFAULT_PRIORITY_TPOS,
+    DEFAULT_PRIORITY_TRCK,
+    DEFAULT_PRIORITY_TPUB,
+    DEFAULT_PRIORITY_TYER,
+    DEFAULT_TITLE_CLEANING_TRUSTED_SOURCES,
+)
 from .models import SteamMetadata
 
 logger = logging.getLogger("sst.builder")
@@ -42,7 +52,7 @@ class MetadataBuilder:
         track_sources: Dict,
         user_language_639_2: str,
         global_identity: Dict[str, Any] = {},
-        priorities: Optional[Dict[str, str]] = None,
+        priorities: Optional[Union[PriorityConfig, Dict[str, str]]] = None,
         total_discs: int = 1
     ) -> Dict[str, Any]:
         """
@@ -52,14 +62,20 @@ class MetadataBuilder:
         """
         # Set default priorities if not passed
         if priorities is None:
-            priorities = {
-                "TIT2": "FILE,EMBED,VDF,MBZ,PICS_API",
-                "TPE1": "EMBED,MBZ,PICS_API",
-                "TRCK": "PICS_API,MBZ,FILE,EMBED",
-                "TPOS": "PICS_API,EMBED,MBZ",
-                "TYER": "EMBED,MBZ,WEB_API",
-                "TPUB": "MBZ,PICS_API",
-            }
+            priorities = PriorityConfig(
+                tit2=DEFAULT_PRIORITY_TIT2,
+                tpe1=DEFAULT_PRIORITY_TPE1,
+                trck=DEFAULT_PRIORITY_TRCK,
+                tpos=DEFAULT_PRIORITY_TPOS,
+                tyer=DEFAULT_PRIORITY_TYER,
+                tpub=DEFAULT_PRIORITY_TPUB,
+                trusted_title_sources=DEFAULT_TITLE_CLEANING_TRUSTED_SOURCES,
+            )
+
+        if isinstance(priorities, PriorityConfig):
+            priorities_map = priorities.to_builder_dict()
+        else:
+            priorities_map = priorities
 
         # --- 1. Prepare Data Extractors ---
 
@@ -145,7 +161,7 @@ class MetadataBuilder:
         chosen_src = "LLM_OVERRIDE" if res_title else "VDF"
         
         if not res_title:
-            tit2_priority = priorities.get("TIT2", "FILE,EMBED,VDF,MBZ,PICS_API")
+            tit2_priority = priorities_map.get("TIT2", DEFAULT_PRIORITY_TIT2)
             for src in tit2_priority.split(","):
                 src = src.strip().upper()
                 val = None
@@ -178,7 +194,7 @@ class MetadataBuilder:
 
         # 2.2 TPE1 (アーティスト)
         res_artist = None
-        tpe1_priority = priorities.get("TPE1", "EMBED,MBZ,PICS_API")
+        tpe1_priority = priorities_map.get("TPE1", DEFAULT_PRIORITY_TPE1)
         for src in tpe1_priority.split(","):
             src = src.strip().upper()
             val = None
@@ -204,7 +220,7 @@ class MetadataBuilder:
         # 2.3 TRCK (トラック番号)
         res_track = str(instr.get("override_track") or "")
         if not res_track or res_track == "0":
-            trck_priority = priorities.get("TRCK", "PICS_API,MBZ,FILE,EMBED")
+            trck_priority = priorities_map.get("TRCK", DEFAULT_PRIORITY_TRCK)
             for src in trck_priority.split(","):
                 src = src.strip().upper()
                 val = None
@@ -226,7 +242,7 @@ class MetadataBuilder:
         # 2.4 TPOS (ディスク番号)
         res_disc = str(instr.get("override_disc") or "")
         if not res_disc or res_disc == "0":
-            tpos_priority = priorities.get("TPOS", "PICS_API,EMBED,MBZ")
+            tpos_priority = priorities_map.get("TPOS", DEFAULT_PRIORITY_TPOS)
             for src in tpos_priority.split(","):
                 src = src.strip().upper()
                 val = None
@@ -266,7 +282,7 @@ class MetadataBuilder:
 
         # 2.5 TYER (発売年)
         res_year = None
-        tyer_priority = priorities.get("TYER", "EMBED,MBZ,WEB_API")
+        tyer_priority = priorities_map.get("TYER", DEFAULT_PRIORITY_TYER)
         for src in tyer_priority.split(","):
             src = src.strip().upper()
             val = None
@@ -289,7 +305,7 @@ class MetadataBuilder:
 
         # 2.6 TPUB (レーベル)
         res_label = None
-        tpub_priority = priorities.get("TPUB", "MBZ,PICS_API")
+        tpub_priority = priorities_map.get("TPUB", DEFAULT_PRIORITY_TPUB)
         for src in tpub_priority.split(","):
             src = src.strip().upper()
             val = None
@@ -335,7 +351,7 @@ class MetadataBuilder:
         if instr.get("override_disc"): res_disc = str(instr["override_disc"])
 
         # --- 4. Final System-level Cleaning (Trust Tier Logic) ---
-        trusted_sources = [s.strip().upper() for s in (priorities.get("TRUSTED_TITLE_SOURCES") or "MBZ,PICS_API").split(",")]
+        trusted_sources = [s.strip().upper() for s in (priorities_map.get("TRUSTED_TITLE_SOURCES") or DEFAULT_TITLE_CLEANING_TRUSTED_SOURCES).split(",")]
         
         if chosen_src not in trusted_sources:
             res_title = MetadataBuilder._clean_title_logic(res_title, res_track)

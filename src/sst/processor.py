@@ -31,51 +31,17 @@ class LocalProcessor:
         self.db = db
         self.notifier = NotificationManager(config)
         
-        mbz_scoring = {
-            "direct_steam_link": config.score_mbz_direct_steam_link,
-            "parent_steam_link": config.score_mbz_parent_steam_link,
-            "direct_steamdb_link": config.score_mbz_direct_steamdb_link,
-            "parent_steamdb_link": config.score_mbz_parent_steamdb_link,
-            "bandcamp_link": config.score_mbz_bandcamp_link,
-            "title_similarity_max": config.score_mbz_title_similarity_max,
-            "track_count_match": config.score_mbz_track_count_match,
-            "track_count_penalty_per_track": config.score_mbz_track_count_penalty_per_track,
-            "track_count_penalty_max": config.score_mbz_track_count_penalty_max,
-            "digital_format": config.score_mbz_digital_format,
-            "date_match": config.score_mbz_date_match,
-            "date_penalty_per_year": config.score_mbz_date_penalty_per_year,
-            "date_penalty_max": config.score_mbz_date_penalty_max,
-            "fingerprint_match": config.score_mbz_fingerprint_match,
-            "direct_recording_match": config.score_mbz_direct_recording_match,
-            "acoustid_release_match": config.score_mbz_acoustid_release_match,
-            "publisher_label_match": config.score_mbz_publisher_label_match
-        }
-        self.mbz = MusicBrainzIdentifier(config.mbz_app_name, config.mbz_app_version, config.mbz_contact, scoring_config=mbz_scoring, db=self.db)
+        self.mbz = MusicBrainzIdentifier(
+            config.mbz_app_name,
+            config.mbz_app_version,
+            config.mbz_contact,
+            scoring_config=config.build_mbz_scoring_config(),
+            db=self.db,
+        )
         from .ident.acoustid import AcoustIDIdentifier
         self.acoustid = AcoustIDIdentifier(config.acoustid_api_key, db=self.db)
         self.virtual_album_builder = VirtualAlbumBuilder(self.acoustid, self.mbz, fingerprint_all=config.fingerprint_all, min_mbz_search_score_threshold=config.min_mbz_search_score_threshold)
-        self.llm = LLMOrganizer(
-            api_key=config.llm_api_key, base_url=config.llm_base_url, model=config.llm_model,
-            rpm=config.llm_limit_rpm, tpm=config.llm_limit_tpm, rpd=config.llm_limit_rpd,
-            user_language=config.user_language, llm_backend=config.llm_backend,
-            draft_model=getattr(config, "llm_draft_model", None),
-            ollama_num_ctx=getattr(config, "llm_ollama_num_ctx", 32768),
-            ollama_num_predict=getattr(config, "llm_ollama_num_predict", 4096),
-            chunk_size_virtual=getattr(config, "llm_chunk_size_virtual", 20),
-            chunk_size_metadata_ollama=getattr(config, "llm_chunk_size_metadata_ollama", 10),
-            chunk_size_metadata_cloud=getattr(config, "llm_chunk_size_metadata_cloud", 30),
-            chunk_adaptive=getattr(config, "llm_chunk_adaptive", True),
-            chunk_output_tokens_per_track=getattr(config, "llm_chunk_output_tokens_per_track", 180),
-            chunk_output_safety_ratio=getattr(config, "llm_chunk_output_safety_ratio", 0.75),
-            metadata_source_priority=config.metadata_source_priority,
-            priority_tit2=config.priority_tit2,
-            priority_tpe1=config.priority_tpe1,
-            priority_trck=config.priority_trck,
-            priority_tpos=config.priority_tpos,
-            priority_tyer=config.priority_tyer,
-            priority_tpub=config.priority_tpub,
-            priority_apic=config.priority_apic
-        )
+        self.llm = LLMOrganizer(**config.build_llm_organizer_kwargs())
         self.working_dir = Path(config.sst_working_dir)
 
     def _get_localized_now(self):

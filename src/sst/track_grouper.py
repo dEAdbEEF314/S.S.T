@@ -21,6 +21,18 @@ class TrackManager:
         except Exception: return 0.0
 
     @staticmethod
+    def normalize_title(stem: str) -> str:
+        stem = re.sub(r'^(\d+[\s._-]+)+', '', stem)
+        noise_pattern = r'\b(aiff|mp3|flac|wav|lossless|high-res|digital|official)\b'
+        stem = re.sub(noise_pattern, '', stem, flags=re.IGNORECASE)
+        stem = re.sub(r'\b(ost|soundtrack|original soundtrack)\b$', '', stem.strip(), flags=re.IGNORECASE)
+        stem = re.sub(r'[^a-zA-Z0-9]', ' ', stem)
+        stem = " ".join(stem.split()).lower()
+        stem = stem.replace("artifical", "artificial")
+        stem = re.sub(r'\s*0+(\d+)', r' \1', stem)
+        return stem.strip()
+
+    @staticmethod
     def group_by_logical_track(files: List[Path], album_name: Optional[str] = None) -> Dict[Tuple[int, str], List[Dict[str, Any]]]:
         from difflib import SequenceMatcher
         
@@ -55,24 +67,7 @@ class TrackManager:
                 if short_album and short_album != album_name:
                     stem = re.sub(re.escape(short_album), '', stem, flags=re.IGNORECASE)
 
-            stem = re.sub(r'^(\d+[\s._-]+)+', '', stem)
-            
-            # --- Smart Normalization (Improved) ---
-            # 1. Remove obvious noise (extensions, quality, etc.) with word boundaries
-            noise_pattern = r'\b(aiff|mp3|flac|wav|lossless|high-res|digital|official)\b'
-            stem = re.sub(noise_pattern, '', stem, flags=re.IGNORECASE)
-            
-            # 2. Remove soundtrack-related noise only at the end
-            stem = re.sub(r'\b(ost|soundtrack|original soundtrack)\b$', '', stem.strip(), flags=re.IGNORECASE)
-
-            # 3. Handle symbols: replace with space but keep alphanumeric content
-            stem = re.sub(r'[^a-zA-Z0-9]', ' ', stem)
-            
-            # 4. Collapse whitespace and lowercase
-            stem = " ".join(stem.split()).lower()
-            stem = stem.replace("artifical", "artificial")
-            stem = re.sub(r'\s*0+(\d+)', r' \1', stem)
-            norm_stem = stem.strip()
+            norm_stem = TrackManager.normalize_title(stem)
             
             t_num_val = None
             if t_num:

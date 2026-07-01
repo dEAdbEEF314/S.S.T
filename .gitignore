@@ -99,15 +99,13 @@ capture_llm_detail.py
 run_production_test.py
 Handover_Document_*.md
 
-# ── Local LLM Blobs ──────────────────────────────────────────────────────────
-Models/blobs/
-Models/*.pdf
-.aider*
-output_test/
-
 # ── Maintenance Scripts & Tests ─────────────────────────────
 Maintenance/
 tests/
 
 # ── Work Directory ─────────────────────────────
 sst-work/
+
+# ETC
+.ruff_cache/
+.agents/

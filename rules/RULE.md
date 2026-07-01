@@ -1,3 +1,5 @@
+要更新: 20260701150724
+
 # S.S.T (Steam Soundtrack Tagger) 詳細仕様書
 
 ## 1. プロジェクト概要

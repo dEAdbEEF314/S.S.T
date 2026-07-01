@@ -11,6 +11,7 @@ from rich.console import Console
 from .models import SteamMetadata, LocalProcessResult
 from .processor import LocalProcessor
 from .track_grouper import TrackManager
+from .vram_manager import VramResourceManager
 
 logger = logging.getLogger("sst.runner")
 
@@ -19,59 +20,71 @@ class JobRunner:
         self.config = config
         self.processor = processor
         self.console = console
+        self.vram_manager = None
+        
+        if self.config.llm_backend == "OLLAMA":
+            self.vram_manager = VramResourceManager(
+                base_url=self.config.llm_base_url,
+                model=self.config.llm_model
+            )
 
     def run(self, soundtracks: List[dict]) -> List[LocalProcessResult]:
         """Orchestrates the parallel processing of soundtracks with adaptive routing."""
         results: List[LocalProcessResult] = []
         start_time = datetime.now()
 
-        # Determine track counts for sorting and categorization
-        logger.info("適応型ルーティングのためにトラック数をスキャンしています...")
+        # Determine track counts for VRAM estimation and sorting
+        logger.info("動的スケジューリングのためにトラック数をスキャンしています...")
         for ost in soundtracks:
             install_dir = Path(ost["install_dir"])
-            # Estimate track count by counting audio files
             audio_files = TrackManager.list_audio_files(install_dir)
             ost["_track_count"] = len(audio_files)
 
-        # Sort soundtracks by track count to process small ones first
+        # Sort soundtracks by track count to process small ones first (better packing)
         soundtracks.sort(key=lambda x: x["_track_count"])
 
-        # Group by tiers to minimize model switching overhead
-        tiers = {
-            "SMALL (<=50)": [s for s in soundtracks if s["_track_count"] <= 50],
-            "MEDIUM (51-100)": [s for s in soundtracks if 50 < s["_track_count"] <= 100],
-            "LARGE (>100)": [s for s in soundtracks if s["_track_count"] > 100]
-        }
-
-        max_album_workers = self.config.max_parallel_albums
-        if self.config.llm_backend not in ["OLLAMA", "OPENAI_COMPATIBLE"]:
-            # For cloud APIs, respect the config but allow slightly more if the rate limit allows, capped at a safe number
+        if self.config.llm_backend == "OLLAMA":
+            logger.info("Ollamaバックエンドを検出しました。動的VRAMディスパッチャー (Token Stingy) による自律的並列処理を開始します。")
+            # メタデータ抽出でCPU/Diskがサチュレートしない程度の適度な上限を設定しつつ、VRAMセマフォに制御を委ねる
+            max_workers = min(len(soundtracks), max(10, self.config.max_parallel_albums * 3))
+        else:
             cpu_count = multiprocessing.cpu_count()
             cloud_workers = min(int(self.config.llm_limit_rpm * 0.5), cpu_count, 5)
-            max_album_workers = max(max_album_workers, cloud_workers)
-
-        logger.info(f"ランナーを {max_album_workers} ワーカーで開始します。適応型ルーティングを使用します。")
+            max_workers = max(self.config.max_parallel_albums, cloud_workers)
+            logger.info(f"外部APIバックエンドを検出しました。標準スレッドプール ({max_workers} ワーカー) を使用します。")
 
         def _process_single_album(ost, progress, overall_task):
             app_id = ost["app_id"]
             install_dir = Path(ost["install_dir"])
-            album_task = progress.add_task(f"[cyan]マッピング中: {ost['name']}", total=None)
+            album_task = progress.add_task(f"[cyan]待機中: {ost['name']}", total=None)
 
-            # Use dict unpacking to ensure all fields from ost are included in SteamMetadata
-            steam_meta = SteamMetadata(**ost)
+            vram_cost = 0
+            if self.vram_manager:
+                vram_cost = self.vram_manager.estimate_album_vram(ost["_track_count"], ost["name"])
+                progress.update(album_task, description=f"[cyan]VRAM確保待ち ({vram_cost/(1024**2):.1f}MB): {ost['name']}")
+                self.vram_manager.acquire(vram_cost)
+                
+            progress.update(album_task, description=f"[yellow]処理中: {ost['name']}")
 
-            all_files = TrackManager.list_audio_files(install_dir)
-            progress.update(album_task, description=f"[yellow]処理中: {ost['name']}", total=len(all_files))
+            try:
+                # Use dict unpacking to ensure all fields from ost are included in SteamMetadata
+                steam_meta = SteamMetadata(**ost)
 
-            result = self.processor.process_album(app_id, install_dir, steam_meta, on_track_complete=lambda: progress.advance(album_task))
-            
-            if result is None:
-                result = LocalProcessResult(
-                    app_id=app_id, status="error", album_name=ost["name"], 
-                    message="Process returned None", confidence_score=0
-                )
-            
-            results.append(result)
+                all_files = TrackManager.list_audio_files(install_dir)
+                progress.update(album_task, total=len(all_files))
+
+                result = self.processor.process_album(app_id, install_dir, steam_meta, on_track_complete=lambda: progress.advance(album_task))
+                
+                if result is None:
+                    result = LocalProcessResult(
+                        app_id=app_id, status="error", album_name=ost["name"], 
+                        message="Process returned None", confidence_score=0
+                    )
+                
+                results.append(result)
+            finally:
+                if self.vram_manager:
+                    self.vram_manager.release(vram_cost)
 
             progress.remove_task(album_task)
             progress.update(overall_task, advance=1)
@@ -87,27 +100,9 @@ class JobRunner:
             ) as progress:
                 overall_task = progress.add_task("[bold blue]全体の進捗", total=len(soundtracks))
                 
-                for tier_name, tier_soundtracks in tiers.items():
-                    if not tier_soundtracks:
-                        continue
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    list(executor.map(lambda ost: _process_single_album(ost, progress, overall_task), soundtracks))
                     
-                    # Tier-based dynamic worker allocation
-                    if "SMALL" in tier_name:
-                        tier_workers = self.config.max_parallel_small
-                    elif "MEDIUM" in tier_name:
-                        tier_workers = self.config.max_parallel_medium
-                    else: # LARGE
-                        tier_workers = self.config.max_parallel_large
-                    
-                    logger.info(f"--- {tier_name} ティア ({len(tier_soundtracks)} アルバム) を {tier_workers} ワーカーで開始します ---")
-                    with ThreadPoolExecutor(max_workers=tier_workers) as executor:
-                        list(executor.map(lambda ost: _process_single_album(ost, progress, overall_task), tier_soundtracks))
-                    
-                    # Cool-down period between tiers to allow VRAM to clear
-                    if self.config.llm_backend == "OLLAMA" and len(tier_soundtracks) > 0:
-                        logger.info(f"{tier_name} ティアの後にクールダウンしています...")
-                        import time
-                        time.sleep(5)
         finally:
             self.console.show_cursor(True)
 

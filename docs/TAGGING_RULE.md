@@ -25,22 +25,24 @@ DJ機材および Windows エクスプローラーとの最大互換性を確保
 
 *   **文字コード仕様**: ID3v2.3 規格は UTF-8 をサポートしていません。そのため、日本語や韓国語などの非アスキー文字を含むテキストフレーム（TIT2、TPE1、TALB、COMM等）を書き込む際は、すべて **UTF-16 with BOM (encoding=1)** を使用してエンコードします。
 
+*   **優先順位設定の正本**: ユーザーは `.env` の `PRIORITY_*` / `METADATA_SOURCE_PRIORITY` でソース優先順位を上書きできます。未設定時のフォールバック値は `src/sst/config.py` に集約され、実装各所はその既定値を参照します。
+
 
 | ID3 フレーム | フィールド | 内容 / フォーマットルール |
 | :--- | :--- | :--- |
-| **TIT2** | 曲名 | **バイリンガル・タイトル (Plan B)**: `{Local} / {English}`<br>※MBZ/Steam/ローカル情報から構築。結合後 60文字を超える場合は `{Local}` のみを優先。 |
+| **TIT2** | 曲名 | `.env` の優先順位（既定: `MBZ,PICS_API,FILE,EMBED,VDF`）に従って単一ソースから採用。採用済みタイトルが既に `{Local} / {English}` 形式で、かつ 60文字を超える場合のみ `{Local}` 側へ短縮。 |
 | **TPE1** | アーティスト | MusicBrainz クレジット（最優先）または Steam 開発元。 |
-| **TALB** | アルバム名 | Steam 公式タイトルまたはバイリンガル・タイトル. |
+| **TALB** | アルバム名 | Steam 公式タイトル。 |
 | **TPE2** | アルバムアーティスト | `開発元, 出版社` |
 | **TCON** | ジャンル | `STEAM VGM, [全ジャンル]` (カンマ区切り) |
 | **TPUB** | レーベル | 公式 PICS レーベル、MBZ レーベル、または `開発元, 出版社` |
 | **TYER** | 年 | 発売年 (YYYY)。*注: v2.3 のため TYER フレームを使用。* |
 | **TRCK** | トラック番号 | 単一の整数。 |
 | **TPOS** | ディスク番号 | `n/N` 形式 (例: `1/1`)。 |
-| **TIT1** | グルーピング | `[親ゲーム名], Steam` |
-| **COMM** | コメント | `親ゲーム名, [タグ1/ タグ2/ ...], AppID, ストア URL` |
+| **TIT1** | グルーピング | `親ゲーム名, Steam` |
+| **COMM** | コメント | 既存の埋め込みコメントがあれば先頭に保持し、その後ろへ `親ゲーム名, [タグ1/ タグ2/ ...], AppID, ストア URL` を `, ` 区切りで連結した単一フレーム。 |
 | **TLAN** | 言語 | ISO 639-2 コード (例: `jpn`) |
-| **APIC** | 埋め込み画像 | MusicBrainz または Steam ストアの Front Cover。 |
+| **APIC** | 埋め込み画像 | 優先順位設定に従い、MusicBrainz、Steam ストア画像、またはローカル埋め込み画像から採用。 |
 
 ---
 
@@ -96,22 +98,24 @@ To ensure maximum compatibility with DJ hardware and Windows Explorer, the **ID3
 
 *   **Encoding Specification**: The ID3v2.3 standard does not support UTF-8. Therefore, all text frames containing non-ASCII characters (such as Japanese or Korean) like TIT2, TPE1, TALB, and COMM must be encoded using **UTF-16 with BOM (encoding=1)**.
 
+*   **Single source of truth for priorities**: Users can override source priorities through `.env` `PRIORITY_*` and `METADATA_SOURCE_PRIORITY` values. When omitted, fallback defaults are centralized in `src/sst/config.py` and referenced by the implementation.
+
 
 | ID3 Frame | Field | Content / Format Rule |
 | :--- | :--- | :--- |
-| **TIT2** | Title | **Bilingual Title (Plan B)**: `{Local} / {English}`<br>Built from MBZ/Steam/local sources. If the combined title exceeds 60 characters, defaults to `{Local}` only. |
+| **TIT2** | Title | Selected from a single source by priority (`MBZ,PICS_API,FILE,EMBED,VDF` by default). Only if the chosen title is already in `{Local} / {English}` form and exceeds 60 characters is it reduced to the `{Local}` side. |
 | **TPE1** | Artist | MusicBrainz credits (Priority) or Steam developer. |
-| **TALB** | Album | Official Steam title or Bilingual Title. |
+| **TALB** | Album | Official Steam title. |
 | **TPE2** | Album Artist | `Developer, Publisher` |
 | **TCON** | Genre | `STEAM VGM, [All Genres]` (comma separated) |
 | **TPUB** | Label | Official PICS Label, MBZ Label, or `Developer, Publisher`. |
 | **TYER** | Year | Release Year (YYYY). *Note: Uses TYER frame for v2.3.* |
 | **TRCK** | Track Number | Single integer. |
 | **TPOS** | Disc Number | `n/N` format (e.g., `1/1`). |
-| **TIT1** | Grouping | `[Parent Game Name], Steam` |
-| **COMM** | Comment | `Parent Name, [tag1/ tag2/ ...], AppID, Store URL` |
+| **TIT1** | Grouping | `Parent Game Name, Steam` |
+| **COMM** | Comment | A single frame that preserves any existing embedded comment first, then appends `Parent Name, [tag1/ tag2/ ...], AppID, Store URL` using `, ` as the separator. |
 | **TLAN** | Language | ISO 639-2 code (e.g., `jpn`) |
-| **APIC** | Artwork | Embedded front cover from MusicBrainz or Steam. |
+| **APIC** | Artwork | Selected by priority from MusicBrainz, Steam artwork, or embedded local artwork. |
 
 ---
 

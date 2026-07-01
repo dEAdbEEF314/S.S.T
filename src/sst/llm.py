@@ -6,6 +6,16 @@ import time
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 
+from .config import (
+    DEFAULT_METADATA_SOURCE_PRIORITY,
+    DEFAULT_PRIORITY_APIC,
+    DEFAULT_PRIORITY_TIT2,
+    DEFAULT_PRIORITY_TPE1,
+    DEFAULT_PRIORITY_TPOS,
+    DEFAULT_PRIORITY_TRCK,
+    DEFAULT_PRIORITY_TPUB,
+    DEFAULT_PRIORITY_TYER,
+)
 from .rate_limit import DistributedRateLimiter
 
 logger = logging.getLogger("sst.llm")
@@ -17,28 +27,33 @@ class LLMOrganizer:
                  user_language: str = "ja",
                  llm_backend: str = "GEMINI",
                  draft_model: Optional[str] = None,
+                 llm_cloud_max_tokens: int = 8192,
                  ollama_num_ctx: int = 32768,
                  ollama_num_predict: int = 4096,
+                 coherence_threshold: int = 75,
                  chunk_size_virtual: int = 20,
                  chunk_size_metadata_ollama: int = 10,
                  chunk_size_metadata_cloud: int = 30,
                  chunk_adaptive: bool = True,
                  chunk_output_tokens_per_track: int = 180,
                  chunk_output_safety_ratio: float = 0.75,
-                 metadata_source_priority: str = "MBZ,STEAM_PICS,STEAM_STORE,STEAM_TAGS,EMBEDDED",
-                 priority_tit2: str = "FILE,EMBED,VDF,MBZ,PICS_API",
-                 priority_tpe1: str = "EMBED,MBZ,PICS_API",
-                 priority_trck: str = "EMBED,MBZ,PICS_API",
-                 priority_tpos: str = "PICS_API,EMBED,MBZ",
-                 priority_tyer: str = "EMBED,MBZ,WEB_API",
-                 priority_tpub: str = "MBZ,PICS_API",
-                 priority_apic: str = "EMBED,MBZ,PICS_API,WEB_API"):
+                 metadata_source_priority: str = DEFAULT_METADATA_SOURCE_PRIORITY,
+                 priority_tit2: str = DEFAULT_PRIORITY_TIT2,
+                 priority_tpe1: str = DEFAULT_PRIORITY_TPE1,
+                 priority_trck: str = DEFAULT_PRIORITY_TRCK,
+                 priority_tpos: str = DEFAULT_PRIORITY_TPOS,
+                 priority_tyer: str = DEFAULT_PRIORITY_TYER,
+                 priority_tpub: str = DEFAULT_PRIORITY_TPUB,
+                 priority_apic: str = DEFAULT_PRIORITY_APIC):
         self.base_url = base_url.rstrip('/')
         self.api_key = api_key
         self.model = model
         self.draft_model = draft_model
+        self.llm_cloud_max_tokens = llm_cloud_max_tokens
+        self.llm_limit_tpm = tpm
         self.ollama_num_ctx = ollama_num_ctx
         self.ollama_num_predict = ollama_num_predict
+        self.coherence_threshold = coherence_threshold
         self.chunk_size_virtual = chunk_size_virtual
         self.chunk_size_metadata_ollama = chunk_size_metadata_ollama
         self.chunk_size_metadata_cloud = chunk_size_metadata_cloud
@@ -58,12 +73,31 @@ class LLMOrganizer:
         self.limiter = DistributedRateLimiter(rpm, tpm, rpd)
 
     def _adaptive_chunk_size(self, base_chunk_size: int) -> int:
-        if not self.chunk_adaptive or self.llm_backend != "OLLAMA":
+        if not self.chunk_adaptive:
             return max(1, base_chunk_size)
 
-        safe_output_budget = int(self.ollama_num_predict * self.chunk_output_safety_ratio)
+        # 1. 出力限界(Max Tokens)の算出
+        if self.llm_backend == "OLLAMA":
+            budget_limit = self.ollama_num_predict
+        else:
+            budget_limit = self.llm_cloud_max_tokens
+            
+        safe_output_budget = int(budget_limit * self.chunk_output_safety_ratio)
         by_output = max(1, safe_output_budget // self.chunk_output_tokens_per_track)
-        return max(1, min(base_chunk_size, by_output))
+        
+        if self.llm_backend == "OLLAMA":
+            # Ollamaの場合: VRAMはセマフォで管理されるため、出力限界までOne-shot化
+            return by_output
+        else:
+            # 外部APIの場合: 毎分トークン(TPM)の枯渇による429エラーを防止する
+            # 1曲あたりの総消費見積もり(入力150+出力180=330)、オーバーヘッド約1000
+            tpm_limit = self.llm_limit_tpm
+            safe_tpm_budget = int(tpm_limit * 0.8) # 80%の安全マージン
+            by_tpm = max(1, (safe_tpm_budget - 1000) // 330)
+            
+            # 出力破綻限界とTPM枯渇限界の、より厳しい方（小さい方）を最終的な限界チャンクとして採用
+            dynamic_limit = min(by_output, by_tpm)
+            return dynamic_limit
 
     @staticmethod
     def _is_truncation_log(log_data: Dict[str, Any]) -> bool:
@@ -152,6 +186,67 @@ class LLMOrganizer:
             v_copy["tracks"] = simplified_tracks
             
         return v_copy
+
+    def _build_skeleton(self, tracks: list, step: int = 10) -> list:
+        if not tracks: return []
+        skel = []
+        for i in range(0, len(tracks), step):
+            skel.append({"v_idx": tracks[i].get("v_idx", 0), "title": tracks[i].get("title", "")})
+        if tracks[-1].get("v_idx", 0) != skel[-1]["v_idx"]:
+            skel.append({"v_idx": tracks[-1].get("v_idx", 0), "title": tracks[-1].get("title", "")})
+        return skel
+
+    def _map_coherences(self, app_id: str, v_local: dict, v_steam: dict, v_fingerprint: dict, num_ctx: int) -> dict:
+        local_tracks = v_local.get("tracks", [])
+        coherences = {}
+        for i in range(0, len(local_tracks), 30):
+            c_tracks = local_tracks[i:i+30]
+            c_key = f"Coherence_{(i//30)+1}"
+            skel = []
+            if c_tracks:
+                skel.append({"v_idx": c_tracks[0].get("v_idx", 0), "title": c_tracks[0].get("title", "")})
+                if len(c_tracks) > 2:
+                    mid = len(c_tracks)//2
+                    skel.append({"v_idx": c_tracks[mid].get("v_idx", 0), "title": c_tracks[mid].get("title", "")})
+                if len(c_tracks) > 1:
+                    skel.append({"v_idx": c_tracks[-1].get("v_idx", 0), "title": c_tracks[-1].get("title", "")})
+            coherences[c_key] = skel
+        
+        steam_skel = self._build_skeleton(v_steam.get("tracks", []), 10)
+        fp_skel = self._build_skeleton(v_fingerprint.get("tracks", []), 10) if v_fingerprint else []
+
+        prompt = f"""
+Generate a Coherence Routing Map for a massive album.
+We have split the LOCAL album into logical 'Coherences' (blocks of ~30 tracks).
+For each Coherence, identify the corresponding track range (start_v_idx to end_v_idx) in the REFERENCE albums.
+
+### LOCAL COHERENCES (Skeleton):
+{json.dumps(coherences, ensure_ascii=False, indent=2)}
+
+### STEAM REFERENCE SKELETON:
+{json.dumps(steam_skel, ensure_ascii=False, indent=2)}
+
+### FINGERPRINT REFERENCE SKELETON:
+{json.dumps(fp_skel, ensure_ascii=False, indent=2) if fp_skel else "NOT AVAILABLE"}
+
+### OUTPUT FORMAT (JSON ONLY, NO PREAMBLE):
+```json
+{{
+  "coherence_mappings": {{
+    "Coherence_1": {{
+      "steam_start_v_idx": 0,
+      "steam_end_v_idx": 29,
+      "fingerprint_start_v_idx": 0,
+      "fingerprint_end_v_idx": 29
+    }}
+  }}
+}}
+```
+"""
+        res, log = self._call_llm(app_id, prompt, num_ctx=num_ctx)
+        if not res or "coherence_mappings" not in res:
+            return {}
+        return res["coherence_mappings"]
 
     def consolidate_virtual_albums(self, app_id: int, v_steam: Dict, v_fingerprint: Optional[Dict], v_mbz_search: Optional[Dict], v_local: Dict, num_ctx: Optional[int] = None) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
         """
@@ -254,10 +349,20 @@ Generate an audit JSON object based on these three "Virtual Albums".
         final_instructions = {}
         local_tracks = v_local.get("tracks", [])
 
+        coherence_mappings = None
+        if len(local_tracks) >= getattr(self, "coherence_threshold", 75):
+            logger.info(f"[{app_id}] Track count ({len(local_tracks)}) exceeds coherence threshold ({self.coherence_threshold}). Initiating Phase 1.5 Map-Reduce (Coherence Routing)...")
+            coherence_mappings = self._map_coherences(app_id, v_local, v_steam, v_fingerprint, num_ctx)
+            if not coherence_mappings:
+                logger.error(f"[{app_id}] Coherence Map-Reduce failed or timed out. Falling back to review.")
+                global_res["identity_confidence"] = 0
+                global_res["confidence_reason"] = "SYSTEM: 巨大アルバムのCoherence分割（Map-Reduce）に失敗したため、安全のために手動レビューへフォールバックしました。"
+                return {}, {"phase1_res": global_res, "phase1_log": global_log}
+            logger.info(f"[{app_id}] Coherence Map-Reduce successful. Mappings: {list(coherence_mappings.keys())}")
+
         # Prepare full simplified reference tracks for Phase 2 (not sampled)
-        ref_steam = self._simplify_v_album(v_steam, sampled=False).get("tracks", [])
-        ref_fingerprint = self._simplify_v_album(v_fingerprint, sampled=False).get("tracks", []) if v_fingerprint else []
-        ref_fingerprint_str = json.dumps(ref_fingerprint, ensure_ascii=False) if v_fingerprint else "NOT AVAILABLE"
+        full_ref_steam = self._simplify_v_album(v_steam, sampled=False).get("tracks", [])
+        full_ref_fingerprint = self._simplify_v_album(v_fingerprint, sampled=False).get("tracks", []) if v_fingerprint else []
 
         base_chunk_size = self.chunk_size_virtual
         i = 0
@@ -273,6 +378,30 @@ Generate an audit JSON object based on these three "Virtual Albums".
                     "d": t.get("disc"),
                     "dur": (t.get("duration_ms", 0) // 1000) if t.get("duration_ms") else None
                 })
+
+            # Slice reference tracks based on coherence if available
+            ref_steam = full_ref_steam
+            ref_fingerprint = full_ref_fingerprint
+            
+            if coherence_mappings:
+                c_key = f"Coherence_{(i // 30) + 1}"
+                cmap = coherence_mappings.get(c_key, {})
+                if cmap:
+                    s_start = cmap.get("steam_start_v_idx")
+                    s_end = cmap.get("steam_end_v_idx")
+                    if s_start is not None and s_end is not None:
+                        ref_steam = [t for t in full_ref_steam if s_start <= t.get("v_idx", 0) <= s_end]
+                    else:
+                        ref_steam = []
+                    
+                    f_start = cmap.get("fingerprint_start_v_idx")
+                    f_end = cmap.get("fingerprint_end_v_idx")
+                    if f_start is not None and f_end is not None:
+                        ref_fingerprint = [t for t in full_ref_fingerprint if f_start <= t.get("v_idx", 0) <= f_end]
+                    else:
+                        ref_fingerprint = []
+            
+            ref_fingerprint_str = json.dumps(ref_fingerprint, ensure_ascii=False) if ref_fingerprint else "NOT AVAILABLE"
 
             mapping_prompt = f"""
         Generate track mapping instructions for tracks {i+1} to {i+len(chunk)}.
@@ -376,297 +505,6 @@ Generate an audit JSON object based on these three "Virtual Albums".
 
         return final_instructions, {"phase1_res": global_res, "logs": full_logs}
 
-    def consolidate_metadata(self, app_id: int, steam_info: Dict[str, Any], track_sources: Dict[str, List[Dict[str, Any]]], mbz_candidates: List[Dict[str, Any]], num_ctx: Optional[int] = None) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
-        full_logs = []
-        
-        # --- Phase 1: Determine Global Identity (The "Soul") ---
-        # Formatting helpers for Markdown readability
-        def format_store_tracks(tracks):
-            if not tracks: return "なし"
-            md = "\n| Disc | No | Title | Duration (s) |\n|---|---|---|---|\n"
-            for t in tracks: md += f"| {t.get('disc','')} | {t.get('number','')} | {t.get('title','')} | {t.get('duration_s','')} |\n"
-            return md
-
-        def format_mbz_candidates(cands):
-            if not cands: return "なし"
-            md = "\n"
-            for i, c in enumerate(cands):
-                md += f"#### Candidate [{i}]: {c.get('album')} (Score: {c.get('score')})\n"
-                md += f"- **Artist**: {c.get('artist')}\n- **Year**: {c.get('year')}\n- **Label**: {c.get('label')}\n- **Tracks**: {c.get('track_count')} (Digital: {c.get('is_digital')})\n- **Evidence**: {', '.join(c.get('evidence', []))}\n"
-                md += "- **Tracklist Sample**:\n"
-                for t in c.get('tracks', [])[:5]:
-                    md += f"  - {t.get('position')}: {t.get('title')}\n"
-                if len(c.get('tracks', [])) > 5: md += "  - ...\n"
-                md += "\n"
-            return md
-
-        def format_local_summary(sources):
-            if not sources: return "なし"
-            md = "\n| Logical ID | Duration (s) |\n|---|---|\n"
-            for tid, s in sources.items():
-                dur = s[0].get('duration') if s else 'Unknown'
-                md += f"| {tid} | {dur} |\n"
-            return md
-
-        steam_tracks_json = json.dumps(steam_info.get('store_tracklist', []), ensure_ascii=False)
-        mbz_cands_json = json.dumps(mbz_candidates, indent=2, ensure_ascii=False)
-        local_tracks_json = json.dumps([{"id": tid, "duration": s[0].get("duration")} for tid, s in track_sources.items()], indent=2)
-
-        # Dynamic System Hint for Fallback
-        system_hint = ""
-        local_count = len(track_sources)
-        store_count = len(steam_info.get('store_tracklist', []))
-        if local_count > 0 and local_count == store_count:
-            if local_count == 1:
-                system_hint = "\n### [SYSTEM HINT]\nSTRUCTURAL PERFECT MATCH DETECTED (SINGLE TRACK). Apply 'シングル盤の法則'.\n"
-            else:
-                system_hint = f"\n### [SYSTEM HINT]\nSTRUCTURAL PERFECT MATCH DETECTED ({local_count} tracks). Highly likely the same work.\n"
-
-        global_id_prompt = f"""
-You are the authoritative [Master Archive Auditor] for music metadata management.
-Analyze the provided information sources to independently evaluate the "Identity" (origin) and "Integrity" (quality) of this work.
-
-### [CRITICAL: Metadata Constitution (Priority)]
-The user has specified the following order of trust for information sources:
-Global Priority: {self.metadata_source_priority}
-
-When conflicts or contradictions arise in specific fields, decide according to these individual priorities:
-- Track Title (TIT2): {self.priority_tit2}
-- Artist (TPE1): {self.priority_tpe1}
-- Track Number (TRCK): {self.priority_trck}
-- Disc Number (TPOS): {self.priority_tpos}
-- Year (TYER): {self.priority_tyer}
-- Label/Publisher (TPUB): {self.priority_tpub}
-- Cover Art (APIC): {self.priority_apic}
-
-These priorities are absolute guidelines for determining the "correct" answer in case of discrepancies.
-However, if a top-tier source contains track numbers like "01 - Title", you are expected to perform intellectual cleaning to extract only the pure title, possibly by comparing it with lower-tier clean sources.
-
-### [CRITICAL: Title Handling]
-- This system generally prioritizes "Visibility on DJ Equipment", meaning clean titles without redundant track numbers are preferred.
-- However, if a top-tier reliable source (like MusicBrainz or Steam Store) officially includes a track number prefix (e.g., "01. Title"), you MAY adopt it exactly as it is written in the official source.
-- Do your best to find a clean title if multiple sources are available, but do not aggressively clean if it contradicts the primary official source you have chosen to adopt.
-
-### [Advanced Identification: AcoustID Bottom-Up Analysis]
-Pay attention to the "Evidence" in each MusicBrainz candidate:
-- **ACOUSTID_RELEASE_MATCH**: This release ID is a "physical match" directly pointed to by the fingerprints generated from the local audio files.
-- **DIRECT_STEAM_LINK**: This release is officially linked to the target Steam AppID on MusicBrainz.
-- **PUBLISHER_LABEL_MATCH**: The Steam publisher and the release's label name match.
-
-Candidates where these overlap are extremely likely to be the "correct" answer, even if there are slight differences in the album title.
-
-### [Audit Criteria]
-1. **Identity Confidence (0-100)**: 
-    - Confidence that the Steam info and MBZ/Local represent the same work.
-    - 100 points if the name and artist match and there is a DIRECT_STEAM_LINK in MBZ.
-    - If there are multiple candidates and you cannot narrow it down, set `chosen_mbz_index: null` and `strategy: LOCAL_BASED`.
-2. **Integrity Quality (0-100)**:
-    - Whether the tags can be archived as-is. If Dirty Tags (unauthorized numbers) are present, set the score to 50 or below.
-
-### [Absolute Rules for Decision]
-- **ARCHIVE (Ratio 95:5 or higher)**: Identity Confidence == 100 AND Integrity Quality >= 95.
-- **REVIEW**: Otherwise, or if you feel any musical contradiction. If in doubt, always choose REVIEW.
-
-### [Absolute Rules for STEAM STORE FALLBACK]
-If MusicBrainz (MBZ) candidates are inappropriate (low score, unrelated titles, etc.), ignore them entirely.
-You MUST grant **Identity Confidence 100% with absolute confidence** if the following conditions are met:
-1. **Rule of Single Track**: If both local and Steam Store have exactly "1 track", treat them as the same physical track regardless of language or naming variations (e.g., "Warriors of Fate" vs "天地を喰らうⅡ"), and give 100 points.
-2. **Perfect Structural Match**: If the track count and structure of Local and Steam Store match, and the title concepts align.
-In these cases, set `strategy` to `LOCAL_BASED` and do NOT lower the score due to ambiguous MBZ candidates.
-
-### ALBUM CONTEXT:
-- Album Name: {steam_info.get('name')}
-- Developer: {steam_info.get('developer')}
-- Release Year: {re.search(r'(\d{4})', str(steam_info.get('release_date', ''))).group(1) if re.search(r'(\d{4})', str(steam_info.get('release_date', ''))) else 'Unknown'}
-
-### STEAM STORE DATA (OFFICIAL):
-- Tracklist: {steam_tracks_json}
-- Credits: {steam_info.get('store_credits', 'None')}
-
-### MUSICBRAINZ CANDIDATES:
-{mbz_cands_json}
-
-### LOCAL TRACK LIST SUMMARY:
-{local_tracks_json}
-
-{system_hint}
-
-### MANDATORY OUTPUT FORMAT (JSON ONLY):
-**NOTE: All reasoning (reason, confidence_reason, mbz_choice_reason) MUST be output in {self.user_language} for the final report. Metadata fields (semantic_label, global_tags.*) MUST also use the user's language ({self.user_language}). Specifically for Japanese (ja), avoid Chinese-specific characters or vocabulary.**
-```json
-{
-  "identity_confidence": number,
-  "integrity_quality": number,
-  "archive_vs_review_ratio": {"archive": number, "review": number},
-  "confidence_reason": "Detailed similarity analysis and reasoning ({self.user_language})",
-  "strategy": "MBZ_BASED" | "LOCAL_BASED" | "HYBRID" | "REVIEW_REQUIRED",
-  "semantic_label": "Label in {self.user_language} (max 40 chars)",
-  "global_tags": {
-    "canonical_album_artist": "...",
-    "canonical_genre": "...",
-    "canonical_year": "YYYY",
-    "canonical_label": "Label or Publisher name",
-    "chosen_mbz_index": number | null,
-    "chosen_mbz_id": "MusicBrainz Release ID | null",
-    "mbz_choice_reason": "Reason why this candidate was chosen over others ({self.user_language})"
-  }
-}
-```
-"""
-        global_res, global_log = self._call_llm(app_id, global_id_prompt, num_ctx=num_ctx)
-        
-        # Add human-readable version to the log
-        human_prompt = global_id_prompt.replace(steam_tracks_json, format_store_tracks(steam_info.get('store_tracklist', [])))
-        human_prompt = human_prompt.replace(mbz_cands_json, format_mbz_candidates(mbz_candidates))
-        human_prompt = human_prompt.replace(local_tracks_json, format_local_summary(track_sources))
-        global_log["human_prompt"] = human_prompt
-        full_logs.append(global_log)
-        
-        if not global_res:
-            return None, {"phase1_log": global_log}
-            
-        id_conf = int(global_res.get("identity_confidence", 0))
-        archive_ratio = int(global_res.get("archive_vs_review_ratio", {}).get("archive", 0))
-        
-        if id_conf < 100 or archive_ratio < 90 or global_res.get("strategy") == "REVIEW_REQUIRED":
-            return {}, {"phase1_res": global_res, "phase1_log": global_log}
-
-        # --- Phase 2: Sequential Track Mapping ---
-        global_identity = global_res.get("global_tags", {})
-        strategy = global_res.get("strategy")
-        all_instructions = {}
-        full_logs = []
-        # Key: (disc, track) -> sid
-        seen_numbers_global = {}
-        
-        track_ids = list(track_sources.keys())
-        # Create a mapping of stable IDs (idx_N) to original logical IDs
-        stable_to_logical = {f"idx_{i}": tid for i, tid in enumerate(track_ids)}
-        logical_to_stable = {tid: sid for sid, tid in stable_to_logical.items()}
-        
-        base_chunk_size = self.chunk_size_metadata_ollama if self.llm_backend == "OLLAMA" else self.chunk_size_metadata_cloud
-        i = 0
-        while i < len(track_ids):
-            dynamic_base = self._adaptive_chunk_size(base_chunk_size)
-            current_chunk_size = min(dynamic_base, len(track_ids) - i)
-            chunk = track_ids[i:i + current_chunk_size]
-            
-            # Create context with explicit local disc/track info
-            chunk_context = {}
-            for k in chunk:
-                sid = logical_to_stable[k]
-                try:
-                    local_disc = int(k.split('_')[0])
-                except Exception:
-                    local_disc = 1
-                
-                chunk_context[sid] = {
-                    "local_context": {
-                        "disc": local_disc
-                    },
-                    "sources": track_sources[k]
-                }
-
-            chunk_json = json.dumps(chunk_context, indent=None, ensure_ascii=False)
-            mapping_prompt = f"""
-            Perform precise track mapping.
-            Identity: {json.dumps(global_identity, ensure_ascii=False)}
-
-            ### STEAM STORE DATA (OFFICIAL):
-            - Tracklist: {steam_tracks_json}
-            - Credits: {steam_info.get('store_credits', 'None')}
-
-            ### INSTRUCTIONS:
-            1. Parse the credits text (e.g., "Track 1 by X") and link it to the composer or artist of the corresponding track.
-            2. Match the Steam official tracklist titles with the local tracks, and use the most reliable source.
-            3. **Title Handling**: You may keep track number prefixes in titles (e.g., "01. ") ONLY IF they are exactly present in the official Steam or MBZ tracklist you are adopting. Otherwise, clean them.
-            4. **Track Number Completion & Invalidation**:
-               - If the local track number is unknown (0 or null) and the title matches the Steam official tracklist, output that number as `override_track`.
-            5. **Disc Number Maintenance & Completion (Critical)**:
-               - If the provided `local_context.disc` is 2 or higher, ALWAYS output it in `override_disc`.
-            6. **No Duplicate Track Numbers (Absolute Command)**:
-               - It is **systemically forbidden** to assign the same `override_track` to multiple tracks within the same disc.
-
-            ### TRACKS TO MAP (Keys are Stable IDs):
-            {chunk_json}
-
-            ### MANDATORY OUTPUT FORMAT (JSON ONLY):
-            ```json
-            {{
-              "track_instructions": {{
-                 "STABLE_ID": {{
-                    "action": "use_mbz" | "use_local_tag" | "use_filename" | "needs_review",
-                    "mbz_track_index": number,
-                    "override_title": string | null,
-                    "override_track": number | null,
-                    "override_disc": number | null,
-                    "reason": "Reasoning for the decision ({self.user_language})"
-                 }}
-              }}
-            }}
-            ```
-            """
-            res, log_data = self._call_llm(app_id, mapping_prompt, num_ctx=num_ctx)
-
-            if not res and self._is_truncation_log(log_data) and current_chunk_size > 1:
-                shrink_to = max(1, current_chunk_size // 2)
-                logger.warning(
-                    f"[{app_id}] LLM response appears truncated for metadata chunk at index={i}. "
-                    f"Reducing chunk size {current_chunk_size} -> {shrink_to}."
-                )
-                base_chunk_size = shrink_to
-                continue
-
-            human_chunk_context = {stable_to_logical[sid]: ctx for sid, ctx in chunk_context.items()}
-            human_mapping_prompt = mapping_prompt.replace(chunk_json, json.dumps(human_chunk_context, indent=2, ensure_ascii=False))
-            log_data["human_prompt"] = human_mapping_prompt
-            full_logs.append(log_data)
-            
-            if res and "track_instructions" in res:
-                for sid, data in res["track_instructions"].items():
-                    tid = stable_to_logical.get(sid)
-                    if not tid: continue
-                    
-                    try:
-                        local_disc = int(tid.split('_')[0])
-                    except Exception:
-                        local_disc = 1
-
-                    target_disc = data.get("override_disc") or local_disc
-                    target_track = data.get("override_track")
-                    
-                    if target_track is None:
-                        for src in track_sources[tid]:
-                            if src["type"] == "filename":
-                                target_track = src.get("inferred_track_num")
-                                break
-                    
-                    if target_track is not None:
-                        key = (str(target_disc), str(target_track))
-                        if key in seen_numbers_global:
-                            if data.get("override_track") is not None:
-                                data["override_track"] = None
-                        else:
-                            seen_numbers_global[key] = sid
-
-                    data.update({
-                        "TPE2": global_identity.get("canonical_album_artist"),
-                        "TCON": global_identity.get("canonical_genre"),
-                        "TDRC": global_identity.get("canonical_year"),
-                        "identity_confidence": id_conf,
-                        "confidence_score": id_conf,
-                        "strategy": strategy,
-                        "semantic_label": global_res.get("semantic_label"),
-                        "chosen_mbz_index": global_identity.get("chosen_mbz_index", 0),
-                        "override_track": data.get("override_track"),
-                        "override_disc": data.get("override_disc")
-                    })
-                    all_instructions[tid] = data
-
-            i += len(chunk)
-
-        return all_instructions, {"phase1_res": global_res, "phase1_log": global_log, "chunks": full_logs}
-
     def _call_llm(self, app_id: int, prompt: str, num_ctx: Optional[int] = None) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
         system_prompt = """You are a [Metadata Audit JSON Generator].
 Your ONLY output is a raw JSON object. 
@@ -693,7 +531,7 @@ RULES:
 
         if self.llm_backend == "OLLAMA":
             url = f"{self.base_url}/api/chat"
-            options = {"temperature": 0.0, "num_predict": self.ollama_num_predict}
+            options = {"temperature": 0.0, "num_predict": -1}
             if num_ctx:
                 options["num_ctx"] = num_ctx
             payload = {
@@ -705,9 +543,14 @@ RULES:
             headers = {"Content-Type": "application/json"}
         else:
             url = f"{self.base_url}/v1beta/openai/chat/completions" if self.llm_backend == "GEMINI" else f"{self.base_url}/v1/chat/completions"
-            payload = {"model": self.model, "messages": messages, "temperature": 0.0, "response_format": {"type": "json_object"}}
-            if num_ctx:
-                payload["num_ctx"] = num_ctx
+            payload = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": 0.0,
+                "response_format": {"type": "json_object"}
+            }
+            payload["max_tokens"] = self.llm_cloud_max_tokens
+                
             headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
 
         for attempt in range(max_retries + 1):
