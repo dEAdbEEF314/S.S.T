@@ -17,9 +17,11 @@
 ## 2. 統合ロジック (Consolidation Logic)
 
 ### 2.1 フィールド別優先順位
-1.  **タイトル (TIT2)**: FINGERPRINT を優先し、Steamで補完する。
-2.  **アーティスト (TPE1)**: FINGERPRINT のクレジットを優先する。
-3.  **年 (TYER)**: 原則として Steam（公式発売日）を優先する。
+本ルールは、LLMが監査時に参照すべき一般原則を示すものであり、最終的なフィールド採用順は `.env` の `PRIORITY_*` 設定に従う。未設定時のフォールバック既定値は `src/sst/config.py` に集約される。
+
+1.  **タイトル (TIT2)**: 既定では `MBZ,PICS_API,FILE,EMBED,VDF` の順で採用する。
+2.  **アーティスト (TPE1)**: 既定では `MBZ,PICS_API,EMBED` の順で採用する。
+3.  **年 (TYER)**: 既定では `MBZ,EMBED,WEB_API` の順で採用する。
 
 ### 2.2 タイトルのクリーニング
 *   "01. Title" や "1- Title" のようなトラック番号の混入は、LLMが責任を持って削除（Cleaning）してください。

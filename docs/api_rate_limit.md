@@ -26,7 +26,7 @@ LLMプロバイダ（特にGoogle Gemini APIなど）には厳しいリクエス
 
 ### 3.1. MusicBrainz API
 MusicBrainzの公式APIは、ガイドラインで「1秒間に1リクエスト (1 req/sec)」と厳格に定められています。
-* **制御**: `src/sst/ident/mbz.py` 内で、リクエスト間に必ず `time.sleep(1.0)` 以上のインターバルを設けるか、内部ライブラリ側でレート制御が行われています。
+* **制御**: `src/sst/ident/mbz.py` 内で、リクエスト間に `time.sleep(1.1)` の固定インターバルを設け、ガイドラインをわずかに上回る安全側の待機時間で運用しています。
 * **User-Agent**: アプリケーションを正しく識別させるため、`config.mbz_app_name` などをヘッダーに付与し、BANのリスクを最小化しています。
 
 ### 3.2. AcoustID API

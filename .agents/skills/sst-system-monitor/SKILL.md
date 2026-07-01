@@ -8,28 +8,30 @@ description: Monitor the S.S.T system execution and Ollama backend simultaneousl
 When the S.S.T process appears to be frozen or hanging at the `[LLM PROMPT END]` stage, it is often due to the LLM backend (e.g., Ollama) taking a long time to process large contexts or generating excessive "thinking" text. 
 Use this skill to run a concurrent monitoring trace.
 
-## 🛠️ Diagnostics Execution Steps
+## 🛠️ 3-Tier Monitoring Setup (Diagnostics Execution Steps)
 
-To properly monitor the system, run the following commands concurrently in the background:
+To properly monitor the system and ensure you don't miss any context, launch these three processes concurrently in the background (using `WaitMsBeforeAsync` to stream their outputs to your context):
 
-1. **Monitor Ollama Logs (Backend)**:
+1. **The Main S.S.T Process**:
+   Ensure `data/sst.lock` is removed first, then start your batch or test.
    ```bash
-   journalctl -u ollama.service -f
+   rm -f data/sst.lock && uv run ./sst --limit <LIMIT> --fingerprint-all --dev --y
    ```
-   *Watch for `n_tokens` sizes and `n_decoded` progress to see if the LLM is actively generating text or stuck.*
+   *Provides high-level progress and overall task management.*
 
-2. **Run the S.S.T Task**:
-   Ensure `data/sst.lock` is removed if a previous instance was killed forcefully, then run the test:
-   ```bash
-   rm -f data/sst.lock && uv run ./sst --limit 1 --fingerprint-all --dev --y
-   ```
-
-3. **Monitor S.S.T Logs (Frontend)**:
-   Wait 1-2 seconds after starting the task, then run:
+2. **S.S.T App Logs (Frontend)**:
+   Start this immediately after the main process to capture verbose application logs.
    ```bash
    uv run ./sst --tail
    ```
-   *This log will reveal if the LLM is outputting `--- [LLM THINKING START] ---` and taking a long time before the actual JSON response.*
+   *Reveals if the LLM is outputting `--- [LLM THINKING START] ---` and how long it takes before returning the actual JSON response.*
+
+3. **Ollama Server Logs (Backend)**:
+   Start this to monitor the native backend behavior.
+   ```bash
+   journalctl -u ollama.service -f
+   ```
+   *Watch for `n_tokens` sizes and `n_decoded` progress to see if the LLM is actively generating text, loading KV caches, or stuck.*
 
 ## 🔍 How to Analyze
 

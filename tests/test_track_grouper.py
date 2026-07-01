@@ -56,3 +56,18 @@ def test_group_by_logical_track_with_album_name_removal(mock_dependencies):
     key = list(groups.keys())[0]
     # The album name and noise should be stripped, leaving just "main theme"
     assert key[1] == "main theme"
+
+def test_smart_normalization():
+    test_cases = [
+        ("01. Vermilion", "vermilion"),
+        ("01. Title (Instrumental)", "title instrumental"),
+        ("01. Title", "title"),
+        ("Title (High-Res Lossless)", "title"),
+        ("02 - Battle Theme [Arrange]", "battle theme arrange"),
+        ("03 - Bonus Track", "bonus track"),
+        ("Song (Short Ver.)", "song short ver"),
+        ("Song (Remix)", "song remix")
+    ]
+    
+    for stem, expected in test_cases:
+        assert TrackManager.normalize_title(stem) == expected
