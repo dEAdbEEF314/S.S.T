@@ -27,6 +27,8 @@ class JobRunner:
                 base_url=self.config.llm_base_url,
                 model=self.config.llm_model
             )
+            if getattr(self.config, "llm_vram_scheduling_enabled", True):
+                self.processor.set_vram_manager(self.vram_manager)
 
     def run(self, soundtracks: List[dict]) -> List[LocalProcessResult]:
         """Orchestrates the parallel processing of soundtracks with adaptive routing."""
@@ -58,11 +60,31 @@ class JobRunner:
             install_dir = Path(ost["install_dir"])
             album_task = progress.add_task(f"[cyan]待機中: {ost['name']}", total=None)
 
+            def _llm_progress(event: dict):
+                phase = event.get("phase")
+                request_kind = event.get("request_kind", "llm")
+                if phase == "llm_waiting_vram":
+                    progress.update(album_task, description=f"[cyan]LLM VRAM待機 ({request_kind}): {ost['name']}")
+                elif phase == "llm_vram_acquired":
+                    reserved_mb = event.get("reserved_mb")
+                    progress.update(album_task, description=f"[cyan]LLM VRAM確保 {reserved_mb}MB ({request_kind}): {ost['name']}")
+                elif phase == "llm_request_running":
+                    progress.update(album_task, description=f"[yellow]LLM実行中 ({request_kind}): {ost['name']}")
+                elif phase == "llm_request_retry":
+                    progress.update(album_task, description=f"[magenta]LLM再試行 ({request_kind}): {ost['name']}")
+                elif phase == "llm_request_done":
+                    progress.update(album_task, description=f"[yellow]LLM完了 ({request_kind}): {ost['name']}")
+                elif phase == "llm_request_failed":
+                    progress.update(album_task, description=f"[red]LLM失敗 ({request_kind}): {ost['name']}")
+
             vram_cost = 0
             if self.vram_manager:
                 vram_cost = self.vram_manager.estimate_album_vram(ost["_track_count"], ost["name"])
-                progress.update(album_task, description=f"[cyan]VRAM確保待ち ({vram_cost/(1024**2):.1f}MB): {ost['name']}")
-                self.vram_manager.acquire(vram_cost)
+                if getattr(self.config, "llm_vram_scheduling_enabled", True):
+                    progress.update(album_task, description=f"[cyan]LLM VRAM見積り ({vram_cost/(1024**2):.1f}MB): {ost['name']}")
+                else:
+                    progress.update(album_task, description=f"[cyan]VRAM確保待ち ({vram_cost/(1024**2):.1f}MB): {ost['name']}")
+                    vram_cost = self.vram_manager.acquire(vram_cost)
                 
             progress.update(album_task, description=f"[yellow]処理中: {ost['name']}")
 
@@ -73,7 +95,13 @@ class JobRunner:
                 all_files = TrackManager.list_audio_files(install_dir)
                 progress.update(album_task, total=len(all_files))
 
-                result = self.processor.process_album(app_id, install_dir, steam_meta, on_track_complete=lambda: progress.advance(album_task))
+                result = self.processor.process_album(
+                    app_id,
+                    install_dir,
+                    steam_meta,
+                    on_track_complete=lambda: progress.advance(album_task),
+                    llm_progress_callback=_llm_progress,
+                )
                 
                 if result is None:
                     result = LocalProcessResult(
@@ -83,7 +111,7 @@ class JobRunner:
                 
                 results.append(result)
             finally:
-                if self.vram_manager:
+                if self.vram_manager and not getattr(self.config, "llm_vram_scheduling_enabled", True):
                     self.vram_manager.release(vram_cost)
 
             progress.remove_task(album_task)

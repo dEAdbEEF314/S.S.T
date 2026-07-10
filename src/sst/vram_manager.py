@@ -2,10 +2,22 @@ import logging
 import threading
 import subprocess
 import requests
+from dataclasses import dataclass
 from typing import Optional, Tuple
 import tiktoken
 
 logger = logging.getLogger("sst.vram_manager")
+
+
+@dataclass(frozen=True)
+class RequestVramEstimate:
+    kind: str
+    prompt_tokens: int
+    expected_output_tokens: int
+    total_tokens: int
+    resolved_num_ctx: int
+    required_bytes: int
+    clipped_to_budget: bool
 
 class VramResourceManager:
     """
@@ -78,39 +90,63 @@ class VramResourceManager:
 
     def estimate_album_vram(self, track_count: int, album_name: str) -> int:
         """指定されたトラック数から、処理に必要なVRAM容量(バイト)を厳密に予測する"""
-        # 1-1. 入力トークン予測 (/api/tokenize)
         dummy_track = '{"local_key": [1, 1], "title": "Long Dummy Track Title With Lots Of Words", "duration_ms": 300000},'
         dummy_prompt = f"ALBUM: {album_name}\n" + dummy_track * track_count
-        
+        estimate = self.estimate_request_vram(
+            prompt=dummy_prompt,
+            expected_output_tokens=track_count * 300,
+            kind="album",
+            max_num_ctx=None,
+        )
+        return estimate.required_bytes
+
+    def estimate_prompt_tokens(self, prompt: str) -> int:
         try:
             res = requests.post(f"{self.base_url}/api/tokenize", json={
                 "model": self.model,
-                "prompt": dummy_prompt
+                "prompt": prompt
             }, timeout=10)
             if res.status_code == 200:
-                input_tokens = len(res.json().get("tokens", []))
-            else:
-                # 404等の場合は例外を投げてtiktokenのフォールバックへ移行させる
-                raise ValueError(f"tokenize API returned {res.status_code}")
+                return len(res.json().get("tokens", []))
+            raise ValueError(f"tokenize API returned {res.status_code}")
         except Exception:
             try:
-                # tiktokenによるフォールバック計算
                 enc = tiktoken.get_encoding("cl100k_base")
-                input_tokens = len(enc.encode(dummy_prompt))
+                return len(enc.encode(prompt))
             except Exception as e:
                 logger.warning(f"tiktoken fallback failed: {e}")
-                input_tokens = 1000 + (track_count * 100)
-            
-        # 1-2. 出力トークン予測 (スキーマ制約と最大500文字制限の合算)
-        max_output_tokens = track_count * 300
-        
-        # 1-3. トークン予測の安全マージン (1.25倍)
-        total_tokens = int((input_tokens + max_output_tokens) * 1.25)
-        
-        vram_bytes = total_tokens * self.bytes_per_token
-        return vram_bytes
+                return max(512, len(prompt) // 4)
 
-    def acquire(self, amount_bytes: int):
+    def estimate_request_vram(
+        self,
+        prompt: str,
+        expected_output_tokens: int,
+        kind: str = "generic",
+        max_num_ctx: Optional[int] = None,
+        safety_margin: float = 1.25,
+    ) -> RequestVramEstimate:
+        prompt_tokens = self.estimate_prompt_tokens(prompt)
+        total_tokens = max(1, int((prompt_tokens + max(1, expected_output_tokens)) * safety_margin))
+
+        resolved_num_ctx = total_tokens
+        if max_num_ctx is not None:
+            resolved_num_ctx = min(resolved_num_ctx, max_num_ctx)
+
+        budget_num_ctx = max(1, self.kv_budget_bytes // max(1, self.bytes_per_token))
+        clipped_to_budget = resolved_num_ctx > budget_num_ctx or total_tokens > budget_num_ctx
+        resolved_num_ctx = min(resolved_num_ctx, budget_num_ctx)
+
+        return RequestVramEstimate(
+            kind=kind,
+            prompt_tokens=prompt_tokens,
+            expected_output_tokens=max(1, expected_output_tokens),
+            total_tokens=total_tokens,
+            resolved_num_ctx=max(1, resolved_num_ctx),
+            required_bytes=max(1, resolved_num_ctx) * self.bytes_per_token,
+            clipped_to_budget=clipped_to_budget,
+        )
+
+    def acquire(self, amount_bytes: int) -> int:
         """必要なVRAM枠が空くまで安全に待機（ブロック）する"""
         # 安全装置: 要求サイズが最大予算(kv_budget_bytes)を超える場合は、最大予算にクリップして単独実行させる(CPUオフロード許容)
         if amount_bytes > self.kv_budget_bytes:
@@ -123,10 +159,11 @@ class VramResourceManager:
                 self.cond.wait()
             self.available_vram -= amount_bytes
             logger.debug(f"VRAM枠を確保しました: {amount_bytes/(1024**2):.1f}MB. 残り: {self.available_vram/(1024**2):.1f}MB")
+            return amount_bytes
 
     def release(self, amount_bytes: int):
         """VRAM枠を返却し、待機中の他のタスクに通知する"""
         with self.cond:
-            self.available_vram += amount_bytes
+            self.available_vram = min(self.kv_budget_bytes, self.available_vram + amount_bytes)
             logger.debug(f"VRAM枠を返却しました: {amount_bytes/(1024**2):.1f}MB. 残り: {self.available_vram/(1024**2):.1f}MB")
             self.cond.notify_all()

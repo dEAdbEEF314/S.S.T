@@ -50,6 +50,12 @@ APIの頭打ちを防ぎつつ、モデルのスペック限界までコンテ�
 - **`LLM_CHUNK_ADAPTIVE`**: (デフォルト `true`)。固定のチャンクサイズ指定を無視し、上記の設定から「エラーを起こさず一撃処理できる限界曲数」を動的算出するマスタースイッチです。
 - **`LLM_COHERENCE_THRESHOLD`**: (デフォルト `75`)。アルバムの曲数がこの閾値を超えた場合に、超巨大アルバム専用の「階層型Map-Reduce（Coherence処理）」を自動発動させます。プロンプト上限（Context Window）やVRAM枯渇を防ぐための安全装置です。
 
+#### llama3.2:3b 向け Tiered Profile (階層型実行プロファイル)
+S.S.T はアルバムの曲数に応じて最適な VRAM 消費とスレッド並列度を自動選択します。
+- **Small (1-50曲)**: スループット優先 (`num_ctx_cap=8192`, `workers=3`)
+- **Medium (51-100曲)**: バランス型 (`num_ctx_cap=16384`, `workers=2` 標準推奨)
+- **Large (101曲-)**: 一貫性優先 (`num_ctx_cap=32768`, `workers=1`, 強制Coherence発動)
+
 ### 音声エンコードおよび全体並列制御
 - **`MAX_ENCODING_TASKS`**: FFmpegによる音声フォーマット変換を同時にいくつ走らせるかを指定します。ディスクI/OとCPU負荷に直結するため、SSD環境でも `4` 〜 `8` 程度が推奨されます。
 - **`MAX_PARALLEL_ALBUMS`**: システム全体で同時に進行するアルバム処理の「基本並行数」です。クラウドAPI利用時は、RPMから自動算出された安全な並行数とこの値を比較し、**大きい方**が採用されます（手動で並行数を強制的に底上げしたい場合に使用します）。Ollama利用時はこの値に関わらずVRAMベースの自律制御が優先されます。
@@ -71,6 +77,8 @@ docker run --name sst-pics-bridge -d -p 8080:8000 --restart unless-stopped steam
 ```
 
 > **💡 LLMの設定**: LLMサービス（Gemini API、Ollama等のローカル環境、OpenAI互換API）はユーザー各自で用意し、`.env` ファイルにAPIキーやURLを正しく設定してください。
+>
+> **💡 Ollamaの推奨モデル**: 2026-07 時点の実測では、ローカル推論の推奨モデルは `llama3.2:3b` です。`qwen35` 系で観測された並列 request 非対応を回避しつつ、`gemma3:1b` より複雑ケースで安定しました。
 
 ### 2. S.S.T システムの実行
 ```bash
@@ -143,6 +151,12 @@ These settings maximize the One-shot processing context while respecting model s
 - **`LLM_CLOUD_MAX_TOKENS`**: (Cloud APIs only) Maximum output tokens for your model (e.g., 8192 for Gemini 1.5 Pro).
 - **`LLM_CHUNK_ADAPTIVE`**: (Default `true`). The master switch that calculates the absolute maximum tracks per request based on the limits above, overriding any fixed chunk size settings.
 
+#### Tiered Profiles for llama3.2:3b
+S.S.T automatically selects the optimal VRAM footprint and parallel workers based on track count.
+- **Small (1-50 tracks)**: Throughput-oriented (`num_ctx_cap=8192`, `workers=3`)
+- **Medium (51-100 tracks)**: Balanced baseline (`num_ctx_cap=16384`, `workers=2` recommended)
+- **Large (101+ tracks)**: Consistency-oriented (`num_ctx_cap=32768`, `workers=1`, forces Coherence)
+
 ### Audio Encoding & Parallel Limits
 - **`MAX_ENCODING_TASKS`**: Concurrent FFmpeg audio conversion processes. Impacts CPU and Disk I/O (4-8 recommended for SSDs).
 - **`MAX_PARALLEL_ALBUMS`**: The "base concurrency" for album processing. When using Cloud APIs, the system compares this value with the auto-calculated safe concurrency (based on RPM) and adopts the **larger** one (useful if you want to manually force higher concurrency). When using Ollama, VRAM-based autonomous control takes precedence regardless of this value.
@@ -164,6 +178,8 @@ docker run --name sst-pics-bridge -d -p 8080:8000 --restart unless-stopped steam
 ```
 
 > **💡 LLM Setup**: Please provide your own LLM service (Gemini API, Ollama, OpenAI-compatible APIs) and configure the API keys and URLs correctly in your `.env` file.
+>
+> **💡 Recommended Ollama model**: As of 2026-07, the recommended local Ollama model is `llama3.2:3b`. In measured SST runs, it avoided the parallel-request limitation observed with `qwen35`-family models and was more stable on complex cases than `gemma3:1b`.
 
 ### 2. Running S.S.T
 ```bash
