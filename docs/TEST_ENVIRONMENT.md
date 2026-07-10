@@ -63,3 +63,41 @@ A valid test environment MUST have:
 - [ ] Correct generation and preservation of the ZIP archive to the local output directory (e.g., `./output`) without extraction.
 - [ ] The `COMM` field contains appended `Parent Name, [tag1/ tag2]..., AppID, URL` information. If an embedded comment already exists, verify that it is preserved at the front.
 - [ ] Correct ID3v2.3 tagging for MP3.
+
+## 6. LLM Parallelism Observation Runbook
+When validating Ollama-side slot utilization against SST-side request scheduling, use the steps below.
+
+1. Start a narrowly scoped SST run with debug logging enabled so the output goes to a dedicated file.
+```bash
+cd /workspace/S.S.T
+uv run python -m sst.main --appid 1027880 --dev
+```
+
+2. Export Ollama logs in an ISO timestamp format that the correlation script can parse.
+```bash
+sudo journalctl -u ollama -S "2026-07-10 09:35:00" -o short-iso > /tmp/ollama-short-iso.log
+```
+
+3. Identify the SST debug log created for that run.
+```bash
+ls -1t logs/SST_DEBUG_*.log | head -n 1
+```
+
+4. Correlate SST `LLM_REQUEST_*` records with Ollama slot events.
+```bash
+uv run python Maintenance/analyze_llm_slot_correlation.py \
+	--sst-log logs/SST_DEBUG_YYYYMMDDHHMMSS.log \
+	--ollama-log /tmp/ollama-short-iso.log \
+	--app-id 1027880
+```
+
+5. Read the output in this order.
+- `peak_inflight_requests`: SST側が同時に何件の request を発行しようとしたか。
+- `LLM_REQUEST_VRAM` / `LLM_REQUEST_RELEASE`: SST側の request-level VRAM 予約と解放。
+- `slot_ids_seen`: Ollama側で実際に使われた slot ID。
+- `http 200 /api/chat` と `client_aborted`: 正常終了とクライアント切断の数。
+
+6. Interpretation guide.
+- `peak_inflight_requests > 1` なのに `slot_ids_seen` が `{0: ...}` だけなら、Ollama側で単一 slot 運用か、同時実行に至る前に待機している可能性が高い。
+- `LLM_REQUEST_VRAM` が複数並ぶのに `wait_seconds` が長い場合、SST側の VRAM gate が並列度を抑えている。
+- `client_aborted` や `500 /api/chat` が多い場合、slot 利用率の問題ではなく、SST側タイムアウトや接続切断を優先して調査する。

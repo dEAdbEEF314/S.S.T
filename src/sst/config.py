@@ -58,6 +58,21 @@ class Config(BaseSettings):
     llm_cloud_max_tokens: int = 8192
     llm_ollama_num_ctx: int = 32768
     llm_ollama_num_predict: int = 4096
+    llm_vram_scheduling_enabled: bool = True
+    llm_request_parallelism_enabled: bool = True
+    llm_request_parallelism_max_workers: int = 4
+    
+    # Token Stingy Tier Profiles
+    llm_album_tier_small_max_tracks: int = 50
+    llm_album_tier_medium_max_tracks: int = 100
+    llm_ollama_num_ctx_small: int = 8192
+    llm_ollama_num_ctx_medium: int = 16384
+    llm_ollama_num_ctx_large: int = 32768
+    llm_request_parallelism_max_workers_small: int = 3
+    llm_request_parallelism_max_workers_medium: int = 2
+    llm_request_parallelism_max_workers_large: int = 1
+    llm_force_coherence_large: bool = True
+    
     llm_coherence_threshold: int = 75
     llm_chunk_size_virtual: int = 20
     llm_chunk_size_metadata_ollama: int = 10
@@ -162,6 +177,9 @@ class Config(BaseSettings):
             "llm_cloud_max_tokens": self.llm_cloud_max_tokens,
             "ollama_num_ctx": self.llm_ollama_num_ctx,
             "ollama_num_predict": self.llm_ollama_num_predict,
+            "llm_vram_scheduling_enabled": self.llm_vram_scheduling_enabled,
+            "llm_request_parallelism_enabled": self.llm_request_parallelism_enabled,
+            "llm_request_parallelism_max_workers": self.llm_request_parallelism_max_workers,
             "coherence_threshold": self.llm_coherence_threshold,
             "chunk_size_virtual": self.llm_chunk_size_virtual,
             "chunk_size_metadata_ollama": self.llm_chunk_size_metadata_ollama,

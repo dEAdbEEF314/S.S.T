@@ -23,6 +23,18 @@ from .report_generator import ReportGenerator
 from .processor_support import fetch_album_artwork, send_notifications, resolve_duplicate_mappings
 from .processor_tracks import process_single_track
 
+from dataclasses import dataclass
+
+@dataclass
+class AlbumExecutionProfile:
+    tier_name: str
+    track_count_min: int
+    track_count_max: int
+    num_ctx_cap: int
+    phase2_parallel_workers: int
+    force_coherence: bool
+    prefer_one_shot: bool
+
 logger = logging.getLogger("sst.processor")
 
 class LocalProcessor:
@@ -43,6 +55,9 @@ class LocalProcessor:
         self.virtual_album_builder = VirtualAlbumBuilder(self.acoustid, self.mbz, fingerprint_all=config.fingerprint_all, min_mbz_search_score_threshold=config.min_mbz_search_score_threshold)
         self.llm = LLMOrganizer(**config.build_llm_organizer_kwargs())
         self.working_dir = Path(config.sst_working_dir)
+
+    def set_vram_manager(self, vram_manager: Any):
+        self.llm.set_vram_manager(vram_manager)
 
     def _get_localized_now(self):
         from datetime import timezone, timedelta
@@ -104,7 +119,14 @@ class LocalProcessor:
             
         return True, final_map, global_id
 
-    def process_album(self, app_id: int, install_dir: Path, steam_meta: SteamMetadata, on_track_complete: Optional[callable] = None) -> LocalProcessResult:
+    def process_album(
+        self,
+        app_id: int,
+        install_dir: Path,
+        steam_meta: SteamMetadata,
+        on_track_complete: Optional[callable] = None,
+        llm_progress_callback: Optional[callable] = None,
+    ) -> LocalProcessResult:
         logger.info(f"[{app_id}] --- 処理中: {steam_meta.name} ---")
         diagnostics = {
             "trace": [],
@@ -132,7 +154,10 @@ class LocalProcessor:
             max_local_disc = max((d for d, _ in track_groups.keys()), default=1) if track_groups else 1
             max_store_disc = max((int(t.get("disc", 1)) for t in steam_meta.store_tracklist), default=1) if steam_meta.store_tracklist else 1
             total_discs = max(max_local_disc, max_store_disc)
-            num_ctx = getattr(self.config, "llm_ollama_num_ctx", 32768) if self.config.llm_backend == "OLLAMA" else None
+            
+            track_count = max(len(track_groups), len(steam_meta.store_tracklist) if steam_meta.store_tracklist else 0)
+            execution_profile = self._build_album_execution_profile(track_count)
+            logger.info(f"[{app_id}] 実行プロファイル: {execution_profile.tier_name} (Tracks: {track_count}, num_ctx: {execution_profile.num_ctx_cap}, workers: {execution_profile.phase2_parallel_workers})")
 
             # --- NEW EXPERIMENTAL VIRTUAL ALBUM FLOW ---
             logger.info(f"[{app_id}] アイデンティティ統合のために仮想アルバムを構築しています...")
@@ -171,7 +196,13 @@ class LocalProcessor:
             # --- LLM Consolidation via Virtual Albums ---
             mbz_log = {"status": "virtual_album_flow"} # Initialize for log bundle
             final_metadata, llm_log = self.llm.consolidate_virtual_albums(
-                app_id, v_steam, v_fingerprint, v_mbz_search, v_local, num_ctx=num_ctx
+                app_id,
+                v_steam,
+                v_fingerprint,
+                v_mbz_search,
+                v_local,
+                execution_profile=execution_profile,
+                progress_callback=llm_progress_callback,
             )
             _diag(
                 "LLM_CONSOLIDATED",
@@ -361,3 +392,39 @@ class LocalProcessor:
 
     def _resolve_duplicate_mappings(self, app_id: int, final_metadata: Dict[str, Any], steam_meta: SteamMetadata, track_groups: Dict):
         resolve_duplicate_mappings(app_id, final_metadata, steam_meta, track_groups)
+
+    def _build_album_execution_profile(self, track_count: int) -> AlbumExecutionProfile:
+        cfg = self.config
+        # Small
+        if track_count <= getattr(cfg, 'llm_album_tier_small_max_tracks', 50):
+            return AlbumExecutionProfile(
+                tier_name="Small",
+                track_count_min=1,
+                track_count_max=getattr(cfg, 'llm_album_tier_small_max_tracks', 50),
+                num_ctx_cap=getattr(cfg, 'llm_ollama_num_ctx_small', 8192),
+                phase2_parallel_workers=getattr(cfg, 'llm_request_parallelism_max_workers_small', 3),
+                force_coherence=False,
+                prefer_one_shot=False
+            )
+        # Medium
+        elif track_count <= getattr(cfg, 'llm_album_tier_medium_max_tracks', 100):
+            return AlbumExecutionProfile(
+                tier_name="Medium",
+                track_count_min=getattr(cfg, 'llm_album_tier_small_max_tracks', 50) + 1,
+                track_count_max=getattr(cfg, 'llm_album_tier_medium_max_tracks', 100),
+                num_ctx_cap=getattr(cfg, 'llm_ollama_num_ctx_medium', 16384),
+                phase2_parallel_workers=getattr(cfg, 'llm_request_parallelism_max_workers_medium', 2),
+                force_coherence=False,
+                prefer_one_shot=True
+            )
+        # Large
+        else:
+            return AlbumExecutionProfile(
+                tier_name="Large",
+                track_count_min=getattr(cfg, 'llm_album_tier_medium_max_tracks', 100) + 1,
+                track_count_max=99999,
+                num_ctx_cap=getattr(cfg, 'llm_ollama_num_ctx_large', 32768),
+                phase2_parallel_workers=getattr(cfg, 'llm_request_parallelism_max_workers_large', 1),
+                force_coherence=getattr(cfg, 'llm_force_coherence_large', True),
+                prefer_one_shot=True
+            )

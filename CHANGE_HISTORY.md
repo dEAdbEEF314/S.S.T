@@ -1,3 +1,19 @@
+2026/07/10 13:35:00 token_stingy_plan.md: Tier / アルバム曲数に応じて `num_ctx` と Phase 2 並列度を切り替える実装計画、および `.env.example` への tier 別設定追加計画をルート文書として作成。
+
+2026/07/10 13:20:00 .env.example, README.md: llama3.2:3b の標準推奨ベースライン（16384 / workers=2）の再検証結果を踏まえ、次の比較候補として `LLM_OLLAMA_NUM_CTX=8192` と `LLM_REQUEST_PARALLELISM_MAX_WORKERS=3` をドキュメントへ追加。
+
+2026/07/10 13:10:00 .env, .env.example: llama3.2:3b を前提にした最初の `.env` 最適化ベースラインを反映。`LLM_OLLAMA_NUM_CTX=16384`、request-level VRAM 制御有効、worker 数 2、`MAX_ENCODING_TASKS=4`、`MAX_PARALLEL_ALBUMS=2` を推奨初期値として明示。
+
+2026/07/10 12:55:00 .env.example, README.md: ローカル Ollama の推奨モデルとして llama3.2:3b を明記。並列 request 互換性と複雑ケースでの安定性に基づく推奨であることを追記。
+
+2026/07/10 11:25:00 Maintenance/analyze_llm_slot_correlation.py, tests/test_llm_slot_correlation.py, docs/TEST_ENVIRONMENT.md: SST の `LLM_REQUEST_*` structured log と Ollama slot/journal ログを相関確認する観測スクリプトと runbook を追加。実機での並列度検証手順を標準化。
+
+2026/07/10 11:10:00 src/sst/{llm.py,processor.py,runner.py}, tests/test_llm_parallelism.py: request-level LLM進捗コールバックと structured log を追加。runner の progress 表示で VRAM待機・確保・実行・再試行・失敗を可視化できるよう改善。
+
+2026/07/10 10:55:00 src/sst/{config.py,llm.py}, tests/test_llm_parallelism.py: Phase 2 の track mapping chunk を並列実行できる初期実装を追加。chunk worker ごとの truncation 縮小リトライを維持しつつ、deterministic なマージ順を保証。
+
+2026/07/10 10:35:00 src/sst/{config.py,llm.py,processor.py,runner.py,vram_manager.py}, tests/test_vram_manager.py: LLM呼び出し境界での request-level VRAM 見積りと acquire/release の初期実装を追加。shared VramResourceManager を LLMOrganizer に注入し、runner 側の二重確保を避ける構成へ移行開始。
+
 2026/05/19 09:19:30 skills/sst-cleaner: システム初期化スキルの作成とインストール。データベース、キャッシュ、ログ、中間生成物を一括削除する機能を提供。
 
 2026/05/19 10:20:34 README.md: 「システムの起動準備」セクションを追加。PICS Bridge、llama.cppの起動コマンド、専用モデルの作成方法を追記。
@@ -490,3 +506,15 @@ docs/LOGIC.md, docs/TAGGING_RULE.md: VGMdb連携およびバイリンガル仕�
 - `llm.py` に残っていた未使用の旧統合経路 `consolidate_metadata()` を削除し、現行の仮想アルバム統合入口を `consolidate_virtual_albums()` に一本化しました。
 - メタデータ優先順位を `PriorityConfig` 型として `config.py` に追加し、`processor_tracks.py` から `MetadataBuilder` への受け渡しを辞書直組みではなく型経由に整理しました。
 - あわせて `Config.build_mbz_scoring_config()` と `Config.build_llm_organizer_kwargs()` を追加し、`processor.py` のコンストラクタから MusicBrainz スコア辞書および LLM 初期化引数の手組みロジックを追い出しました。`docs/LOGIC.md` にもこの構成整理を反映しました。
+
+- 2026/07/10 16:14:30
+  - `src/sst/config.py`: トラック数に応じたTiered Profile設定を追加。
+  - `src/sst/processor.py`: AlbumExecutionProfileデータクラスの定義と、トラック数に応じたプロファイル決定ロジックの追加。
+  - `src/sst/llm.py`: 決定されたプロファイルを元にnum_ctx、worker_count、Coherence制御を適用するように変更。
+  - `.env.example`: 新しい環境変数の追加。
+  - `README.md`: llama3.2:3b向けの階層型実行プロファイルの説明を追加。
+  - `tests/test_execution_profile.py`: プロファイル決定ロジックのユニットテストを作成。
+
+2026/07/10 21:04:00 total_report_manual.md: AIエージェント向けの「--fingerprint-all 100件処理結果の総合レポート生成手順書」を新規作成。DB構造、中間/最終生成物の配置、全6セクション（Archive送り、不自然なArchive、Review送り、理不尽なReview、LLM/システム矛盾、エラー/失敗）の分析基準と判定ロジック、HTMLレポート出力仕様を網羅。サブエージェントによる調査結果（ログファイルのgrepエンコーディング問題、EARLY_REVIEW_RETURNのmessage欠落パターン、Maintenance/analyze_processing_results.pyの実在パス等）も反映。
+
+2026/07/10 21:10:00 report/generate_total_report.py, report/total_analysis_report.html: 手順書(`total_report_manual.md`)の要件に従い、DBとログファイルから抽出したデータをもとに6つのセクション（Archive送り、不自然なArchive送り、Review送り、理不尽なReview送り、矛盾、エラー）について分析し、総括的なHTMLレポートを生成するスクリプトを作成・実行。
