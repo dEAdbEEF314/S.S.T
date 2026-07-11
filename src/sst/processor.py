@@ -264,6 +264,9 @@ class LocalProcessor:
                     identity_confidence=score,
                     error=error_msg,
                 )
+                
+                final_msg = f"LLM Failure: {error_msg}" if final_metadata is None else f"Low Confidence ({diagnostics['upstream_cause_code']}): {error_msg}"
+                
                 summary_meta = {
                     "app_id": app_id,
                     "album_name": steam_meta.name,
@@ -275,12 +278,39 @@ class LocalProcessor:
                     "steam_info": steam_meta.model_dump(),
                     "diagnostics": diagnostics,
                 }
-                self.db.record_processed(app_id, "review", steam_meta.name, self._get_localized_now().isoformat(), summary_meta)
                 
-                if final_metadata is None:
-                    return LocalProcessResult(app_id=app_id, status="review", album_name=steam_meta.name, confidence_score=0, confidence_reason=error_msg, message=f"LLM Failure: {error_msg}")
-                else:
-                    return LocalProcessResult(app_id=app_id, status="review", album_name=steam_meta.name, confidence_score=score, confidence_reason=error_msg, message=f"Low Confidence: {error_msg}")
+                mbz_candidates = []
+                self._send_notifications(app_id, steam_meta.name, "review", final_msg, score, error_msg, llm_log, False, track_count, mbz_candidates)
+                
+                virtual_albums_bundle = {
+                    "STEAM": v_steam if 'v_steam' in locals() else None,
+                    "FINGERPRINT": v_fingerprint if 'v_fingerprint' in locals() else None,
+                    "MBZ_SEARCH": v_mbz_search if 'v_mbz_search' in locals() else None,
+                    "LOCAL": v_local if 'v_local' in locals() else None
+                }
+                
+                localized_now_str = self._get_localized_now().strftime('%Y-%m-%d %H:%M:%S')
+                log_bundle = {
+                    "metadata.json": summary_meta,
+                    "llm_log.json": llm_log,
+                    "AUDIT_REPORT.html": ReportGenerator.generate_html_report(app_id, steam_meta, "review", final_msg, score, error_msg, [], llm_log, mbz_candidates, localized_now_str, self.config.metadata_source_priority, quality=0, virtual_albums=virtual_albums_bundle)
+                }
+                if p1_log.get("human_prompt"): log_bundle["LLM_PROMPT.md"] = p1_log["human_prompt"]
+                elif p1_log.get("prompt"): log_bundle["LLM_PROMPT.md"] = p1_log["prompt"]
+                
+                run_id = datetime.now().strftime('%H%M%S')
+                temp_output = self.working_dir / f"early_review_{app_id}_{run_id}"
+                temp_output.mkdir(parents=True, exist_ok=True)
+                
+                diagnostics["packager_invoked"] = True
+                _diag("PACKAGE_SAVE_START", status="review", output_root=self.config.sst_output_dir)
+                PackageManager.save_local_package(app_id, "review", steam_meta.name, temp_output, log_bundle, self.config.sst_output_dir)
+                _diag("PACKAGE_SAVE_DONE", status="review")
+                
+                shutil.rmtree(temp_output, ignore_errors=True)
+                
+                self.db.record_processed(app_id, "review", steam_meta.name, self._get_localized_now().isoformat(), summary_meta)
+                return LocalProcessResult(app_id=app_id, status="review", album_name=steam_meta.name, confidence_score=score, confidence_reason=error_msg, message=final_msg)
 
             run_id = datetime.now().strftime('%H%M%S')
             temp_output = self.working_dir / f"final_{app_id}_{run_id}"
@@ -350,12 +380,19 @@ class LocalProcessor:
             }
             self._send_notifications(app_id, steam_meta.name, status, message, score, reason, llm_log, any_audio_failures, len(processed_tracks_meta), mbz_candidates)
             
+            virtual_albums_bundle = {
+                "STEAM": v_steam if 'v_steam' in locals() else None,
+                "FINGERPRINT": v_fingerprint if 'v_fingerprint' in locals() else None,
+                "MBZ_SEARCH": v_mbz_search if 'v_mbz_search' in locals() else None,
+                "LOCAL": v_local if 'v_local' in locals() else None
+            }
+
             localized_now_str = self._get_localized_now().strftime('%Y-%m-%d %H:%M:%S')
             log_bundle = {
                 "mbz_log.json": mbz_log, 
                 "metadata.json": summary_meta,
                 "llm_log.json": llm_log,
-                "AUDIT_REPORT.html": ReportGenerator.generate_html_report(app_id, steam_meta, status, message, score, reason, processed_tracks_meta, llm_log, mbz_candidates, localized_now_str, self.config.metadata_source_priority, quality=quality)
+                "AUDIT_REPORT.html": ReportGenerator.generate_html_report(app_id, steam_meta, status, message, score, reason, processed_tracks_meta, llm_log, mbz_candidates, localized_now_str, self.config.metadata_source_priority, quality=quality, virtual_albums=virtual_albums_bundle)
             }
 
             p1_log = llm_log.get("phase1_log", {})

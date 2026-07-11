@@ -518,3 +518,34 @@ docs/LOGIC.md, docs/TAGGING_RULE.md: VGMdb連携およびバイリンガル仕�
 2026/07/10 21:04:00 total_report_manual.md: AIエージェント向けの「--fingerprint-all 100件処理結果の総合レポート生成手順書」を新規作成。DB構造、中間/最終生成物の配置、全6セクション（Archive送り、不自然なArchive、Review送り、理不尽なReview、LLM/システム矛盾、エラー/失敗）の分析基準と判定ロジック、HTMLレポート出力仕様を網羅。サブエージェントによる調査結果（ログファイルのgrepエンコーディング問題、EARLY_REVIEW_RETURNのmessage欠落パターン、Maintenance/analyze_processing_results.pyの実在パス等）も反映。
 
 2026/07/10 21:10:00 report/generate_total_report.py, report/total_analysis_report.html: 手順書(`total_report_manual.md`)の要件に従い、DBとログファイルから抽出したデータをもとに6つのセクション（Archive送り、不自然なArchive送り、Review送り、理不尽なReview送り、矛盾、エラー）について分析し、総括的なHTMLレポートを生成するスクリプトを作成・実行。
+
+* 2026/07/11 12:15:00
+  * `src/sst/processor.py`: `ReportGenerator.generate_html_report`への引数に4つの仮想アルバムの生データ（`virtual_albums`）を追加。
+  * `src/sst/report_generator.py`: `generate_html_report` の末尾に仮想アルバムデータをJSONフォーマットで表示するHTMLカード要素を追記。
+  * `docs/Virtual_Album.md`: 「7. 監査とトレーサビリティ (AUDIT_REPORT)」のセクションを追記し、仮想アルバムのデータ出力によるデバッグ・フェイルセーフ確認の有用性について明記。
+
+* 2026/07/11 12:17:00
+  * `src/sst/report_generator.py`: AUDIT_REPORT.html の仮想アルバム情報の出力をJSON生データから、人間が見やすい表形式（HTMLテーブル）に変更。
+
+* 2026/07/11 12:24:00
+  * `tests/investigate_app.py`: ユーザーが任意のAppIDを指定して調査（仮想アルバム情報、LLM推論結果、システム裁定、最終メタデータ）を即座に表示できる汎用スクリプトとして実装。
+
+* 2026/07/11 12:38:00
+  * `src/sst/builder.py`: LLMがデータ非存在の仮想アルバム（use_mbz_search等）を誤って指示した場合のハルシネーション対策（Steamストアへのファジー検索による自動フォールバック）を追加実装。
+  * `docs/LOGIC.md`: Phase 2フローにハルシネーション対策の仕様を追記更新。
+
+* 2026/07/11 12:43:00
+  * `src/sst/builder.py`: FINGERPRINT (VERIFIED_MBZ) 仮想アルバム由来の候補データにおいて、トラック番号キーが `position` ではなく `track_num` になっていたため、Phase 2でのトラック番号マッピングが全曲失敗し `Track 0` にフォールバックしてしまうバグを修正（AppID: 1663820の調査から特定）。
+
+* 2026/07/11 12:47:00
+  * `src/sst/llm.py`: Phase 2のプロンプトにおいて、LLMが `matched_v_idx` を1-based（またはtrack_num）と勘違いし、マッピング全体が1つずつズレてしまう（Track 1に2曲目のタイトルが付与される等）ハルシネーション問題を防ぐため、`v_idx` が0-basedであることを明示的に指示するルールを追加（AppID: 1040700の調査から特定）。
+
+* 2026/07/11 12:59:00
+  * `src/sst/virtual_album.py`: FINGERPRINT (VERIFIED_MBZ) 仮想アルバムの構築時、再生時間が完全に同一の複数トラックが存在する場合に、最初のトラックが全てのローカルファイルに重複して割り当てられてしまう（一対多マッピング）バグを修正。タイトル類似度（SequenceMatcher）と重複防止セット（used_mb_indices）を導入し、完全な一対一マッピングを実現（AppID: 1315140の再検証から特定）。
+
+* 2026/07/11 13:02:00
+  * `src/sst/track_grouper.py`: `normalize_title`関数内の正規表現 `[^a-zA-Z0-9]` が非ASCII文字（日本語や韓国語など）をすべて削除してしまうバグを修正。`[^\w\s]` に変更することでUnicode文字を保持し、ローカルファイルとメタデータのタイトル類似度マッチング（SequenceMatcher）が他言語のトラックに対しても正しく機能するように改善（AppID: 1315140の再検証から特定）。
+
+* 2026/07/11 13:06:00
+  * `src/sst/llm.py`: LLMプロンプトの Phase 2 (track mapping) に、FINGERPRINTソース使用時の厳格なマッピングルール（`matched_v_idx` は `chunk_idx` と完全一致させる）を追加し、インデックスのハルシネーションを防止（AppID: 1315140の再検証から特定）。
+- 2026/07/11 15:17:00, src/sst/processor.py, src/sst/llm.py, src/sst/notify.py, src/sst/config.py, .env.example, EARLY_REVIEW_RETURNの発生経路調査と改善プランに基づき、通知およびリトライ機構を強化。LLM API呼び出しの例外ハンドラーにおけるエクスポネンシャルバックオフ（再試行時の待機時間延長）を修正。Discord通知（notify.py）にも3回のリトライ機構を導入。EARLY_REVIEW_RETURN発生時にAUDIT_REPORT.htmlの生成と個別Discord通知がスキップされる問題を修正し、エラー理由がレポートに含まれるよう改善。また、Coherence閾値（LLM_COHERENCE_THRESHOLD）のデフォルトを101トラックに変更。

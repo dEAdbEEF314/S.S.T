@@ -126,6 +126,8 @@ LLM（司法）への「憲法」として、以下の変数がプロンプト�
       - `override_track`: トラック番号が不明な場合、ストアリストから補完。すべてが同じ番号などの異常メタデータ時は `null` にフォールバック。
       - `override_disc`: ディスク番号が不明な場合に補完。
       - `override_title`: トラック番号が混入している場合、除去した「純粋な曲名」を生成。
+    - **ハルシネーション対策 (Fallback from Empty MBZ/Fingerprint)**:
+      - LLMが `use_mbz_search` や `use_fingerprint` を指示したにも関わらず、実際にはその仮想アルバムデータが空（NOT AVAILABLE）でデータが存在しなかった場合、システムのファジー検索ロジックを強制的に再有効化し、Steamストアの全トラックリストからの自動フォールバックマッピングを行います。これによりLLMの矛盾した指示による欠損（Track #0の大量発生等）を物理的に防止します。
 
     ### 4.3 LLM切断検知とチャンク自動縮小
     - OLLAMA応答の `done_reason` を取得し、`length` / `max_tokens` の場合は `response_truncated` として扱う。
