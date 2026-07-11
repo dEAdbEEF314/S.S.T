@@ -117,15 +117,18 @@ class MetadataBuilder:
         # (common hallucination when fingerprint is missing), try using it as a Steam index.
         s_idx = instr.get("matched_v_idx")
         is_steam_action = (instr.get("action") == "use_steam")
-        is_misidentified_fingerprint = (instr.get("action") == "use_fingerprint" and not mbz_track)
+        is_misidentified_mbz_action = (instr.get("action") in ["use_fingerprint", "use_mbz_search"] and not mbz_track)
 
-        if (is_steam_action or is_misidentified_fingerprint) and s_idx is not None:
+        if (is_steam_action or is_misidentified_mbz_action) and s_idx is not None:
             if s_idx < len(steam_meta.store_tracklist):
                 pics_track = steam_meta.store_tracklist[s_idx]
-                if is_misidentified_fingerprint:
-                    logger.debug(f"[{app_id}] トラック '{clean_title}' の誤認識されたフィンガープリントアクションをSteamインデックス {s_idx} に修正しました")
+                if is_misidentified_mbz_action:
+                    logger.debug(f"[{app_id}] トラック '{clean_title}' の誤認識されたMBZ系アクションをSteamインデックス {s_idx} に修正しました")
         
-        if not pics_track and instr.get("action") not in ["use_mbz_search", "use_local"]:
+        # Fallback to fuzzy matching if pics_track is not set, UNLESS action is explicitly local,
+        # or it is an MBZ action that actually succeeded in finding an MBZ track.
+        is_valid_mbz_action = (instr.get("action") in ["use_mbz_search", "use_fingerprint"] and mbz_track is not None)
+        if not pics_track and not is_valid_mbz_action and instr.get("action") != "use_local":
             # Fallback to fuzzy matching
             fuzzy_clean_title = re.sub(r'^(\d+[\s._-]+)+', '', clean_title)
             fuzzy_clean_title = re.sub(r'\.[a-zA-Z0-9]+$', '', fuzzy_clean_title)
@@ -229,7 +232,7 @@ class MetadataBuilder:
                 elif src == "EMBED":
                     val = local_tags.get("track_number")
                 elif src == "MBZ" and mbz_track:
-                    val = mbz_track.get("position") if isinstance(mbz_track, dict) else None
+                    val = (mbz_track.get("position") or mbz_track.get("track_num")) if isinstance(mbz_track, dict) else None
                 elif src == "PICS_API" and pics_track:
                     val = pics_track.get("number")
                 

@@ -159,13 +159,14 @@ class LLMOrganizer:
         ### RULES:
         1. Match LOCAL_CHUNK to FINGERPRINT (if available) first, then MBZ_SEARCH, then STEAM. NEVER select a "use_*" action for a source that is NOT AVAILABLE.
         2. **Unique Mapping**: Each track in the LOCAL_CHUNK MUST map to a **UNIQUE** reference track (v_idx). Do NOT map multiple local tracks to the same "matched_v_idx".
-        3. **Automatic Numbering**: If action is "use_steam", "use_fingerprint", or "use_mbz_search", LEAVE "override_track" and "override_disc" as **null**. The system will automatically adopt the numbers from the reference album.
+        3. **Fingerprint Direct Mapping**: FINGERPRINT indices (`v_idx`) are strictly aligned 1:1 with LOCAL_CHUNK indices (`chunk_idx`). If you use "use_fingerprint" for a local track, you MUST set `matched_v_idx` EXACTLY equal to its `chunk_idx`. If the corresponding FINGERPRINT track is null or missing, you MUST fallback to MBZ_SEARCH or STEAM instead.
+        4. **Automatic Numbering**: If action is "use_steam", "use_fingerprint", or "use_mbz_search", LEAVE "override_track" and "override_disc" as **null**. The system will automatically adopt the numbers from the reference album.
 
-4. **Override Only When Necessary**: Use "override_track" or "override_disc" ONLY if the reference album has WRONG or MISSING numbers (e.g., track number is 0 or null).
-5. **Disc Alignment**: If the matched reference track belongs to a different disc than the local "d", you MUST ensure the final output reflects the correct disc.
-6. If action is "use_fingerprint", "use_steam", or "use_mbz_search", MUST provide "matched_v_idx" from the respective reference album.
-7. No Duplicate Tracks: Ensure that the final mapping does not result in duplicate track numbers within the same disc.
-8. Output JSON ONLY. No preamble, no thinking.
+        5. **Override Only When Necessary**: Use "override_track" or "override_disc" ONLY if the reference album has WRONG or MISSING numbers (e.g., track number is 0 or null).
+        6. **Disc Alignment**: If the matched reference track belongs to a different disc than the local "d", you MUST ensure the final output reflects the correct disc.
+        7. If action is "use_fingerprint", "use_steam", or "use_mbz_search", you MUST provide the exact "v_idx" value from the respective reference album as "matched_v_idx". Note that "v_idx" is 0-indexed, so "matched_v_idx": 0 is valid and expected for the first track. Do NOT shift indices.
+        8. No Duplicate Tracks: Ensure that the final mapping does not result in duplicate track numbers within the same disc.
+        9. Output JSON ONLY. No preamble, no thinking.
 
 **NOTE: All reasoning (reason) MUST be output in the language code: {self.user_language}. If {self.user_language} is "ja" (Japanese), you MUST write in native Japanese and strictly avoid Chinese characters or vocabulary.**
 
@@ -970,6 +971,7 @@ RULES:
                             reason=str(e),
                         )
                         time.sleep(retry_delay)
+                        retry_delay *= 1.5
                         continue
                     log_entry["error"] = str(e)
                     logger.info(

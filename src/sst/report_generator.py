@@ -1,4 +1,5 @@
 import logging
+import json
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 from .models import SteamMetadata
@@ -76,7 +77,7 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
 """
 
     @staticmethod
-    def generate_html_report(app_id: int, steam_meta: SteamMetadata, status: str, message: str, score: int, reason: str, processed_tracks: List[Dict[str, Any]], llm_log: Dict[str, Any], mbz_candidates: List[Dict[str, Any]], localized_now_str: str, priority_str: str, quality: Optional[int] = None) -> str:
+    def generate_html_report(app_id: int, steam_meta: SteamMetadata, status: str, message: str, score: int, reason: str, processed_tracks: List[Dict[str, Any]], llm_log: Dict[str, Any], mbz_candidates: List[Dict[str, Any]], localized_now_str: str, priority_str: str, quality: Optional[int] = None, virtual_albums: Optional[Dict[str, Any]] = None) -> str:
         is_fast = llm_log.get("fast_track", False)
         status_class = "status-archive" if status == "archive" else "status-review"
         status_label = "🛡️ ARCHIVE SUCCESS" if status == "archive" else "🔍 REVIEW REQUIRED"
@@ -86,7 +87,7 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
         if is_fast:
             display_reason = "<strong>🛡️ DETERMINISTIC FAST-TRACK ENABLED</strong><br><br>This album was automatically verified by matching perfect evidence from MusicBrainz or PICS. LLM inference was bypassed to maintain 100% data integrity."
 
-        p1_res = llm_log.get("phase1_res", {})
+        p1_res = llm_log.get("phase1_res") or {}
         if quality is None:
             quality = int(p1_res.get("integrity_quality", 0))
         global_tags = p1_res.get("global_tags", {})
@@ -144,6 +145,53 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
                 <td style="font-weight: 500; color: var(--accent-blue);">{t.get('title_source', 'UNKNOWN')}</td>
                 <td style="font-size: 0.75rem; color: #8b949e;">{t.get('source', '')}</td>
             </tr>"""
+
+        virtual_albums_html = ""
+        if virtual_albums:
+            virtual_albums_html += '<div class="card" style="margin-top: 20px;"><h3>Virtual Albums Context (LLM Prompt Data)</h3>'
+            virtual_albums_html += '<div style="display: flex; flex-direction: column; gap: 20px;">'
+            for source_name, va in virtual_albums.items():
+                if not va:
+                    virtual_albums_html += f'<div><h4 style="color: var(--accent-blue); margin-bottom: 5px;">{source_name}</h4><p style="color: #8b949e; font-size: 0.85rem; margin-top: 0;">Not available</p></div>'
+                    continue
+                
+                album_name = str(va.get("album_name", "N/A")).replace("<", "&lt;").replace(">", "&gt;")
+                artist = str(va.get("artist", "N/A")).replace("<", "&lt;").replace(">", "&gt;")
+                
+                html_table = f'<div><h4 style="margin-bottom: 5px; color: var(--accent-blue);">{source_name}</h4>'
+                html_table += f'<div style="font-size: 0.85rem; margin-bottom: 10px; color: #8b949e;">Album: <strong>{album_name}</strong> | Artist: <strong>{artist}</strong></div>'
+                html_table += '<table class="tag-table" style="font-size: 0.8rem;"><thead><tr>'
+                html_table += '<th>Disc</th><th>#</th><th>Title</th><th>Duration</th>'
+                
+                if source_name in ["FINGERPRINT", "MBZ_SEARCH", "VERIFIED_MBZ"]:
+                    html_table += '<th>MBID</th><th>Credits</th>'
+                elif source_name == "LOCAL":
+                    html_table += '<th>Local Key</th>'
+                    
+                html_table += '</tr></thead><tbody>'
+                
+                for t in va.get("tracks", []):
+                    disc = t.get("disc", "-") if t.get("disc") is not None else "-"
+                    num = t.get("track_num", "-") if t.get("track_num") is not None else "-"
+                    title = str(t.get("title", "-")).replace("<", "&lt;").replace(">", "&gt;") if t.get("title") else "-"
+                    dur_ms = t.get("duration_ms")
+                    dur_str = f"{int(dur_ms)/1000:.1f}s" if dur_ms else "-"
+                    
+                    html_table += f'<tr><td>{disc}</td><td>{num}</td><td><strong>{title}</strong></td><td>{dur_str}</td>'
+                    
+                    if source_name in ["FINGERPRINT", "MBZ_SEARCH", "VERIFIED_MBZ"]:
+                        mbid = t.get("mbid", "-") if t.get("mbid") else "-"
+                        credits = str(t.get("credits", "-")).replace("<", "&lt;").replace(">", "&gt;") if t.get("credits") else "-"
+                        html_table += f'<td><code style="font-size:0.75rem;">{mbid}</code></td><td><span style="font-size:0.75rem;">{credits}</span></td>'
+                    elif source_name == "LOCAL":
+                        l_key = t.get("local_key", "-") if t.get("local_key") else "-"
+                        html_table += f'<td><code style="font-size:0.75rem;">{l_key}</code></td>'
+                        
+                    html_table += '</tr>'
+                
+                html_table += '</tbody></table></div>'
+                virtual_albums_html += html_table
+            virtual_albums_html += '</div></div>'
 
         return f"""<!DOCTYPE html>
 <html lang="ja">
@@ -223,6 +271,8 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
         </table>
     </div>
 
+    {virtual_albums_html}
+
     <footer>
         <p>Generated by S.S.T (Steam Soundtrack Tagger) at {localized_now_str}</p>
     </footer>
@@ -232,7 +282,7 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
 
     @staticmethod
     def generate_classification_basis(app_id: int, steam_meta: SteamMetadata, status: str, message: str, score: int, reason: str, count: int, llm_log: Dict[str, Any], mbz_candidates: List[Dict[str, Any]], localized_now_str: str) -> str:
-        p1_res = llm_log.get("phase1_res", {})
+        p1_res = llm_log.get("phase1_res") or {}
         id_conf = p1_res.get("identity_confidence", 0)
         quality = p1_res.get("integrity_quality", 0)
         ratio = p1_res.get("archive_vs_review_ratio", {"archive": 0, "review": 0})

@@ -70,7 +70,7 @@ def send_notifications(
     track_count: int,
     mbz_candidates: List[Dict[str, Any]],
 ) -> None:
-    p1_res = llm_log.get("phase1_res", {})
+    p1_res = llm_log.get("phase1_res") or {}
     id_conf = p1_res.get("identity_confidence", 0)
     quality = p1_res.get("integrity_quality", 0)
     ratio = p1_res.get("archive_vs_review_ratio", {"archive": 0, "review": 0})

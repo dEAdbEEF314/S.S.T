@@ -1,6 +1,7 @@
 import logging
 from typing import Dict, Any, List, Optional, Tuple
 from collections import Counter
+from difflib import SequenceMatcher
 
 from .ident.acoustid import AcoustIDIdentifier
 from .ident.mbz import MusicBrainzIdentifier
@@ -149,19 +150,31 @@ class VirtualAlbumBuilder:
 
         # Step 5: Duration-based Track Binding
         matched_count = 0
+        used_mb_indices = set()
+        
         for key, variants in track_groups.items():
             local_dur = variants[0]["duration"] * 1000 # ms
+            local_title = (key[1] or "").lower()
             
             best_match = None
-            min_diff = 3000 # 3 seconds threshold
+            best_score = -1.0
             
-            for mb_t in mb_all_tracks:
+            for i, mb_t in enumerate(mb_all_tracks):
+                if i in used_mb_indices:
+                    continue
+                    
                 diff = abs(mb_t["duration_ms"] - local_dur)
-                if diff < min_diff:
-                    min_diff = diff
-                    best_match = mb_t
+                if diff < 3000:
+                    sim = SequenceMatcher(None, local_title, mb_t.get("title", "").lower()).ratio()
+                    dur_score = 1.0 - (diff / 3000.0)
+                    total_score = dur_score * 0.3 + sim * 0.7
+                    
+                    if total_score > best_score:
+                        best_score = total_score
+                        best_match = mb_t
             
             if best_match:
+                used_mb_indices.add(mb_all_tracks.index(best_match))
                 matched_count += 1
                 virtual_album["tracks"].append({
                     "local_key": key,

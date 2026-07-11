@@ -73,7 +73,7 @@ class Config(BaseSettings):
     llm_request_parallelism_max_workers_large: int = 1
     llm_force_coherence_large: bool = True
     
-    llm_coherence_threshold: int = 75
+    llm_coherence_threshold: int = 101
     llm_chunk_size_virtual: int = 20
     llm_chunk_size_metadata_ollama: int = 10
     llm_chunk_size_metadata_cloud: int = 30

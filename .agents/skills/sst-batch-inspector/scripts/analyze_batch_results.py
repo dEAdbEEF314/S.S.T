@@ -33,7 +33,7 @@ def string_similarity(s1, s2):
     return 1.0 - (dist / max_len)
 
 def main():
-    db_path = Path("/home/sexyroot/src/S.S.T/data/sst_local_state.db")
+    db_path = Path("/workspace/S.S.T/data/sst_local_state.db")
     if not db_path.exists():
         print(f"Error: DB not found at {db_path}")
         return
