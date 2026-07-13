@@ -149,7 +149,9 @@ class LocalProcessor:
             if not all_files:
                 _diag("SKIP_NO_AUDIO")
                 return LocalProcessResult(app_id=app_id, status="skip", album_name=steam_meta.name, message="No audio", confidence_score=0)
+            
             track_groups = TrackManager.group_by_logical_track(all_files, album_name=steam_meta.name)
+            
             _diag("TRACK_GROUPS_BUILT", group_count=len(track_groups))
             max_local_disc = max((d for d, _ in track_groups.keys()), default=1) if track_groups else 1
             max_store_disc = max((int(t.get("disc", 1)) for t in steam_meta.store_tracklist), default=1) if steam_meta.store_tracklist else 1
@@ -282,7 +284,7 @@ class LocalProcessor:
                 }
                 
                 mbz_candidates = []
-                self._send_notifications(app_id, steam_meta.name, "review", final_msg, score, error_msg, llm_log, False, track_count, mbz_candidates)
+                discord_msg = self._send_notifications(app_id, steam_meta.name, "review", final_msg, score, error_msg, llm_log, False, track_count, mbz_candidates)
                 
                 virtual_albums_bundle = {
                     "STEAM": v_steam if 'v_steam' in locals() else None,
@@ -297,6 +299,8 @@ class LocalProcessor:
                     "llm_log.json": llm_log,
                     "AUDIT_REPORT.html": ReportGenerator.generate_html_report(app_id, steam_meta, "review", final_msg, score, error_msg, [], llm_log, mbz_candidates, localized_now_str, self.config.metadata_source_priority, quality=0, virtual_albums=virtual_albums_bundle)
                 }
+                if discord_msg:
+                    log_bundle["DISCORD_MESSAGE.md"] = discord_msg
                 if p1_log.get("human_prompt"): log_bundle["LLM_PROMPT.md"] = p1_log["human_prompt"]
                 elif p1_log.get("prompt"): log_bundle["LLM_PROMPT.md"] = p1_log["prompt"]
                 
@@ -380,7 +384,7 @@ class LocalProcessor:
                 "steam_info": steam_meta.model_dump(),
                 "diagnostics": diagnostics,
             }
-            self._send_notifications(app_id, steam_meta.name, status, message, score, reason, llm_log, any_audio_failures, len(processed_tracks_meta), mbz_candidates)
+            discord_msg = self._send_notifications(app_id, steam_meta.name, status, message, score, reason, llm_log, any_audio_failures, len(processed_tracks_meta), mbz_candidates)
             
             virtual_albums_bundle = {
                 "STEAM": v_steam if 'v_steam' in locals() else None,
@@ -396,6 +400,8 @@ class LocalProcessor:
                 "llm_log.json": llm_log,
                 "AUDIT_REPORT.html": ReportGenerator.generate_html_report(app_id, steam_meta, status, message, score, reason, processed_tracks_meta, llm_log, mbz_candidates, localized_now_str, self.config.metadata_source_priority, quality=quality, virtual_albums=virtual_albums_bundle)
             }
+            if discord_msg:
+                log_bundle["DISCORD_MESSAGE.md"] = discord_msg
 
             p1_log = llm_log.get("phase1_log", {})
             if p1_log.get("human_prompt"): log_bundle["LLM_PROMPT.md"] = p1_log["human_prompt"]
@@ -427,7 +433,7 @@ class LocalProcessor:
 
 
     def _send_notifications(self, app_id, name, status, message, score, reason, llm_log, any_audio_failures, track_count, mbz_candidates):
-        send_notifications(self.notifier, app_id, name, status, message, score, reason, llm_log, any_audio_failures, track_count, mbz_candidates)
+        return send_notifications(self.notifier, app_id, name, status, message, score, reason, llm_log, any_audio_failures, track_count, mbz_candidates)
 
     def _resolve_duplicate_mappings(self, app_id: int, final_metadata: Dict[str, Any], steam_meta: SteamMetadata, track_groups: Dict):
         resolve_duplicate_mappings(app_id, final_metadata, steam_meta, track_groups)

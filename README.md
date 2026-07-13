@@ -61,20 +61,18 @@ S.S.T はアルバムの曲数に応じて最適な VRAM 消費とスレッド�
 - **`MAX_PARALLEL_ALBUMS`**: システム全体で同時に進行するアルバム処理の「基本並行数」です。クラウドAPI利用時は、RPMから自動算出された安全な並行数とこの値を比較し、**大きい方**が採用されます（手動で並行数を強制的に底上げしたい場合に使用します）。Ollama利用時はこの値に関わらずVRAMベースの自律制御が優先されます。
 
 ## ✅ 確認が取れている実行環境
-- **OS**: Windows 11 / WSL2 (Ubuntu 24.04)
-- **dGPU**: NVIDIA GeForce RTX 4000番台推奨 (16GB VRAM以上) ※ローカルLLMを使用する場合のみ
+- **OS**: Linux (Ubuntu 24.04 等)
+- **dGPU**: NVIDIA GPU 推奨 (16GB VRAM以上) ※ローカルLLMを使用する場合のみ
 - **Software**: 
   - **FFmpeg**: 必須（音声変換用）。必ずOSにインストールしてパスを通してください。
-  - **Ollama**: ローカルLLM推論用 (Native WSL2版 / オプション)
-  - **Docker Desktop for Windows**: Steam PICS Bridge API用
+  - **Python**: 3.12 以上 (`uv` での管理を推奨)
+  - **Ollama**: ローカルLLM推論用 (オプション)
+  - **PICS Bridge API**: Steam内部DBアクセス用に互換API環境（steamcmd/api等）へのアクセスが必要
 
 ## 🏗️ セットアップと起動
 
 ### 1. インフラの準備と設定
-```bash
-# Steam PICS Bridge の起動 (Steam内部DBアクセス用)
-docker run --name sst-pics-bridge -d -p 8080:8000 --restart unless-stopped steamcmd/api:latest
-```
+S.S.TはSteamの内部メタデータを取得するため、[steamcmd/api](https://github.com/steamcmd/api) 互換の PICS Bridge API を必要とします。各自の環境に合わせてローカルでホストするか、アクセス可能なサーバーを用意し、`.env` の `STEAM_PICS_BRIDGE_URL` にURLを設定してください。
 
 > **💡 LLMの設定**: LLMサービス（Gemini API、Ollama等のローカル環境、OpenAI互換API）はユーザー各自で用意し、`.env` ファイルにAPIキーやURLを正しく設定してください。
 >

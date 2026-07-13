@@ -1,33 +1,28 @@
 # S.S.T スタンドアロン・デプロイガイド (Ultimate Data Mode)
 
-このドキュメントでは、S.S.T をローカル環境（WSL2 + Windows）で最大限のパフォーマンスと精度で動作させるためのセットアップ方法を説明します。
+このドキュメントでは、S.S.T をローカル・Linux環境で最大限のパフォーマンスと精度で動作させるためのセットアップ方法を説明します。
 
 ## 1. アーキテクチャ概要
 
 現在の S.S.T は、複雑なサーバー構成を必要としない **スタンドアロン CLI ツール** です。
 情報の最大化と Cloudflare 制限の回避のため、以下の 2 つを併用する「究極データ取得モード」を推奨します。
 
-- **S.S.T 本体 (WSL2)**: Python 3.12 + `uv` で動作するメインプログラム。
-- **PICS Bridge (Local Docker)**: Steam 内部データベースから直接情報を引き出すためのローカルブリッジ。
+- **S.S.T 本体**: Python 3.12 + `uv` で動作するメインプログラム。
+- **PICS Bridge API**: Steam 内部データベースから直接情報を引き出すためのブリッジAPI。
 
 ## 2. 前提条件
 
-- **WSL2 (Ubuntu等)**: Python 3.12 および `uv` がインストールされていること。
-- **Docker Desktop**: Windows 側でインストールされ、WSL2 連携が有効であること。
+- **OS**: Linux環境 (Ubuntu等)
+- **Python**: Python 3.12 および `uv` パッケージマネージャがインストールされていること。
+- **FFmpeg**: OSにインストールされ、パスが通っていること。
 - **Steam Web API Key**: [こちら](https://steamcommunity.com/dev/apikey)から取得してください。
 
 ---
 
 ## 3. ステップ 1: インフラの起動
 
-### 3.1 PICS Bridge (Docker)
-外部のキャッシュサーバーを介さず、自分の PC から直接 Steam データを取得するために、以下のコマンドをターミナルで実行してください。
-
-```bash
-docker run --name sst-pics-bridge -d -p 8080:8000 --restart unless-stopped steamcmd/api:latest
-```
-
-
+### 3.1 PICS Bridge API
+外部のキャッシュサーバーを介さず、Steam データを取得するために、[steamcmd/api](https://github.com/steamcmd/api) 互換のAPIサーバーを用意してください（ローカルでDockerを用いて建てる、または別サーバーでホストするなど）。
 
 ## 4. ステップ 2: S.S.T の環境設定 (.env)
 

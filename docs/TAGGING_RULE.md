@@ -42,7 +42,7 @@ DJ機材および Windows エクスプローラーとの最大互換性を確保
 | **TIT1** | グルーピング | `親ゲーム名, Steam` |
 | **COMM** | コメント | 既存の埋め込みコメントがあれば先頭に保持し、その後ろへ `親ゲーム名, [タグ1/ タグ2/ ...], AppID, ストア URL` を `, ` 区切りで連結した単一フレーム。 |
 | **TLAN** | 言語 | ISO 639-2 コード (例: `jpn`) |
-| **APIC** | 埋め込み画像 | 優先順位設定に従い、MusicBrainz、Steam ストア画像、またはローカル埋め込み画像から採用。 |
+| **APIC** | 埋め込み画像 | ハードコードされた固定ロジックに従い、MusicBrainz、Steam ストア画像、またはローカル埋め込み画像から自動フォールバックで採用。 |
 
 ---
 
@@ -115,7 +115,7 @@ To ensure maximum compatibility with DJ hardware and Windows Explorer, the **ID3
 | **TIT1** | Grouping | `Parent Game Name, Steam` |
 | **COMM** | Comment | A single frame that preserves any existing embedded comment first, then appends `Parent Name, [tag1/ tag2/ ...], AppID, Store URL` using `, ` as the separator. |
 | **TLAN** | Language | ISO 639-2 code (e.g., `jpn`) |
-| **APIC** | Artwork | Selected by priority from MusicBrainz, Steam artwork, or embedded local artwork. |
+| **APIC** | Artwork | Selected automatically from MusicBrainz, Steam artwork, or embedded local artwork via hardcoded fallback logic. |
 
 ---
 

@@ -575,3 +575,18 @@ docs/LOGIC.md, docs/TAGGING_RULE.md: VGMdb連携およびバイリンガル仕�
 - 2026/07/13 08:31:52 src/sst/llm.py: LLMのJSON出力のキー名が大文字になってしまうケース（例：IDENTITY_CONFIDENCE）を吸収するため、request_kind == "identity"の場合にすべてのキーを再帰的に小文字に変換するロジックを追加。
 - 2026/07/13 08:33:40 src/sst/llm.py: LLMの出力から global_tags 要素が欠落したり、ルート階層に出力された場合でもKeyErrorが発生しないようにフォールバック処理を実装。
 - 2026/07/13 08:35:09 src/sst/llm.py: LLMの出力から semantic_label や strategy などの要素が欠落した場合でもKeyErrorが発生しないように、ディクショナリのget()メソッドとデフォルト値を使用するよう修正。
+- 2026/07/13 11:05:33 .env: LLM_MODELを ornith:9b から mistral:7b に変更。Ollama環境で qwen 系アーキテクチャの並列化非対応によるタイムアウトを回避し、VRAM割り当てと並列推論を有効にするため。
+- 2026/07/13 11:45:00: `src/sst/processor.py`, `src/sst/processor_support.py` - LLMフェーズへ渡す前に音源ファイルをフォーマット別に分割して独立したローカルトラックとして扱い、LLMによるマッピング（STEAMトラックとの紐付け）後に、同一STEAMトラックへマッピングされた複数フォーマットのトラック群から最高品質フォーマットを一つだけ自動採用する（FORMAT DEDUPLICATION）ロジックを実装。Hades等のマルチフォーマットによるDuplicatesエラーを根本から解決。
+
+2026/07/13 17:01:35 .agents/skills/sst-batch-inspector/scripts/generate_html_report.py: ユーザーの要求に応じ、HTMLレポートに各項目の処理フロー詳細や、LLMとシステム処理の矛盾と原因についての説明セクションを追加するようテンプレートを修正し、レポートを生成。
+- 2026/07/13 17:17:47: `src/sst/processor_support.py` を修正し、LLMが複数フォーマットの幻覚キーを生成した場合に `_resolve_duplicate_mappings` 内で発生する KeyError を防止。
+- 2026/07/13 18:44:06: `src/sst/notify.py` を修正し、DEBUGモード時にDiscord通知内容をログに出力するよう変更。
+- 2026/07/13 18:44:06: `src/sst/processor_support.py` および `src/sst/processor.py` を修正し、Discord通知メッセージを `DISCORD_MESSAGE.md` として最終出力のZIPに同梱する機能を追加。
+2026/07/13 21:01:00, src/sst/processor.py, 事前のフォーマット隠蔽・代表立てロジックの実装（不要なフォーマットベースの分離処理を廃止し、TrackManager.group_by_logical_trackによる一元化を採用）
+2026/07/13 21:01:00, src/sst/track_grouper.py, SPLIT処理時に同一グループの別フォーマットが上書き消失するバグを修正（setdefaultによるappendへ変更）
+2026/07/13 21:01:00, docs/smart_duplicate_resolution.md, 事前のフォーマット隠蔽・代表立て (Format Hiding & Representative Logic) の仕様を追記
+2026/07/13 21:01:00, docs/Virtual_Album.md, LOCAL仮想アルバムの項目に事前のフォーマット隠蔽仕様を追記
+2026/07/13 21:08:00, src/sst/builder.py, Track#0エラー解決のため、トラック番号取得時にmatched_v_idxおよびlocal_tagsへ正しくフォールバックするよう修正
+2026/07/13 21:24:00, docs/SST.md docs/TAGGING_RULE.md docs/Virtual_Album.md .env, 古いフィールドごとの優先順位指定に関する記述と設定項目を削除し、Virtual Album構想に基づく決定論的フォールバック仕様にドキュメントを統一
+2026/07/13 21:38:00, docs/DEPLOYMENT_GUIDE_jp.md README.md, 実行環境からWSL2およびDocker Desktopの依存記述を排除し、純粋なLinux・APIベースのデプロイガイドに刷新
+2026/07/13 21:47:00, .env .env.example src/sst/config.py, 設定項目を関連度順（Steam連携、ローカル処理、LLM制御等）に整理し直し、デッドコードとなっていた優先順位関連の設定を完全に削除。併せて.env.exampleを秘密情報を抜いた汎用テンプレートとして再構築

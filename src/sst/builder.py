@@ -146,9 +146,16 @@ class MetadataBuilder:
             res_track = str(pics_track.get("number"))
         elif instr.get("override_track") and str(instr.get("override_track")) != "0":
             res_track = str(instr.get("override_track"))
+        elif instr.get("action") == "use_steam" and instr.get("matched_v_idx") is not None:
+            res_track = str(int(instr.get("matched_v_idx")) + 1)
         elif mbz_track:
             val = mbz_track.get("position") or mbz_track.get("track_num")
             if val: res_track = str(val)
+            
+        if not res_track or res_track == "0":
+            local_track = str(local_tags.get("track_number") or "0").split('/')[0].strip()
+            if local_track != "0":
+                res_track = local_track
         
         if not res_track or res_track == "0":
             res_track = str(adopted_info.get("filename_track") or 0)

@@ -18,9 +18,14 @@ This skill provides automated scripts and manual procedures to query, categorize
 You can run the aggregate analysis script included in this skill to get a complete breakdown of the processing database.
 
 ### Usage
-Run the following command at the workspace root:
+Run the following script to output a text-based analysis to the console:
 ```bash
 uv run python .agents/skills/sst-batch-inspector/scripts/analyze_batch_results.py
+```
+
+To generate a beautiful, dark-mode HTML report summarizing the batch run in the `report/` directory:
+```bash
+uv run python .agents/skills/sst-batch-inspector/scripts/generate_html_report.py
 ```
 
 ### Script Output Details
