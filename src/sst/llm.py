@@ -9,13 +9,6 @@ from datetime import UTC, datetime
 
 from .config import (
     DEFAULT_METADATA_SOURCE_PRIORITY,
-    DEFAULT_PRIORITY_APIC,
-    DEFAULT_PRIORITY_TIT2,
-    DEFAULT_PRIORITY_TPE1,
-    DEFAULT_PRIORITY_TPOS,
-    DEFAULT_PRIORITY_TRCK,
-    DEFAULT_PRIORITY_TPUB,
-    DEFAULT_PRIORITY_TYER,
 )
 from .rate_limit import DistributedRateLimiter
 
@@ -43,14 +36,7 @@ class LLMOrganizer:
                  chunk_adaptive: bool = True,
                  chunk_output_tokens_per_track: int = 180,
                  chunk_output_safety_ratio: float = 0.75,
-                 metadata_source_priority: str = DEFAULT_METADATA_SOURCE_PRIORITY,
-                 priority_tit2: str = DEFAULT_PRIORITY_TIT2,
-                 priority_tpe1: str = DEFAULT_PRIORITY_TPE1,
-                 priority_trck: str = DEFAULT_PRIORITY_TRCK,
-                 priority_tpos: str = DEFAULT_PRIORITY_TPOS,
-                 priority_tyer: str = DEFAULT_PRIORITY_TYER,
-                 priority_tpub: str = DEFAULT_PRIORITY_TPUB,
-                 priority_apic: str = DEFAULT_PRIORITY_APIC):
+                 metadata_source_priority: str = DEFAULT_METADATA_SOURCE_PRIORITY):
         self.base_url = base_url.rstrip('/')
         self.api_key = api_key
         self.model = model
@@ -72,13 +58,6 @@ class LLMOrganizer:
         self.user_language = user_language
         self.llm_backend = llm_backend.upper()
         self.metadata_source_priority = metadata_source_priority
-        self.priority_tit2 = priority_tit2
-        self.priority_tpe1 = priority_tpe1
-        self.priority_trck = priority_trck
-        self.priority_tpos = priority_tpos
-        self.priority_tyer = priority_tyer
-        self.priority_tpub = priority_tpub
-        self.priority_apic = priority_apic
         self.limiter = DistributedRateLimiter(rpm, tpm, rpd)
         self.vram_manager = None
 
@@ -199,6 +178,7 @@ class LLMOrganizer:
         ref_fingerprint: List[Dict[str, Any]],
         full_ref_mbz_search: List[Dict[str, Any]],
         v_mbz_search: Optional[Dict[str, Any]],
+        full_ref_steam: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Dict[str, Any]]:
         merged: Dict[str, Dict[str, Any]] = {}
         if not track_res or "track_instructions" not in track_res:
@@ -221,25 +201,38 @@ class LLMOrganizer:
             mv_idx = data.get("matched_v_idx")
             if data.get("action") == "use_fingerprint" and mv_idx is not None:
                 if mv_idx < len(ref_fingerprint):
-                    data["mbz_track_index"] = ref_fingerprint[mv_idx].get("mbz_track_index")
+                    ref_track = ref_fingerprint[mv_idx]
+                    data["mbz_track_index"] = ref_track.get("mbz_idx")
+                    if data.get("override_track") is None and ref_track.get("n") is not None:
+                        data["override_track"] = str(ref_track.get("n"))
             elif data.get("action") == "use_mbz_search" and mv_idx is not None and v_mbz_search:
                 if mv_idx < len(full_ref_mbz_search):
-                    data["mbz_track_index"] = full_ref_mbz_search[mv_idx].get("mbz_idx")
+                    ref_track = full_ref_mbz_search[mv_idx]
+                    data["mbz_track_index"] = ref_track.get("mbz_idx")
+                    if data.get("override_track") is None and ref_track.get("n") is not None:
+                        data["override_track"] = str(ref_track.get("n"))
+            elif data.get("action") == "use_steam" and mv_idx is not None and full_ref_steam:
+                if mv_idx < len(full_ref_steam):
+                    ref_track = full_ref_steam[mv_idx]
+                    if data.get("override_track") is None and ref_track.get("n") is not None:
+                        data["override_track"] = str(ref_track.get("n"))
 
+            tags = global_res.get("global_tags", {})
+            if not isinstance(tags, dict): tags = {}
             data.update({
-                "TPE2": global_res["global_tags"].get("canonical_album_artist"),
-                "TCON": global_res["global_tags"].get("canonical_genre"),
-                "TDRC": global_res["global_tags"].get("canonical_year"),
-                "TPUB": global_res["global_tags"].get("canonical_label"),
+                "TPE2": tags.get("canonical_album_artist") or global_res.get("canonical_album_artist"),
+                "TCON": tags.get("canonical_genre") or global_res.get("canonical_genre"),
+                "TDRC": tags.get("canonical_year") or global_res.get("canonical_year"),
+                "TPUB": tags.get("canonical_label") or global_res.get("canonical_label"),
                 "TEXT": data.get("lyricist"),
                 "TCOM": data.get("composer"),
                 "TPE4": data.get("arranger"),
                 "identity_confidence": global_res["identity_confidence"],
                 "integrity_quality": global_res.get("integrity_quality", 0),
                 "archive_vs_review_ratio": global_res.get("archive_vs_review_ratio", {"archive": 0, "review": 100}),
-                "confidence_score": global_res["identity_confidence"],
-                "strategy": global_res["strategy"],
-                "semantic_label": global_res["semantic_label"]
+                "confidence_score": global_res.get("identity_confidence", 0),
+                "strategy": global_res.get("strategy", "UNKNOWN"),
+                "semantic_label": global_res.get("semantic_label", "Review")
             })
             merged[tid] = data
 
@@ -323,6 +316,7 @@ class LLMOrganizer:
                     ref_fingerprint,
                     full_ref_mbz_search,
                     v_mbz_search,
+                    full_ref_steam,
                 )
             )
             offset += len(chunk)
@@ -910,6 +904,12 @@ RULES:
                                 json_str = clean_content[start_idx:end_idx + 1]
                                 json_str = re.sub(r',\s*([\]}])', r'\1', json_str)
                                 parsed = json.loads(json_str)
+                                if request_kind == "identity" and isinstance(parsed, dict):
+                                    def lower_keys(d):
+                                        if isinstance(d, dict): return {k.lower(): lower_keys(v) for k, v in d.items()}
+                                        if isinstance(d, list): return [lower_keys(v) for v in d]
+                                        return d
+                                    parsed = lower_keys(parsed)
                                 total_duration = round(time.monotonic() - request_started, 3)
                                 logger.info(
                                     "LLM_REQUEST_DONE %s",

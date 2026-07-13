@@ -549,3 +549,29 @@ docs/LOGIC.md, docs/TAGGING_RULE.md: VGMdb連携およびバイリンガル仕�
 * 2026/07/11 13:06:00
   * `src/sst/llm.py`: LLMプロンプトの Phase 2 (track mapping) に、FINGERPRINTソース使用時の厳格なマッピングルール（`matched_v_idx` は `chunk_idx` と完全一致させる）を追加し、インデックスのハルシネーションを防止（AppID: 1315140の再検証から特定）。
 - 2026/07/11 15:17:00, src/sst/processor.py, src/sst/llm.py, src/sst/notify.py, src/sst/config.py, .env.example, EARLY_REVIEW_RETURNの発生経路調査と改善プランに基づき、通知およびリトライ機構を強化。LLM API呼び出しの例外ハンドラーにおけるエクスポネンシャルバックオフ（再試行時の待機時間延長）を修正。Discord通知（notify.py）にも3回のリトライ機構を導入。EARLY_REVIEW_RETURN発生時にAUDIT_REPORT.htmlの生成と個別Discord通知がスキップされる問題を修正し、エラー理由がレポートに含まれるよう改善。また、Coherence閾値（LLM_COHERENCE_THRESHOLD）のデフォルトを101トラックに変更。
+
+* 2026/07/12 00:43:00 - `src/sst/llm.py` および `src/sst/builder.py`
+  * トラック番号0番重複エラーの根本原因を修正。
+  * `builder.py` が FINGERPRINT のインデックス（`matched_v_idx`）を誤って MBZ 候補リストの検索に直接流用してしまう設計ミスと、MusicBrainz API の仕様変更やキャッシュによる `position` の欠落により全てのトラック番号が `0` にフォールバックしてしまうバグを解消。
+  * `llm.py` の `_merge_track_instructions` において、仮想アルバム（`full_ref_steam`, `ref_fingerprint`, `full_ref_mbz_search`）から直接プロンプト用のトラック番号 (`n`) を抽出して `override_track` へ事前に代入（事前解決）するアーキテクチャに変更し、後続のシステムを堅牢化。
+  * `builder.py` 側での `matched_v_idx` 直接流用を廃止し、常に解決済みの `mbz_track_index` を用いるように修正。
+
+* 2026/07/12 03:36:00 - メタデータ構築ロジックの簡略化と堅牢化（フォールバック主導）
+  * `src/sst/config.py`: 優先順位指定（`DEFAULT_PRIORITY_*`）を廃止し、全件指紋解析（`--fingerprint-all`）をデフォルトで有効化するよう修正。MBZ曲数不一致ペナルティを強化。
+  * `src/sst/main.py`: `--fingerprint-all` オプションおよび確認プロンプトを削除し、システムをスリム化。
+  * `src/sst/llm.py`: 初期化引数から不要になった `priority_*` パラメータを完全に削除。
+  * `src/sst/builder.py`: `MetadataBuilder.build_tag_map` を大改修。複雑な `PriorityConfig` 依存ループを廃止し、「構造（トラック番号・曲名）は Steam 公式を絶対視し、不足時のみ MBZ/FINGERPRINT にフォールバックする」仕様へ刷新。
+  * `src/sst/processor_support.py`: アルバムアート取得処理から `config.priority_apic` を削除し、「MBZ → Steam → EMBED」の固定優先順位で安全に取得するよう修正。
+- 2026/07/12 09:51:45 CodeBase_AI.md: AI向けコードベース情報ドキュメントを新規作成
+- 2026/07/12 09:53:53 skills/generate-batch-report/SKILL.md: バッチ処理結果の分析レポートを生成するスキルを新規作成
+- 2026/07/12 14:47:49 .env: gemma4:12b および ornith:9b での推論精度比較テストを実施（テスト完了後は llama3.2:3b に復元）
+- 2026/07/12 14:56:59 .env, .env.example, README.md, token_stingy_plan.md: 推奨LLMモデルを llama3.2:3b から ornith:9b に一括変更
+- 2026/07/13 03:32:00 report/batch_report.html: バッチ処理結果を分析し、ArchiveとReviewの詳細な振り分け理由や矛盾点をまとめたHTMLレポートを作成
+- 2026/07/13 03:36:00 report/batch_report.html, report/generate_total_report.py: 出力したHTMLレポートおよびレポート作成スキルのテンプレートを、目に優しく見やすいダークモードのデザインに変更
+- 2026/07/13 04:14:06 src/sst/builder.py: メタデータ構築ロジックを修正。LLMのアクション（use_mbz等）に関わらず、STEAMの情報（matched_v_idx）が存在する場合は常にSTEAMトラックリストをGround Truthとして最優先で採用し、トラック番号やタイトルの衝突を防ぐように改善。
+- 2026/07/13 08:22:45 src/sst/builder.py: タイトル、トラック番号、ディスク番号の決定ロジックを修正。LLMによる上書き指示（override_*）よりもSTEAM情報を絶対的なGround Truthとして最優先するように変更。
+- 2026/07/13 08:28:34 src/sst/processor_support.py: NoneType例外による致命的エラーを修正。LLMが推論理由（reason）を返却しなかった場合にlen()が失敗するバグを解消。
+- 2026/07/13 08:30:09 src/sst/validator.py, src/sst/processor.py: LLM出力に含まれる推論理由（confidence_reason）がnullとして返却された場合にNoneType例外でクラッシュする問題を修正。
+- 2026/07/13 08:31:52 src/sst/llm.py: LLMのJSON出力のキー名が大文字になってしまうケース（例：IDENTITY_CONFIDENCE）を吸収するため、request_kind == "identity"の場合にすべてのキーを再帰的に小文字に変換するロジックを追加。
+- 2026/07/13 08:33:40 src/sst/llm.py: LLMの出力から global_tags 要素が欠落したり、ルート階層に出力された場合でもKeyErrorが発生しないようにフォールバック処理を実装。
+- 2026/07/13 08:35:09 src/sst/llm.py: LLMの出力から semantic_label や strategy などの要素が欠落した場合でもKeyErrorが発生しないように、ディクショナリのget()メソッドとデフォルト値を使用するよう修正。

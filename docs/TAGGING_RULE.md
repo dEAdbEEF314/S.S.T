@@ -25,12 +25,12 @@ DJ機材および Windows エクスプローラーとの最大互換性を確保
 
 *   **文字コード仕様**: ID3v2.3 規格は UTF-8 をサポートしていません。そのため、日本語や韓国語などの非アスキー文字を含むテキストフレーム（TIT2、TPE1、TALB、COMM等）を書き込む際は、すべて **UTF-16 with BOM (encoding=1)** を使用してエンコードします。
 
-*   **優先順位設定の正本**: ユーザーは `.env` の `PRIORITY_*` / `METADATA_SOURCE_PRIORITY` でソース優先順位を上書きできます。未設定時のフォールバック値は `src/sst/config.py` に集約され、実装各所はその既定値を参照します。
+*   **フォールバック主導のメタデータ構築**: トラック構造（番号・曲名）は Steam ストア公式データを絶対的な正本とし、不足時のみ MBZ または FINGERPRINT にフォールバックします。アーティストやレーベルなどの付加情報は MBZ を最優先とします。
 
 
 | ID3 フレーム | フィールド | 内容 / フォーマットルール |
 | :--- | :--- | :--- |
-| **TIT2** | 曲名 | `.env` の優先順位（既定: `MBZ,PICS_API,FILE,EMBED,VDF`）に従って単一ソースから採用。採用済みタイトルが既に `{Local} / {English}` 形式で、かつ 60文字を超える場合のみ `{Local}` 側へ短縮。 |
+| **TIT2** | 曲名 | Steam 公式データを最優先に採用。欠落時のみ FINGERPRINT/MBZ へフォールバック。採用済みタイトルが既に `{Local} / {English}` 形式で、かつ 60文字を超える場合のみ `{Local}` 側へ短縮。 |
 | **TPE1** | アーティスト | MusicBrainz クレジット（最優先）または Steam 開発元。 |
 | **TALB** | アルバム名 | Steam 公式タイトル。 |
 | **TPE2** | アルバムアーティスト | `開発元, 出版社` |
@@ -98,12 +98,12 @@ To ensure maximum compatibility with DJ hardware and Windows Explorer, the **ID3
 
 *   **Encoding Specification**: The ID3v2.3 standard does not support UTF-8. Therefore, all text frames containing non-ASCII characters (such as Japanese or Korean) like TIT2, TPE1, TALB, and COMM must be encoded using **UTF-16 with BOM (encoding=1)**.
 
-*   **Single source of truth for priorities**: Users can override source priorities through `.env` `PRIORITY_*` and `METADATA_SOURCE_PRIORITY` values. When omitted, fallback defaults are centralized in `src/sst/config.py` and referenced by the implementation.
+*   **Fallback-driven Metadata Construction**: The track structure (number and title) strictly trusts Steam official data as the single source of truth, falling back to MBZ or FINGERPRINT only when missing. Additional details like artist and label prioritize MBZ.
 
 
 | ID3 Frame | Field | Content / Format Rule |
 | :--- | :--- | :--- |
-| **TIT2** | Title | Selected from a single source by priority (`MBZ,PICS_API,FILE,EMBED,VDF` by default). Only if the chosen title is already in `{Local} / {English}` form and exceeds 60 characters is it reduced to the `{Local}` side. |
+| **TIT2** | Title | Prioritizes Steam official data. Falls back to FINGERPRINT/MBZ only when missing. Only if the chosen title is already in `{Local} / {English}` form and exceeds 60 characters is it reduced to the `{Local}` side. |
 | **TPE1** | Artist | MusicBrainz credits (Priority) or Steam developer. |
 | **TALB** | Album | Official Steam title. |
 | **TPE2** | Album Artist | `Developer, Publisher` |

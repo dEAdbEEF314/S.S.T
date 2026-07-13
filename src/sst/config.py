@@ -1,17 +1,10 @@
 from dataclasses import dataclass
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Any, Optional
+import os
 
-DEFAULT_TITLE_CLEANING_TRUSTED_SOURCES = "MBZ,PICS_API"
+DEFAULT_TITLE_CLEANING_TRUSTED_SOURCES = "MBZ,FINGERPRINT"
 DEFAULT_METADATA_SOURCE_PRIORITY = "MBZ,PICS_API,STEAM_STORE,STEAM_TAGS,EMBEDDED"
-DEFAULT_PRIORITY_TIT2 = "MBZ,PICS_API,FILE,EMBED,VDF"
-DEFAULT_PRIORITY_TPE1 = "MBZ,PICS_API,EMBED"
-DEFAULT_PRIORITY_TRCK = "PICS_API,MBZ,FILE,EMBED"
-DEFAULT_PRIORITY_TPOS = "PICS_API,EMBED,MBZ"
-DEFAULT_PRIORITY_TYER = "MBZ,EMBED,WEB_API"
-DEFAULT_PRIORITY_TPUB = "MBZ,PICS_API"
-DEFAULT_PRIORITY_APIC = "MBZ,PICS_API,WEB_API,EMBED"
-
 
 @dataclass(frozen=True)
 class PriorityConfig:
@@ -48,7 +41,7 @@ class Config(BaseSettings):
     user_language: str = "ja"
     log_level: str = "INFO"
     llm_backend: str = "GEMINI"
-    llm_base_url: str = "https://generativelanguage.googleapis.com"
+    llm_base_url: str = "http://localhost:11434"
     llm_api_key: Optional[str] = None
     llm_model: str = "gemini-1.5-pro"
     llm_draft_model: Optional[str] = None
@@ -56,6 +49,7 @@ class Config(BaseSettings):
     llm_limit_tpm: int = 10000000
     llm_limit_rpd: int = 1500
     llm_cloud_max_tokens: int = 8192
+    llm_num_ctx: int = 32768
     llm_ollama_num_ctx: int = 32768
     llm_ollama_num_predict: int = 4096
     llm_vram_scheduling_enabled: bool = True
@@ -83,7 +77,7 @@ class Config(BaseSettings):
 
     max_parallel_albums: int = 2
     max_encoding_tasks: int = 4
-    fingerprint_all: bool = False
+    fingerprint_all: bool = True
     
 
     
@@ -95,8 +89,8 @@ class Config(BaseSettings):
     score_mbz_bandcamp_link: int = 100
     score_mbz_title_similarity_max: int = 100
     score_mbz_track_count_match: int = 50
-    score_mbz_track_count_penalty_per_track: int = 20
-    score_mbz_track_count_penalty_max: int = 300
+    score_mbz_track_count_penalty_per_track: int = 300
+    score_mbz_track_count_penalty_max: int = 2000
     score_mbz_digital_format: int = 30
     score_mbz_date_match: int = 20
     score_mbz_date_penalty_per_year: int = 20
@@ -120,27 +114,21 @@ class Config(BaseSettings):
     discord_webhook_warning: Optional[str] = None
     discord_webhook_info: Optional[str] = None
     discord_webhook_completion: Optional[str] = None
-    metadata_source_priority: str = DEFAULT_METADATA_SOURCE_PRIORITY
-    
-    # Tag-specific metadata priorities
-    priority_tit2: str = DEFAULT_PRIORITY_TIT2
-    priority_tpe1: str = DEFAULT_PRIORITY_TPE1
-    priority_trck: str = DEFAULT_PRIORITY_TRCK
-    priority_tpos: str = DEFAULT_PRIORITY_TPOS
-    priority_tyer: str = DEFAULT_PRIORITY_TYER
-    priority_tpub: str = DEFAULT_PRIORITY_TPUB
-    priority_apic: str = DEFAULT_PRIORITY_APIC
+    metadata_source_priority: str = ""
 
-    def build_priority_config(self) -> PriorityConfig:
-        return PriorityConfig(
-            tit2=self.priority_tit2,
-            tpe1=self.priority_tpe1,
-            trck=self.priority_trck,
-            tpos=self.priority_tpos,
-            tyer=self.priority_tyer,
-            tpub=self.priority_tpub,
-            trusted_title_sources=self.title_cleaning_trusted_sources,
-        )
+    def load_env_overrides(self):
+        def try_set(key, env_var):
+            val = os.getenv(env_var)
+            if val is not None:
+                if isinstance(getattr(self, key), bool):
+                    setattr(self, key, val.lower() == "true")
+                elif isinstance(getattr(self, key), int):
+                    setattr(self, key, int(val))
+                else:
+                    setattr(self, key, val)
+
+        try_set("fingerprint_all", "SST_FINGERPRINT_ALL")
+        return self
 
     def build_mbz_scoring_config(self) -> dict[str, int]:
         return {
@@ -188,13 +176,6 @@ class Config(BaseSettings):
             "chunk_output_tokens_per_track": self.llm_chunk_output_tokens_per_track,
             "chunk_output_safety_ratio": self.llm_chunk_output_safety_ratio,
             "metadata_source_priority": self.metadata_source_priority,
-            "priority_tit2": self.priority_tit2,
-            "priority_tpe1": self.priority_tpe1,
-            "priority_trck": self.priority_trck,
-            "priority_tpos": self.priority_tpos,
-            "priority_tyer": self.priority_tyer,
-            "priority_tpub": self.priority_tpub,
-            "priority_apic": self.priority_apic,
         }
 
     @property
@@ -204,4 +185,3 @@ class Config(BaseSettings):
     @property
     def user_language_639_2(self) -> str:
         return {"ja": "jpn", "en": "eng"}.get(self.user_language, "eng")
-

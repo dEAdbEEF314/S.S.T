@@ -12,7 +12,9 @@ class ResultValidator:
         p1_res = llm_log.get("phase1_res", {})
         id_conf = int(p1_res.get("identity_confidence", 0))
         quality = int(p1_res.get("integrity_quality", 0))
-        reason = p1_res.get("confidence_reason", "No LLM response")
+        reason = p1_res.get("confidence_reason")
+        if reason is None:
+            reason = "No LLM response"
         label = p1_res.get("semantic_label", "Review")
         strategy = p1_res.get("strategy", "UNKNOWN")
         ratio = p1_res.get("archive_vs_review_ratio", {"archive": 0, "review": 0})

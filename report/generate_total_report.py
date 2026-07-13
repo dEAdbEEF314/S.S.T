@@ -38,19 +38,23 @@ def app_link(app_id):
 
 # --- HTML CSS ---
 CSS = """
-:root { --bg-color: #0d1117; --card-bg: #161b22; --text-color: #c9d1d9; --accent-green: #238636; --accent-yellow: #d29922; --accent-red: #da3633; --border-color: #30363d; --table-header: #0d1117; }
-body { font-family: -apple-system, sans-serif; background: var(--bg-color); color: var(--text-color); line-height: 1.6; padding: 20px; }
+:root { --bg-color: #121212; --card-bg: #1e1e1e; --text-color: #e0e0e0; --accent-blue: #74b9ff; --accent-cyan: #81ecec; --accent-red: #ff7675; --border-color: #2d3436; --table-header: #121212; --hover-bg: #2d3436; }
+body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: var(--bg-color); color: var(--text-color); line-height: 1.6; padding: 20px; }
 .container { max-width: 1400px; margin: 0 auto; }
-h1, h2, h3 { border-bottom: 1px solid var(--border-color); padding-bottom: 10px; }
-.card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 8px; padding: 15px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; margin-top: 10px; }
-th, td { padding: 10px; text-align: left; border-bottom: 1px solid var(--border-color); vertical-align: top; }
-th { background: var(--table-header); color: #8b949e; }
-tr:hover { background: #1c2128; }
-a { color: #58a6ff; text-decoration: none; }
+h1 { color: var(--accent-blue); border-bottom: 2px solid var(--border-color); padding-bottom: 10px; }
+h2 { color: var(--accent-cyan); margin-top: 20px; border-bottom: 1px solid var(--border-color); padding-bottom: 5px; }
+h3 { color: #a29bfe; border-bottom: 1px solid var(--border-color); padding-bottom: 5px; }
+.card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 8px; padding: 20px; margin-bottom: 30px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+table { width: 100%; border-collapse: collapse; font-size: 0.95rem; margin-top: 10px; }
+th, td { padding: 12px 10px; text-align: left; border-bottom: 1px solid var(--border-color); vertical-align: top; }
+th { background: var(--table-header); color: #b2bec3; font-weight: bold; }
+tr:hover { background: var(--hover-bg); }
+a { color: var(--accent-blue); text-decoration: none; }
 a:hover { text-decoration: underline; }
-.badge { display: inline-block; padding: 3px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: bold; background: #30363d; }
+.badge { display: inline-block; padding: 3px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: bold; background: var(--border-color); color: var(--text-color); }
 ul { margin: 0; padding-left: 20px; }
+li { margin-bottom: 5px; }
+pre { background: #000; padding: 15px; border-radius: 6px; overflow-x: auto; color: #ffeaa7; font-family: 'Courier New', Courier, monospace; }
 """
 
 def main():

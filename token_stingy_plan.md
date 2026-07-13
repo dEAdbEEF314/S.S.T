@@ -15,10 +15,10 @@
 
 現状の S.S.T は以下の状態にあります。
 
-- 推奨ローカルモデルは `llama3.2:3b`
+- 推奨ローカルモデルは `ornith:9b`
 - request-level の VRAM 見積りと acquire/release は導入済み
 - Phase 2 chunk 並列化は導入済み
-- `llama3.2:3b` では複数 slot 相当の動作が確認済み
+- `ornith:9b` では複数 slot 相当の動作が確認済み
 - `.env` では `LLM_OLLAMA_NUM_CTX` が単一の固定値として扱われる
 - `llm_request_parallelism_max_workers` も単一の固定値として扱われる
 
@@ -227,7 +227,7 @@ LLM_FORCE_COHERENCE_LARGE=true
 
 追加する内容:
 
-- `llama3.2:3b` 向け tiered profile の説明
+- `ornith:9b` 向け tiered profile の説明
 - `16384 / workers=2` を標準推奨
 - `8192 / workers=3` を速度寄り比較候補
 - `32768 / workers=1` を大型アルバム向け一貫性優先候補
