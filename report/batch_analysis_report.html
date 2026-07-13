@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>S.S.T Batch Analysis Report (--fingerprint-all 100件)</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            line-height: 1.6;
+            color: #d1d5db;
+            background-color: #0f172a;
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 40px 20px;
+            background-image: radial-gradient(circle at 50% 0%, #1e293b 0%, transparent 70%);
+        }
+        h1 {
+            border-bottom: 2px solid rgba(56, 189, 248, 0.3);
+            padding-bottom: 15px;
+            color: #f8fafc;
+            font-size: 2.5em;
+            text-shadow: 0 0 20px rgba(56, 189, 248, 0.2);
+            animation: fadeInDown 0.8s ease-out;
+        }
+        h2 {
+            margin-top: 40px;
+            background: rgba(30, 41, 59, 0.5);
+            padding: 15px 20px;
+            border-left: 5px solid #38bdf8;
+            border-radius: 0 8px 8px 0;
+            color: #f1f5f9;
+            backdrop-filter: blur(10px);
+            transition: all 0.3s ease;
+        }
+        h2:hover {
+            background: rgba(30, 41, 59, 0.8);
+            border-left: 5px solid #7dd3fc;
+            transform: translateX(5px);
+        }
+        .summary-box {
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid rgba(56, 189, 248, 0.2);
+            padding: 25px;
+            border-radius: 12px;
+            margin-bottom: 30px;
+            color: #cbd5e1;
+            backdrop-filter: blur(12px);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+            animation: fadeInUp 0.8s ease-out;
+        }
+        .stats {
+            display: flex;
+            gap: 25px;
+            margin-bottom: 40px;
+            animation: fadeInUp 1s ease-out;
+        }
+        .stat-card {
+            background: linear-gradient(145deg, #1e293b, #0f172a);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            padding: 25px;
+            border-radius: 16px;
+            flex: 1;
+            text-align: center;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.4);
+            transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275), box-shadow 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0; height: 3px;
+            background: linear-gradient(90deg, transparent, #38bdf8, transparent);
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+        .stat-card:hover {
+            transform: translateY(-8px);
+            box-shadow: 0 15px 35px rgba(0,0,0,0.5);
+        }
+        .stat-card:hover::before {
+            opacity: 1;
+        }
+        .stat-card .number {
+            font-size: 3em;
+            font-weight: 700;
+            color: #f8fafc;
+            margin: 10px 0;
+            text-shadow: 0 0 15px rgba(255,255,255,0.1);
+        }
+        .stat-card .number.success {
+            color: #34d399;
+            text-shadow: 0 0 15px rgba(52, 211, 153, 0.2);
+        }
+        table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            margin-top: 20px;
+            background: rgba(30, 41, 59, 0.4);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        th, td {
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            padding: 12px 15px;
+            text-align: left;
+        }
+        th {
+            background-color: rgba(15, 23, 42, 0.8);
+            color: #e2e8f0;
+            font-weight: 600;
+        }
+        tr:hover td {
+            background-color: rgba(56, 189, 248, 0.05);
+        }
+        .error-highlight {
+            color: #f87171;
+            font-weight: bold;
+            background: rgba(248, 113, 113, 0.1);
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+        .success-highlight {
+            color: #34d399;
+            font-weight: bold;
+            background: rgba(52, 211, 153, 0.1);
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+        code {
+            background-color: rgba(0, 0, 0, 0.3);
+            padding: 3px 6px;
+            border-radius: 4px;
+            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+            color: #7dd3fc;
+            border: 1px solid rgba(56, 189, 248, 0.2);
+        }
+        a {
+            color: #38bdf8;
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+        a:hover {
+            color: #7dd3fc;
+            text-decoration: underline;
+        }
+        p, li {
+            font-size: 1.05rem;
+        }
+        
+        @keyframes fadeInDown {
+            from { opacity: 0; transform: translateY(-20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+</head>
+<body>
+
+    <h1>S.S.T バッチ処理 分析レポート</h1>
+    
+    <div class="summary-box">
+        <p><strong>実行条件:</strong> <code>--fingerprint-all</code> オプション有効化による100件のバッチ処理</p>
+        <p><strong>集計日時:</strong> 2026年7月11日</p>
+        <p>本レポートは、S.S.Tシステムの実行結果からデータベースおよび各種ログを解析し、LLM推論とシステム判断の間の整合性やエラー状況をまとめたものです。</p>
+    </div>
+
+    <div class="stats">
+        <div class="stat-card">
+            <div>処理総数</div>
+            <div class="number">100</div>
+        </div>
+        <div class="stat-card">
+            <div>Archive 成功</div>
+            <div class="number">44</div>
+            <div>(44.0%)</div>
+        </div>
+        <div class="stat-card">
+            <div>Review 送り</div>
+            <div class="number">56</div>
+            <div>(56.0%)</div>
+        </div>
+        <div class="stat-card">
+            <div>処理エラー</div>
+            <div class="number success">0</div>
+        </div>
+    </div>
+
+    <h2>1. 「Archive送り」の件数および理由と処理フロー詳細</h2>
+    <p><strong>件数:</strong> 44件</p>
+    <p><strong>理由の内訳:</strong> すべて「Success [Steam Trust]」</p>
+    <p><strong>処理フロー詳細:</strong></p>
+    <p>Phase 1での事前フェッチ後、Phase 2にてLLMが4つの仮想アルバム（STEAM, LOCAL, FINGERPRINT, MBZ_SEARCH）を元に推論を実施しました。LLMが十分な確信度をもってメタデータを同定し、その後段のシステム側 Validator においても、トラックの重複や Dirty Tags の残留などの物理的矛盾がないと判定されました。結果として、Steamストア公式データの構造的信頼性（STEAM-TRUST）等に裏打ちされた形で安全な処理とみなされ、最終生成物として指定ディレクトリへ自動エクスポートされました。</p>
+
+    <h2>2. 「不自然なArchive送り」の件数と不自然と判断した根拠および処理フロー詳細</h2>
+    <p><strong>件数:</strong> <span class="success-highlight">0件</span></p>
+    <p><strong>根拠:</strong> Steamのアルバム名と MusicBrainz (MBZ) から取得したリリースタイトルの類似度が極端に低い（40%未満）にも関わらず Archive に分類されたケースは1件も検出されませんでした。</p>
+    <p><strong>処理フロー詳細:</strong></p>
+    <p>LLMが仮に不適切なメタデータを結びつけようとした場合でも、システムの足切り判定やテキスト類似度評価によるセーフティネットが正常に機能しており、強引な紐付けや誤同定を物理的にブロックしていることが確認できました。</p>
+
+    <h2>3. 「Review送り」の件数および理由と処理フロー詳細</h2>
+    <p><strong>件数:</strong> 56件</p>
+    <p><strong>理由の内訳:</strong></p>
+    <ul>
+        <li>Duplicates (重複検知): 46件以上 (1件重複から最大47件の重複まで様々)</li>
+        <li>Unknown Review Reason: 7件</li>
+        <li>Dirty Tags 混入 / Quality low (0%) / Audio quality warning: 各1件</li>
+    </ul>
+    <p><strong>処理フロー詳細:</strong></p>
+    <p>LLMがメタデータのマッピングを完了したものの、直後の Validator による物理検証において物理的・フォーマット的な制約違反が検知されました。特に、バリエーション曲（インストゥルメンタル版等）やディスク構成の不備により、同一アルバム内でトラック番号やタイトルが重複している（Duplicates）ケースが Review 送りの主因です。これらはライブラリの汚染を防ぐためのフェイルセーフとして機能し、ユーザーの手動確認用ディレクトリへ隔離されています。</p>
+
+    <h2>4. 「理不尽なReview送り」の件数と理不尽と判断した根拠および処理フロー詳細</h2>
+    <p><strong>件数:</strong> <span class="error-highlight">50件</span></p>
+    <p><strong>根拠:</strong></p>
+    <p>LLMによる推論確信度（Confidence Score）が100%であり、多くは品質評価（Quality）も90%〜100%と高水準であるにも関わらず、最終ステータスが <code>REVIEW</code> にダウングレードされているためです。</p>
+    <p><strong>処理フロー詳細:</strong></p>
+    <p>LLMは音声指紋（FINGERPRINT_BASED）やSteam公式データ（STEAM_BASED）を証拠とし、「完全に同定できた」と自信を持って回答しています。システム側も「STEAM-TRUSTにより確信度を100%に引き上げました」と救済措置を働かせているケースが多々あります（例: AppID 1297600 等）。しかし、最後の砦である物理 Validator が「同一ディスク内のトラック番号重複」などの物理フォーマット違反を許容せず、強権的に Review へ落としています。「LLMは同定に成功しているが、ローカルファイルの構造的欠陥や同名バリエーション曲の多発によりシステム側がリジェクトした」というジレンマに陥っています。</p>
+
+    <h2>5. LLMの決定とシステム処理の矛盾の有無と原因</h2>
+    <p><strong>矛盾の有無:</strong> <span class="error-highlight">あり (50件の理不尽なReview送りにおいて顕著)</span></p>
+    <p><strong>原因:</strong></p>
+    <p>「司法（LLM）」と「行政（Validator）」の評価基準の食い違いが原因です。<br>
+    LLMは「この音声データはどのアルバムのどの曲であるか」という<strong>論理的な同定（Identification）</strong>に対して100%の自信を持っています。一方で、Validatorは「最終的に出力されるメタデータが、音楽プレイヤー上で正常に表示されるか（重複はないか）」という<strong>物理的な整合性（Integrity）</strong>を絶対視します。このため、サントラ特有の構造的欠陥（例えば、全曲がTrack#1になっている、バリエーション曲が同名で登録されている等）があると、LLMが同定の仕事を完璧にこなしていても、Validatorが安全網を発動させ、結果として「LLMは100%を主張しているのにシステムがリジェクトする」という矛盾が発生しています。</p>
+
+    <h2>6. 処理途中でのエラー、失敗の件数と原因</h2>
+    <p><strong>件数:</strong> <span class="success-highlight">0件</span></p>
+    <p><strong>原因と詳細:</strong></p>
+    <p>データベース内のステータスが <code>error</code> となっているレコードは0件でした。また、システムログ（<code>logs/SST_DEBUG_20260711153034.log</code>）全体を走査した結果、<code>Exception</code> や <code>ERROR</code> レベルの警告は一切記録されていません。<br>
+    外部APIのレートリミット超過による切断、FFmpegのエンコード失敗、OllamaのVRAM枯渇によるクラッシュなどは一度も発生せず、100件すべての処理プロセス（事前フェッチ、LLM推論、バリデーション、音声変換）が完全に完走し、安全に終了しています。</p>
+
+</body>
+</html>

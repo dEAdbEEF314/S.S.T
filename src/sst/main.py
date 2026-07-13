@@ -107,17 +107,6 @@ def handle_all_confirm(console: Console):
     if input("[Step 3/3] 開始するには 'START' と入力してください: ") != 'START': return False
     return True
 
-def handle_fingerprint_all_confirm(console: Console):
-    console.print("[bold red]!!! 警告: 全トラックフィンガープリントモードを有効にします !!![/bold red]")
-    console.print("[yellow]このモードではAcoustIDを使用してアルバムの全トラックをスキャンします。[/yellow]")
-    console.print("[dim]APIのレート制限により、トラックごとに1.5〜2.0秒の遅延が発生します。[/dim]")
-    console.print("[dim]100トラックのアルバムの場合、1アルバムあたり少なくとも3〜4分かかります。[/dim]")
-    
-    # 3-Step Confirmation
-    if not Confirm.ask("[Step 1/3] 低速ですが高精度のモードで続行しますか？", console=console): return False
-    if input("[Step 2/3] 確認するには 'SLOW' と入力してください: ") != 'SLOW': return False
-    if input("[Step 3/3] 完了するには 'CONFIRM' と入力してください: ") != 'CONFIRM': return False
-    return True
 
 def main():
     parser = argparse.ArgumentParser(description="SST Scout")
@@ -127,7 +116,6 @@ def main():
     parser.add_argument("--appid", type=str, help="Single AppID or comma-separated list of AppIDs")
     parser.add_argument("--dev", action="store_true", help="Run in development mode (DEBUG logs, unique log files)")
     parser.add_argument("--reset-db", action="store_true")
-    parser.add_argument("--fingerprint-all", action="store_true", help="Scan every track with AcoustID (slow but extremely precise)")
     parser.add_argument("--yes", "-y", action="store_true", help="Bypass confirmation prompts (Automated mode)")
     parser.add_argument("--prefetch-only", action="store_true", help="Run only Phase 1 (Data Gathering & Caching) without invoking the LLM")
     args = parser.parse_args()
@@ -142,13 +130,7 @@ def main():
     try:
         config = Config()
         
-        # Handle Fingerprint-all confirmation
-        if args.fingerprint_all:
-            if args.yes or handle_fingerprint_all_confirm(console):
-                config.fingerprint_all = True
-            else:
-                return console.print("[yellow]中止しました。[/yellow]")
-                
+        # Removed Fingerprint-all confirmation as it is now default
     except Exception as e: return console.print(f"[red]設定エラー: {e}[/red]")
 
     fetch_steam_userdata(config, console)

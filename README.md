@@ -25,7 +25,7 @@ S.S.T は **ハイブリッド・エッジプロセッサ** です。音声変�
     - LLMを待たせずに、対象アルバムの音声指紋(`fpcalc`)計算と外部API (AcoustID, MusicBrainz) からのメタデータ取得をマルチスレッドで一括実行し、ローカルDBへキャッシュします。
 3. **Phase 2: LLM Consolidation (推論と統合)**:
     - 4つの仮想アルバム (STEAM公式, ローカル実体, 音声指紋, テキスト検索) を構築し、LLMが情報を比較・推論。
-    - ユーザー（立法）が定めた優先順位に従い、LLM（司法）が決定を下し、システム（行政）が物理的なクリーンネス（トラック番号除去等）を強制執行。
+    - Steam公式データを構造の絶対的な正本（憲法）とし、不足情報をMBZや指紋から補完（フォールバック）する堅牢な推論を行い、システムが物理的なクリーンネス（トラック番号除去等）を強制執行。
 4. **出力 (Read-Onlyライブラリ保護)**:
     - Steamライブラリ内の実ファイルは絶対に書き換えず、変換やID3v2.3タグ付けを行いながら、直接指定された出力先 (`SST_OUTPUT_DIR`) にZIPアーカイブ等として出力します。
 
@@ -39,7 +39,7 @@ S.S.T は **ハイブリッド・エッジプロセッサ** です。音声変�
 ## ⚙️ システムカスタマイズ (System Customization)
 S.S.T は `.env` ファイルを通じて、システムの並列性能やAPIの安全性を極限までチューニングできます。
 
-メタデータソースの優先順位も `.env` で上書きできます。未設定時のフォールバック値は `src/sst/config.py` に集約され、各実装層で共通に参照されます。
+メタデータソースは「Steam公式データ」を構造の絶対的な正本とし、アーティストなどの付加情報を「MusicBrainz」から優先的に取得するフォールバック設計で統一されています。
 
 ### LLM チャンク制御およびAPIレートリミット
 APIの頭打ちを防ぎつつ、モデルのスペック限界までコンテキスト長を最大化（One-shot処理化）するための設定群です。
@@ -50,7 +50,7 @@ APIの頭打ちを防ぎつつ、モデルのスペック限界までコンテ�
 - **`LLM_CHUNK_ADAPTIVE`**: (デフォルト `true`)。固定のチャンクサイズ指定を無視し、上記の設定から「エラーを起こさず一撃処理できる限界曲数」を動的算出するマスタースイッチです。
 - **`LLM_COHERENCE_THRESHOLD`**: (デフォルト `75`)。アルバムの曲数がこの閾値を超えた場合に、超巨大アルバム専用の「階層型Map-Reduce（Coherence処理）」を自動発動させます。プロンプト上限（Context Window）やVRAM枯渇を防ぐための安全装置です。
 
-#### llama3.2:3b 向け Tiered Profile (階層型実行プロファイル)
+#### ornith:9b 向け Tiered Profile (階層型実行プロファイル)
 S.S.T はアルバムの曲数に応じて最適な VRAM 消費とスレッド並列度を自動選択します。
 - **Small (1-50曲)**: スループット優先 (`num_ctx_cap=8192`, `workers=3`)
 - **Medium (51-100曲)**: バランス型 (`num_ctx_cap=16384`, `workers=2` 標準推奨)
@@ -78,7 +78,7 @@ docker run --name sst-pics-bridge -d -p 8080:8000 --restart unless-stopped steam
 
 > **💡 LLMの設定**: LLMサービス（Gemini API、Ollama等のローカル環境、OpenAI互換API）はユーザー各自で用意し、`.env` ファイルにAPIキーやURLを正しく設定してください。
 >
-> **💡 Ollamaの推奨モデル**: 2026-07 時点の実測では、ローカル推論の推奨モデルは `llama3.2:3b` です。`qwen35` 系で観測された並列 request 非対応を回避しつつ、`gemma3:1b` より複雑ケースで安定しました。
+> **💡 Ollamaの推奨モデル**: 2026-07 時点の実測では、ローカル推論の推奨モデルは `ornith:9b` です。`qwen35` 系で観測された並列 request 非対応を回避しつつ、`gemma3:1b` より複雑ケースで安定しました。
 
 ### 2. S.S.T システムの実行
 ```bash
@@ -129,7 +129,7 @@ S.S.T is a **Hybrid Edge Processor**. Audio conversion and data gathering are pe
     - Generates audio fingerprints (`fpcalc`) and fetches metadata from external APIs (AcoustID, MusicBrainz) in parallel, caching the results in a local DB before invoking the LLM.
 3. **Phase 2: LLM Consolidation**:
     - Constructs 4 Virtual Albums (STEAM, LOCAL, FINGERPRINT, MBZ_SEARCH) for comparison.
-    - LLM (Judiciary) infers titles based on user priority (Legislative), while the System (Executive) enforces physical cleanliness (No Dirty Tags).
+    - LLM infers titles by strictly trusting Steam official data as the structural source of truth, falling back to MBZ or FINGERPRINT only when necessary, while the System enforces physical cleanliness.
 4. **Process (Strict Read-Only)**:
     - The original Steam Library is never modified. Audio is converted and strict ID3v2.3 tags are written directly to the output directory (`SST_OUTPUT_DIR`), typically packaged as ZIP archives.
 
@@ -151,7 +151,7 @@ These settings maximize the One-shot processing context while respecting model s
 - **`LLM_CLOUD_MAX_TOKENS`**: (Cloud APIs only) Maximum output tokens for your model (e.g., 8192 for Gemini 1.5 Pro).
 - **`LLM_CHUNK_ADAPTIVE`**: (Default `true`). The master switch that calculates the absolute maximum tracks per request based on the limits above, overriding any fixed chunk size settings.
 
-#### Tiered Profiles for llama3.2:3b
+#### Tiered Profiles for ornith:9b
 S.S.T automatically selects the optimal VRAM footprint and parallel workers based on track count.
 - **Small (1-50 tracks)**: Throughput-oriented (`num_ctx_cap=8192`, `workers=3`)
 - **Medium (51-100 tracks)**: Balanced baseline (`num_ctx_cap=16384`, `workers=2` recommended)
@@ -179,7 +179,7 @@ docker run --name sst-pics-bridge -d -p 8080:8000 --restart unless-stopped steam
 
 > **💡 LLM Setup**: Please provide your own LLM service (Gemini API, Ollama, OpenAI-compatible APIs) and configure the API keys and URLs correctly in your `.env` file.
 >
-> **💡 Recommended Ollama model**: As of 2026-07, the recommended local Ollama model is `llama3.2:3b`. In measured SST runs, it avoided the parallel-request limitation observed with `qwen35`-family models and was more stable on complex cases than `gemma3:1b`.
+> **💡 Recommended Ollama model**: As of 2026-07, the recommended local Ollama model is `ornith:9b`. In measured SST runs, it avoided the parallel-request limitation observed with `qwen35`-family models and was more stable on complex cases than `gemma3:1b`.
 
 ### 2. Running S.S.T
 ```bash

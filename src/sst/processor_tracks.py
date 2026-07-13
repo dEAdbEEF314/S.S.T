@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from .builder import MetadataBuilder
-from .config import PriorityConfig
 from .models import SteamMetadata
 from .track_grouper import TrackManager
 
@@ -36,7 +35,6 @@ def process_single_track(
 
     try:
         instr = final_metadata.get(f"{disc}_{clean_title}") or {"action": "use_local_tag"}
-        priorities: PriorityConfig = config.build_priority_config()
         tag_map = MetadataBuilder.build_tag_map(
             app_id,
             disc,
@@ -48,7 +46,6 @@ def process_single_track(
             track_sources,
             config.user_language_639_2,
             global_identity,
-            priorities=priorities,
             total_discs=total_discs,
         )
 

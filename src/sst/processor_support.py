@@ -17,42 +17,38 @@ def fetch_album_artwork(
     mbz_candidates: List[Dict[str, Any]],
     track_groups: Optional[Dict] = None,
 ) -> Optional[bytes]:
-    apic_priority = config.priority_apic.split(",")
+    # 1. MBZ (High Quality Cover)
+    if mbz_candidates:
+        url = mbz_client.get_release_artwork_url(mbz_candidates[0]["mbid"])
+        if url:
+            try:
+                r = requests.get(url, timeout=15)
+                if r.status_code == 200:
+                    logger.info("MBZソースからアルバムアートワークを採用しました")
+                    return r.content
+            except Exception as e:
+                logger.debug(f"MBZアートワークの取得に失敗しました: {e}")
 
-    for src in apic_priority:
-        src = src.strip().upper()
+    # 2. Steam (Store Header)
+    url = steam_meta.header_image_url
+    if not url and steam_meta.app_id:
+        url = f"https://cdn.akamai.steamstatic.com/steam/apps/{steam_meta.app_id}/header.jpg"
+    if url:
+        try:
+            r = requests.get(url, timeout=15)
+            if r.status_code == 200:
+                logger.info("Steamソースからアルバムアートワークを採用しました")
+                return r.content
+        except Exception as e:
+            logger.debug(f"Steamアートワークの取得に失敗しました: {e}")
 
-        if src == "EMBED" and track_groups:
-            # Try to find embedded artwork from local files first.
-            for (disc, clean_title), files in track_groups.items():
-                art = TrackManager.get_best_artwork(files)
-                if art:
-                    logger.info(f"EMBEDソースからアルバムアートワークを採用しました (トラック: {clean_title})")
-                    return art
-
-        elif src == "MBZ" and mbz_candidates:
-            url = mbz_client.get_release_artwork_url(mbz_candidates[0]["mbid"])
-            if url:
-                try:
-                    r = requests.get(url, timeout=15)
-                    if r.status_code == 200:
-                        logger.info("MBZソースからアルバムアートワークを採用しました")
-                        return r.content
-                except Exception as e:
-                    logger.debug(f"MBZアートワークの取得に失敗しました: {e}")
-
-        elif src in ["PICS_API", "WEB_API"]:
-            url = steam_meta.header_image_url
-            if not url and steam_meta.app_id:
-                url = f"https://cdn.akamai.steamstatic.com/steam/apps/{steam_meta.app_id}/header.jpg"
-            if url:
-                try:
-                    r = requests.get(url, timeout=15)
-                    if r.status_code == 200:
-                        logger.info(f"{src}ソースからアルバムアートワークを採用しました")
-                        return r.content
-                except Exception as e:
-                    logger.debug(f"Steamアートワーク ({src}) の取得に失敗しました: {e}")
+    # 3. EMBED (Local File)
+    if track_groups:
+        for (disc, clean_title), files in track_groups.items():
+            art = TrackManager.get_best_artwork(files)
+            if art:
+                logger.info(f"EMBEDソースからアルバムアートワークを採用しました (トラック: {clean_title})")
+                return art
 
     return None
 
@@ -94,7 +90,7 @@ def send_notifications(
 
     fields.append({"name": "⚙️ System Logic Reason", "value": f"**{message}**", "inline": False})
 
-    llm_reason = "Bypassed for Fast-Track" if is_fast else reason
+    llm_reason = "Bypassed for Fast-Track" if is_fast else (reason or "No reason provided.")
     if len(llm_reason) > 1000:
         llm_reason = llm_reason[:997] + "..."
     fields.append({"name": "🧠 LLM Judgment Reason", "value": llm_reason, "inline": False})

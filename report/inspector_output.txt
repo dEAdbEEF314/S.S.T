@@ -1,0 +1,140 @@
+============================================================
+S.S.T Batch Process Inspector - Analysis Summary
+Total Processed Albums: 100
+============================================================
+
+[Status Distribution]
+ - REVIEW: 56 (56.00%)
+ - ARCHIVE: 44 (44.00%)
+
+[Archive Reason Patterns]
+ - Success [Steam Trust]: 44
+
+[Review Reason Patterns (Categorized)]
+ - Duplicates (1): 16
+ - Duplicates (2): 9
+ - Unknown Review Reason: 7
+ - Duplicates (4): 4
+ - Duplicates (7): 3
+ - Duplicates (3): 3
+ - Duplicates (6): 2
+ - Duplicates (5): 2
+ - Duplicates (19): 1
+ - Quality too low (0%): 1
+ - Duplicates (30): 1
+ - Audio quality warning: 1
+ - Duplicates (47): 1
+ - Duplicates (10): 1
+ - Duplicates (8): 1
+ - Duplicates (11): 1
+ - Duplicates (20): 1
+ - Duplicates (9): 1
+ - Dirty Tags x11: 1
+ - Duplicates (28): 1
+
+[Unnatural Archive Candidates (Similarity < 40%)]
+Count: 0
+
+[Unnatural Review Candidates (LLM Conf >= 100% but REVIEW)]
+Count: 50
+ - AppID: 1027880 | 'A Dance of Fire and Ice OST' | Conf: 100% | Qual: 95% | Msg: [Duplicates (1)]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1040700 | 'Devil Engine Original Soundtrack' | Conf: 100% | Qual: 95% | Msg: [Duplicates (2)]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1075710 | 'Katana ZERO Soundtrack' | Conf: 100% | Qual: 95% | Msg: [Duplicates (1)]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1108260 | 'The Messenger Soundtrack - Disc III: Picnic Panic' | Conf: 100% | Qual: 95% | Msg: [Duplicates (1)]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1113040 | 'HARDCORE MECHA - OST' | Conf: 100% | Qual: 95% | Msg: [Duplicates (1)]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1142840 | 'Lichtspeer Soundtrack' | Conf: 100% | Qual: 95% | Msg: [Duplicates (4)]
+   Reason: STEAM_BASED
+ - AppID: 1156340 | 'Nova Drift OST' | Conf: 100% | Qual: 95% | Msg: [Duplicates (6)]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1167720 | 'Artifact Adventure Gaiden DX Soundtrack' | Conf: 100% | Qual: 0% | Msg: [Duplicates (19), Quality too low (0%)]
+   Reason: SYSTEM: STEAM-TRUSTにより確信度を100%に引き上げました (43トラックとの構造的一致)
+ - AppID: 1206340 | 'Hades Original Soundtrack' | Conf: 100% | Qual: 95% | Msg: [Duplicates (30)]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1207000 | 'Slime Rancher: Original Soundtrack II + The Casey Sessions' | Conf: 100% | Qual: 95% | Msg: [Duplicates (4)]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1224940 | 'Tropico 6 - Original Soundtrack' | Conf: 100% | Qual: 95% | Msg: [Duplicates (2)]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1232750 | 'Fury Unleashed Soundtrack' | Conf: 100% | Qual: 95% | Msg: [Duplicates (1)]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1238761 | 'DJMAX RESPECT V - V Original Soundtrack' | Conf: 100% | Qual: 95% | Msg: [Duplicates (5)]
+   Reason: STEAM_BASED
+ - AppID: 1238762 | 'DJMAX RESPECT V - RESPECT Original Soundtrack' | Conf: 100% | Qual: 98% | Msg: [Duplicates (6)]
+   Reason: SYSTEM: STEAM-TRUSTにより確信度を100%に引き上げました (62トラックとの構造的一致)
+ - AppID: 1252080 | 'Yes, Your Grace Soundtrack' | Conf: 100% | Qual: 95% | Msg: [Duplicates (1)]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1270860 | 'Exit the Gungeon Soundtrack' | Conf: 100% | Qual: 95% | Msg: [Audio quality warning]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1271680 | 'DJMAX RESPECT V - TRILOGY Original Soundtrack(REMASTERED)' | Conf: 100% | Qual: 95% | Msg: [Duplicates (2)]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1279740 | 'Desperados III Soundtrack' | Conf: 100% | Qual: 95% | Msg: [Duplicates (47)]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1286760 | 'Outer Wilds - Original Soundtrack' | Conf: 100% | Qual: 95% | Msg: [Duplicates (5)]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1297600 | 'art of rally OST' | Conf: 100% | Qual: 100% | Msg: [Duplicates (7)]
+   Reason: SYSTEM: STEAM-TRUSTにより確信度を100%に引き上げました (57トラックとの構造的一致)
+ - AppID: 1315140 | 'DJMAX RESPECT V - Clazziquai Edition Original Soundtrack(REMASTERED)' | Conf: 100% | Qual: 95% | Msg: [Duplicates (2)]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1315150 | 'DJMAX RESPECT V - BLACK SQUARE Original Soundtrack(REMASTERED)' | Conf: 100% | Qual: 90% | Msg: [Duplicates (7)]
+   Reason: SYSTEM: STEAM-TRUSTにより確信度を100%に引き上げました (33トラックとの構造的一致)
+ - AppID: 1386613 | 'DJMAX RESPECT V - TECHNIKA Original Soundtrack(REMASTERED)' | Conf: 100% | Qual: 95% | Msg: [Duplicates (1)]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1386614 | 'DJMAX RESPECT V - TECHNIKA 2 Original Soundtrack(REMASTERED)' | Conf: 100% | Qual: 95% | Msg: [Duplicates (1)]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1386615 | 'DJMAX RESPECT V - TECHNIKA 3 Original Soundtrack(REMASTERED)' | Conf: 100% | Qual: 95% | Msg: [Duplicates (4)]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1394870 | 'Going Under Soundtrack' | Conf: 100% | Qual: 100% | Msg: [Duplicates (10)]
+   Reason: SYSTEM: STEAM-TRUSTにより確信度を100%に引き上げました (29トラックとの構造的一致)
+ - AppID: 1418580 | 'Gato Roboto Soundtrack' | Conf: 100% | Qual: 95% | Msg: [Duplicates (7)]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1440610 | 'Superliminal Double-Album Soundtrack' | Conf: 100% | Qual: 95% | Msg: [Duplicates (8)]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1442060 | 'Batbarian: Testament of the Primordials Original Soundtrack' | Conf: 100% | Qual: 95% | Msg: [Duplicates (11)]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1475790 | 'PHOGS! Soundtrack' | Conf: 100% | Qual: 95% | Msg: [Duplicates (1)]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1495710 | 'Cyberpunk 2077 Bonus Content' | Conf: 100% | Qual: 95% | Msg: [Duplicates (2)]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1568690 | 'DJMAX RESPECT V - Portable 3 Original Soundtrack(REMASTERED)' | Conf: 100% | Qual: 0% | Msg: Unknown Review Reason
+   Reason: FINGERPRINT_BASED
+ - AppID: 1572010 | 'ラストコマンド　デジタルサウンドトラック' | Conf: 100% | Qual: 90% | Msg: [Duplicates (4)]
+   Reason: SYSTEM: STEAM-TRUSTにより確信度を100%に引き上げました (33トラックとの構造的一致)
+ - AppID: 1580110 | 'Inspector Waffles Soundtrack' | Conf: 100% | Qual: 95% | Msg: [Duplicates (2)]
+   Reason: STEAM_BASED
+ - AppID: 1586440 | 'Smelter's Mix Tape - The Official Soundtrack' | Conf: 100% | Qual: 95% | Msg: [Duplicates (1)]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1645220 | 'NEEDY GIRL OVERDOSE Soundtrack' | Conf: 100% | Qual: 95% | Msg: [Duplicates (1)]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1663820 | 'Super Magbot: Original Soundtrack' | Conf: 100% | Qual: 95% | Msg: [Duplicates (3)]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1702020 | 'Evertried Soundtrack' | Conf: 100% | Qual: 90% | Msg: [Duplicates (1)]
+   Reason: SYSTEM: STEAM-TRUSTにより確信度を100%に引き上げました (28トラックとの構造的一致)
+ - AppID: 1735290 | 'Super Woden GP Soundtrack' | Conf: 100% | Qual: 95% | Msg: [Duplicates (2)]
+   Reason: STEAM_BASED
+ - AppID: 1749910 | 'In Sound Mind Soundtrack' | Conf: 100% | Qual: 95% | Msg: [Duplicates (1)]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1754220 | 'Severed Steel Soundtrack' | Conf: 100% | Qual: 90% | Msg: [Duplicates (20)]
+   Reason: SYSTEM: STEAM-TRUSTにより確信度を100%に引き上げました (76トラックとの構造的一致)
+ - AppID: 1761580 | 'Mayhem Brawler Original Soundtrack' | Conf: 100% | Qual: 95% | Msg: [Duplicates (1)]
+   Reason: STEAM_BASED
+ - AppID: 1764110 | 'Phantom Breaker: Omnia Original Game Soundtrack' | Conf: 100% | Qual: 95% | Msg: [Duplicates (3)]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1770530 | 'Aeon Drive Soundtrack' | Conf: 100% | Qual: 95% | Msg: [Duplicates (2)]
+   Reason: STEAM_BASED
+ - AppID: 1806720 | 'Dead Estate Soundtrack' | Conf: 100% | Qual: 95% | Msg: [Duplicates (9)]
+   Reason: STEAM_BASED
+ - AppID: 1832420 | 'Happy’s Humble Burger Farm: Score (OST)' | Conf: 100% | Qual: 95% | Msg: [Duplicates (3)]
+   Reason: STEAM_BASED
+ - AppID: 1832440 | 'Happy's Humble Burger Farm: Super Barnyard Buds (OST)' | Conf: 100% | Qual: 95% | Msg: [Duplicates (1)]
+   Reason: STEAM_BASED
+ - AppID: 1832450 | 'Happy's Humble Burger Farm: Obscura Programming (OST)' | Conf: 100% | Qual: 90% | Msg: [Duplicates (2)]
+   Reason: SYSTEM: STEAM-TRUSTにより確信度を100%に引き上げました (29トラックとの構造的一致)
+ - AppID: 1832490 | 'Crimzon Clover World EXplosion - Complete Soundtrack' | Conf: 100% | Qual: 95% | Msg: [Dirty Tags x11, Duplicates (28)]
+   Reason: FINGERPRINT_BASED
+ - AppID: 1843010 | 'DJMAX RESPECT V - V EXTENSION II Original Soundtrack' | Conf: 100% | Qual: 95% | Msg: [Duplicates (1)]
+   Reason: FINGERPRINT_BASED
+============================================================

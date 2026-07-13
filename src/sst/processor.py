@@ -255,6 +255,8 @@ class LocalProcessor:
                 p1_log = llm_log.get("phase1_log", {})
                 score = p1_res.get("identity_confidence", 0) if isinstance(p1_res, dict) else 0
                 error_msg = p1_res.get("confidence_reason") if isinstance(p1_res, dict) else (p1_log.get("error") or "Manual Review Required")
+                if error_msg is None:
+                    error_msg = "No reason provided by LLM."
                 diagnostics["review_cause_code"] = "EARLY_REVIEW_RETURN"
                 diagnostics["upstream_cause_code"] = "LLM_RESPONSE_MISSING" if final_metadata is None else "LOW_CONFIDENCE_GATE"
                 _diag(
