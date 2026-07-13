@@ -15,7 +15,7 @@
 
 S.S.T は AI の柔軟な推論とプログラムの厳格性を両立するため、以下の「三権分立」モデルを採用しています。
 
-- **立法 (User/Config)**: `.env` や `Config` クラスを通じて、信頼するソースの優先順位（Constitution）を定義します。
+- **立法 (User/Config)**: `.env` や `Config` クラスを通じて、オーディオフォーマットの処理順序（`AUDIO_FORMAT_PRIORITY`）などのシステム設定を定義します。
 - **司法 (LLM/Auditor)**: 提示された複数のソースを比較し、文脈に基づいて最適なメタデータを推論（判決）します。
 - **行政 (System/Executor)**: LLM の出力が物理的なクリーンネス基準を満たしているか検閲し、タグの書き込みとアーカイブを執行します。
 
@@ -71,7 +71,7 @@ This document defines the design philosophy, system architecture, and data flow 
 
 S.S.T balances AI's flexible reasoning with programmatic rigor using a "Three Branches of Power" model:
 
-- **Legislative (User/Config)**: Defines metadata source priority (Constitution) via `.env` or the `Config` class.
+- **Legislative (User/Config)**: Defines system configurations and audio format priority via `.env` or the `Config` class.
 - **Judiciary (LLM/Auditor)**: Compares multiple sources and infers the best metadata based on context (Judgment).
 - **Executive (System/Executor)**: Censors LLM output for physical cleanliness and executes tagging and archiving.
 

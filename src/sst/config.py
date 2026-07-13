@@ -4,28 +4,7 @@ from typing import Any, Optional
 import os
 
 DEFAULT_TITLE_CLEANING_TRUSTED_SOURCES = "MBZ,FINGERPRINT"
-DEFAULT_METADATA_SOURCE_PRIORITY = "MBZ,PICS_API,STEAM_STORE,STEAM_TAGS,EMBEDDED"
 
-@dataclass(frozen=True)
-class PriorityConfig:
-    tit2: str
-    tpe1: str
-    trck: str
-    tpos: str
-    tyer: str
-    tpub: str
-    trusted_title_sources: str
-
-    def to_builder_dict(self) -> dict[str, str]:
-        return {
-            "TIT2": self.tit2,
-            "TPE1": self.tpe1,
-            "TRCK": self.trck,
-            "TPOS": self.tpos,
-            "TYER": self.tyer,
-            "TPUB": self.tpub,
-            "TRUSTED_TITLE_SOURCES": self.trusted_title_sources,
-        }
 
 class Config(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", env_ignore_empty=True, case_sensitive=False, env_prefix="")
@@ -114,7 +93,6 @@ class Config(BaseSettings):
     discord_webhook_warning: Optional[str] = None
     discord_webhook_info: Optional[str] = None
     discord_webhook_completion: Optional[str] = None
-    metadata_source_priority: str = ""
 
     def load_env_overrides(self):
         def try_set(key, env_var):

@@ -232,8 +232,10 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
         
         <div style="margin-top: 15px; border-top: 1px solid var(--border-color); padding-top: 15px; font-size: 0.85rem; color: #8b949e;">
             <strong style="color: var(--accent-yellow);">⚙️ System Merge Note:</strong><br>
-            本システムは、LLMが選択した MusicBrainz (MBZ) のリリースデータをベースに動作しますが、元のリリース曲順がローカルファイルと異なる場合は、**再生時間（Duration）に基づき物理的に自動整列（Duration Alignment）**した上でマッピングを行っています。<br>
-            また、最終的なタグの値は `.env` の優先度（`METADATA_SOURCE_PRIORITY`）に基づいて、項目ごとに最適なソース（MBZやSteamなど）から動的にブレンドおよびフォールバックされます。そのため、MBZが選ばれた場合でも、データ不存在や優先度に応じてSteam等の情報が一部適用されることがあります。
+            本システムは、LLMが選択した MusicBrainz (MBZ) のリリースデータをベースに動作しますが、元のリリース曲順がローカルファイルと異なる場合は、**再生時間（Duration）に基づき物理的に自動整列（Duration Alignment）**した上でマッピングを行っています。</p>
+            <p>
+            また、最終的なタグの値はシステムによる「仮想アルバム（Virtual Album）構想」に基づき、LLMが選定した主軸データ（Steam公式情報 または MusicBrainz）を中心として、不足している項目（トラック番号やカバーアートなど）を最適なソースから自動的にフォールバックして補完する決定論的ロジックによって構築されています。
+            </p>
         </div>
     </div>
 

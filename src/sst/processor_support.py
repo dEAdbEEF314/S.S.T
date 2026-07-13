@@ -103,6 +103,11 @@ def send_notifications(
     else:
         notifier.notify_info(f"アーカイブ完了: {name}", f"AppID {app_id} の自動アーカイブに成功しました", fields)
 
+    md_lines = [f"# {status.upper()}: {name}", f"AppID: {app_id}", ""]
+    for f in fields:
+        md_lines.append(f"**{f['name']}**: {f['value']}")
+    return "\n".join(md_lines)
+
 
 def resolve_duplicate_mappings(
     app_id: int,
@@ -124,6 +129,53 @@ def resolve_duplicate_mappings(
     for v_idx, tids in idx_map.items():
         if len(tids) <= 1:
             continue
+
+        # --- NEW: FORMAT DEDUPLICATION ---
+        # ユーザーの「フォーマットごとの仮想アルバム処理」に基づき、
+        # LLMが同一のSTEAMトラックにマッピングした異なるフォーマットのトラックを統合する。
+        from .track_grouper import TrackManager
+        priorities = TrackManager.get_audio_format_priority()
+        
+        def get_priority(tid):
+            if tid in track_groups and track_groups[tid]:
+                fmt = track_groups[tid][0]["format"].lower()
+                try:
+                    return priorities.index(fmt)
+                except ValueError:
+                    return 999
+            return 999
+
+        tids_sorted = sorted(tids, key=get_priority)
+        best_tid = tids_sorted[0]
+        
+        merged_any = False
+        tids_to_remove = []
+        for tid in tids_sorted[1:]:
+            try:
+                best_stem = best_tid.split("_", 1)[1].rsplit(" ", 1)[0]
+                this_stem = tid.split("_", 1)[1].rsplit(" ", 1)[0]
+            except Exception:
+                best_stem = best_tid
+                this_stem = tid
+
+            if best_stem == this_stem:
+                if tid in track_groups:
+                    for v in track_groups[tid]:
+                        if v not in track_groups[best_tid]:
+                            track_groups[best_tid].append(v)
+                    del track_groups[tid]
+                if tid in final_metadata:
+                    del final_metadata[tid]
+                tids_to_remove.append(tid)
+                merged_any = True
+                logger.info(f"[{app_id}] フォーマット重複を解決: {tid} を最高品質の {best_tid} に統合しました。")
+
+        if merged_any:
+            if best_tid in track_groups:
+                track_groups[best_tid].sort(key=lambda v: priorities.index(v["format"].lower()) if v["format"].lower() in priorities else 999)
+            tids = [t for t in tids if t not in tids_to_remove]
+            if len(tids) <= 1:
+                continue
 
         local_discs = set(int(tid.split("_", 1)[0]) for tid in tids)
         if len(local_discs) > 1:

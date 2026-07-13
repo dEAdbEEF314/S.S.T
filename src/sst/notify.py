@@ -59,6 +59,8 @@ class NotificationManager:
                 response.raise_for_status()
                 self.last_sent[cooldown_key] = now
                 logger.debug(f"Discordへの通知を送信しました: [{level}] {title}")
+                if message:
+                    logger.debug(f"通知内容:\n{message}")
                 break
             except Exception as e:
                 if attempt < max_retries - 1:

@@ -141,7 +141,7 @@ class TrackManager:
             else:
                 for v in sorted_variants:
                     final_track_id = f"{norm_stem} {v['t_num_val']}" if v["t_num_val"] else f"{norm_stem} unnum {sorted_variants.index(v)}"
-                    final_groups[(disc, final_track_id)] = [v]
+                    final_groups.setdefault((disc, final_track_id), []).append(v)
                     
         return final_groups
 
