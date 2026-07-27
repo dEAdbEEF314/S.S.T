@@ -37,5 +37,8 @@ SST is a **high-precision, standalone CLI tool** for automatically tagging Steam
 
 # Documentation Source of Truth
 - Refer to `docs/` for current specifications.
-- Authority Hierarchy: **MusicBrainz (Confirmed) > Steam Store > Audio Embedded Tags**.
+- Authority Hierarchy:
+  - Structure (Titles/Track#): Steam Store (Absolute Truth)
+  - Metadata (Artist/Year/Label): MusicBrainz
+  - Artwork (APIC): Audio Embedded Tags > MusicBrainz > Steam
 - Tagging Specification: Refer to `docs/TAGGING_RULE.md`.
