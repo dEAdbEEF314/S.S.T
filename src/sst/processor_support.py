@@ -17,7 +17,17 @@ def fetch_album_artwork(
     mbz_candidates: List[Dict[str, Any]],
     track_groups: Optional[Dict] = None,
 ) -> Optional[bytes]:
-    # 1. MBZ (High Quality Cover)
+    # APIC priority (TAGGING_RULE.md / LOGIC.md): EMBED (local) -> MBZ -> Steam.
+
+    # 1. EMBED (Local File)
+    if track_groups:
+        for (disc, clean_title), files in track_groups.items():
+            art = TrackManager.get_best_artwork(files)
+            if art:
+                logger.info(f"EMBEDソースからアルバムアートワークを採用しました (トラック: {clean_title})")
+                return art
+
+    # 2. MBZ (High Quality Cover)
     if mbz_candidates:
         url = mbz_client.get_release_artwork_url(mbz_candidates[0]["mbid"])
         if url:
@@ -29,7 +39,7 @@ def fetch_album_artwork(
             except Exception as e:
                 logger.debug(f"MBZアートワークの取得に失敗しました: {e}")
 
-    # 2. Steam (Store Header)
+    # 3. Steam (Store Header)
     url = steam_meta.header_image_url
     if not url and steam_meta.app_id:
         url = f"https://cdn.akamai.steamstatic.com/steam/apps/{steam_meta.app_id}/header.jpg"
@@ -41,14 +51,6 @@ def fetch_album_artwork(
                 return r.content
         except Exception as e:
             logger.debug(f"Steamアートワークの取得に失敗しました: {e}")
-
-    # 3. EMBED (Local File)
-    if track_groups:
-        for (disc, clean_title), files in track_groups.items():
-            art = TrackManager.get_best_artwork(files)
-            if art:
-                logger.info(f"EMBEDソースからアルバムアートワークを採用しました (トラック: {clean_title})")
-                return art
 
     return None
 

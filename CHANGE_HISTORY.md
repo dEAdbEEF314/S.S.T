@@ -594,3 +594,11 @@ docs/LOGIC.md, docs/TAGGING_RULE.md: VGMdb連携およびバイリンガル仕�
 2026/07/13 22:30:34 .agents/skills/sst-batch-test/SKILL.md: 100件テスト実施と監視を連携させるスキル (sst-batch-test) を新規作成。
 2026/07/14 00:26:00, .env, 並列処理の上限（MAX_PARALLEL_ALBUMS, LLM_REQUEST_PARALLELISM_MAX_WORKERS）を2から10に引き上げ（VRAMマネージャーとレートリミッターの動的待機制御を活用して稼働率を上げるため）
 2026/07/14 03:05:00, .env / src/sst/config.py / src/sst/llm.py, LLMへのHTTPリクエストのタイムアウトを環境変数(LLM_REQUEST_TIMEOUT)で設定できるようにし、デフォルトを1800秒に延長。Ollamaのキュー待ち時間超過によるエラーを防止。
+
+2026/07/28 08:02:00 src/sst/{builder.py,processor_support.py,tagger.py,utils.py}, docs/LOGIC.md
+- docs/LOGIC.md・docs/TAGGING_RULE.md 刷新後のメタデータ優先順位（TPE1のVarious Artists/VAフォールバック救済、APICのEMBED→MBZ→Steam順、COMMのタグ末尾からの切り詰め）に合わせてコードを是正。
+- `builder.py`: TPE1（アーティスト）決定ロジックを修正。MBZ/Steamクレジットが取得できても値が「Various Artists」「VA」等の汎用プレースホルダの場合は開発元へフォールバックするよう変更。COMMの結合順を仕様書どおり `親ゲーム名, 親ゲームストアURL, [タグ...]` に修正（旧実装はタグ配列がURLより先に来ており仕様と矛盾していた）。
+- `processor_support.py`: `fetch_album_artwork` のソース優先順位を「MBZ→Steam→EMBED」から仕様書どおり「EMBED（ローカル埋め込み）→MBZ→Steam」に修正。
+- `tagger.py`: COMM切り詰め用の正規表現を、builder.py側で修正した新しい結合順（タグ配列が末尾）に合わせて更新し、2000文字超過時に末尾のコミュニティタグから安全にpopできるよう修正。
+- `utils.py`: LOGIC.md 1.1節の指示に基づき、WSL依存が無いことを踏まえて `ensure_wsl_path` を `ensure_path` にリネーム（呼び出し元の scanner.py/packager.py/main.py/tests/skills/Maintenance も追従）。
+- 既存テストスイート実行済み。`tests/test_acoustid_release.py::test`（MusicBrainzIdentifierの必須引数不足）と `tests/test_llm_parallelism.py::test_call_llm_emits_progress_and_structured_logs`（フルスイート実行時のみ再現するモック分離不良）の2件の失敗は、変更前(stash)の状態でも同一条件で再現することを確認済みであり、本リファクタリングに起因しない既存の不具合。

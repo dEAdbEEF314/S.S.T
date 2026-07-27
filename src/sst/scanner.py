@@ -6,7 +6,7 @@ import json
 from typing import List, Optional, Dict, Any
 from pathlib import Path
 
-from .utils import ensure_wsl_path
+from .utils import ensure_path
 from .steam_vdf import SteamBinaryVDF, SteamLibraryDiscovery
 from .db import DatabaseManager
 
@@ -17,7 +17,7 @@ MUSIC_EXTENSIONS = {".flac", ".wav", ".mp3", ".aiff", ".aif", ".m4a", ".ogg"}
 
 class SteamScanner:
     def __init__(self, install_path: str, db: DatabaseManager, bridge_url: str, bridge_api_key: Optional[str] = None, api_key: Optional[str] = None, override_library_path: Optional[str] = None, cache_path: str = "data/scout_cache.json", language: str = "japanese"):
-        self.install_path = ensure_wsl_path(install_path)
+        self.install_path = ensure_path(install_path)
         self.db = db
         self.bridge_url = bridge_url if bridge_url.endswith("/") else bridge_url + "/"
         self.bridge_api_key = bridge_api_key
@@ -69,10 +69,10 @@ class SteamScanner:
     def _discover_all_libraries(self, override_path: Optional[str]) -> List[Path]:
         libs = SteamLibraryDiscovery.discover(self.install_path)
         # CRITICAL: Convert all Windows paths from libraryfolders.vdf to WSL paths
-        wsl_libs = [ensure_wsl_path(str(p)) for p in libs]
+        wsl_libs = [ensure_path(str(p)) for p in libs]
         
         if override_path:
-            p = ensure_wsl_path(override_path)
+            p = ensure_path(override_path)
             if p not in wsl_libs: wsl_libs.append(p)
         
         logger.info(f"{len(wsl_libs)} 個のライブラリで SteamScanner を初期化しました。")

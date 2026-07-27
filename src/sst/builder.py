@@ -129,16 +129,18 @@ class MetadataBuilder:
         res_title = MetadataBuilder._clean_title_logic(res_title, instr.get("override_track"))
 
         # 2.2 TPE1 (Artist)
+        # Priority (TAGGING_RULE.md): MusicBrainz credit (highest) -> Steam store credit.
+        # If both are missing, or the resolved value is a generic placeholder
+        # ("Various Artists" / "VA"), fall back to the developer.
         res_artist = None
-        # MBZ details take priority if available, otherwise Steam Credits, then Local, then Steam Developer
         if mbz_album and mbz_album.get("artist"):
             res_artist = mbz_album.get("artist")
         elif steam_meta.store_credits:
             match = re.search(r'Artist:\s*(.*)', steam_meta.store_credits, re.IGNORECASE)
             if match: res_artist = match.group(1).strip()
-        
-        if not res_artist:
-            res_artist = local_tags.get("artist") or steam_meta.developer or "Various Artists"
+
+        if not res_artist or res_artist.strip().upper() in ["VARIOUS ARTISTS", "VA"]:
+            res_artist = steam_meta.developer or "Various Artists"
 
         # 2.3 TRCK (Track Number)
         res_track = ""
@@ -241,6 +243,7 @@ class MetadataBuilder:
         final_genre = f"STEAM VGM, {joined_genres}"
 
         # --- 5. Comment/Grouping Logic ---
+        # TAGGING_RULE.md COMM spec: 既存の埋め込みコメント(先頭保持) + "親ゲーム名, 親ゲームストアURL, [タグ1/ タグ2/ ...]"
         target_name = steam_meta.parent_name or steam_meta.name
         target_appid = steam_meta.parent_app_id or app_id
         
@@ -248,7 +251,7 @@ class MetadataBuilder:
         joined_tags = f"[{'/ '.join(target_tags)}]" if target_tags else ""
         
         target_url = f"https://store.steampowered.com/app/{target_appid}"
-        new_info = f"{target_name}, {joined_tags}, {target_appid}, {target_url}"
+        new_info = f"{target_name}, {target_url}, {joined_tags}"
 
         existing_comment = local_tags.get("comment", "")
         if existing_comment and str(existing_comment).strip():

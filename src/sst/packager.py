@@ -12,12 +12,12 @@ class PackageManager:
         """
         Creates a ZIP archive and preserves it under the configured output root.
         """
-        from .utils import ensure_wsl_path
+        from .utils import ensure_path
         import subprocess
         
         try:
             # 1. Prepare final destination (Windows side)
-            final_output_root = ensure_wsl_path(output_root)
+            final_output_root = ensure_path(output_root)
             output_base = final_output_root / status
             output_base.mkdir(parents=True, exist_ok=True)
             
