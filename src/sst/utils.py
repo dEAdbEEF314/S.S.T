@@ -23,6 +23,6 @@ def windows_to_wsl_path(win_path: str) -> Path:
     # 3. If it doesn't match a drive letter, just normalize slashes
     return Path(win_path.replace('\\', '/'))
 
-def ensure_wsl_path(any_path: str) -> Path:
-    """Ensures the path is usable in the current WSL2 environment."""
+def ensure_path(any_path: str) -> Path:
+    """Ensures the path is usable in the current Linux environment (WSL dependency removed)."""
     return windows_to_wsl_path(any_path)

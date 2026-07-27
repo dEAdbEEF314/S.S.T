@@ -148,9 +148,11 @@ class AudioTagger:
             tags.add(TIT1(encoding=1, text=tag_map["grouping"] or ""))
 
             # Comment logic
+            # TAGGING_RULE.md format: "{既存コメント}, {親ゲーム名}, {親ゲームストアURL}, [タグ1/ タグ2/ ...]"
+            # Truncation removes tag elements from the tail first to stay under the ID3v2.3 limit.
             comment_text = tag_map["comment"]
             if len(comment_text.encode('utf-16')) > 2000:
-                match = re.search(r', \[(.*)\], \d+, https', comment_text)
+                match = re.search(r', \[(.*)\]$', comment_text)
                 if match:
                     prefix = comment_text[:match.start(1)]
                     tags_str = match.group(1)

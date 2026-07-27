@@ -1,6 +1,6 @@
 import pytest
 from pathlib import Path
-from sst.utils import windows_to_wsl_path, ensure_wsl_path
+from sst.utils import windows_to_wsl_path, ensure_path
 
 def test_windows_to_wsl_path():
     # Test valid Windows paths
@@ -17,6 +17,6 @@ def test_windows_to_wsl_path():
     # Test empty path
     assert windows_to_wsl_path("") == Path()
 
-def test_ensure_wsl_path():
-    # ensure_wsl_path is an alias
-    assert ensure_wsl_path(r"C:\Test") == Path("/mnt/c/Test")
+def test_ensure_path():
+    # ensure_path is an alias
+    assert ensure_path(r"C:\Test") == Path("/mnt/c/Test")
