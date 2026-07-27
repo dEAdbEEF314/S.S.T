@@ -39,7 +39,7 @@ S.S.T は AI の柔軟な推論とプログラムの厳格性を両立するた�
    - **バッファリング**: `/tmp/sst-work/buffer_*` で安全に処理。
    - **変換**: FFmpeg による AIFF/MP3 への変換。
    - **タギング**: ID3v2.3 規格に準拠した書き込み。
-5. **Package**: Ubuntu（WSL）側で ZIP アーカイブ化を行い、指定の出力先ディレクトリへ保存。Windows側への一括転送・展開はユーザが手動で行う（将来的に自動一括転送機能を実装予定）。
+5. **Package**: Ubuntu側で ZIP アーカイブ化を行い、指定の出力先ディレクトリへ保存。Windows側への一括転送・展開はユーザが手動で行う（将来的に自動一括転送機能を実装予定）。
 
 ---
 
@@ -52,47 +52,3 @@ S.S.T は AI の柔軟な推論とプログラムの厳格性を両立するた�
 - `docs/`: 技術仕様書、判定ロジック、タギング・ルール。
 - `docs/archive/`: 提案メモや検証時点の歴史資料（現行仕様の正本としては扱わない）。
 
----
-
-# S.S.T (Steam Soundtrack Tagger) - Core Architecture
-
-This document defines the design philosophy, system architecture, and data flow of the S.S.T project. For detailed decision logic, see `LOGIC.md`. For tagging specifications, see `TAGGING_RULE.md`.
-
----
-
-## 1. Core Principle: "Archive once, trust forever"
-
-- **Goal**: Automated construction of a high-precision, zero-maintenance music library.
-- **Policy**: Only items with 100% reliability are marked as `ARCHIVE`. Any doubt routes the item to the `REVIEW` folder for manual human verification.
-
----
-
-## 2. Separation of Powers Architecture
-
-S.S.T balances AI's flexible reasoning with programmatic rigor using a "Three Branches of Power" model:
-
-- **Legislative (User/Config)**: Defines system configurations and audio format priority via `.env` or the `Config` class.
-- **Judiciary (LLM/Auditor)**: Compares multiple sources and infers the best metadata based on context (Judgment).
-- **Executive (System/Executor)**: Censors LLM output for physical cleanliness and executes tagging and archiving.
-
----
-
-## 3. System Components & Data Flow
-
-### 3.1 3-Tier API Integration
-Avoids scraping and ensures data depth via three layers:
-1. **Official Store API**: Basic localized info (Name, Genre).
-2. **PICS Bridge (Docker)**: Accurate tracklists and credits directly from Steam's internal DB.
-3. **Official Tags via Steam Web API**: Official tags fetched via `IStoreBrowseService`.
-
-Additionally, local `appinfo.vdf` `store_tags` are used as a supplemental source and resolved through the local tag-name cache.
-
-### 3.2 Processing Pipeline
-1. **Scan**: Scans the library to identify unprocessed AppIDs.
-2. **Identify**: Collects and scores candidates from MusicBrainz and Steam APIs.
-3. **Consolidate**: LLM infers mapping and cleaning.
-4. **Transform**: 
-   - **Buffering**: Processed safely in `/tmp/sst-work/buffer_*`.
-   - **Conversion**: FFmpeg conversion to AIFF/MP3.
-   - **Tagging**: Writes metadata following the ID3v2.3 standard.
-5. **Package**: Packaged as a ZIP archive and saved to the designated output directory on Ubuntu. Bulk transfer and extraction to Windows are handled manually by the user (Automated bulk transfer is planned for the future).

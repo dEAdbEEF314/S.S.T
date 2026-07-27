@@ -29,6 +29,7 @@ class LLMOrganizer:
                  llm_vram_scheduling_enabled: bool = True,
                  llm_request_parallelism_enabled: bool = True,
                  llm_request_parallelism_max_workers: int = 4,
+                 request_timeout: int = 1800,
                  coherence_threshold: int = 75,
                  chunk_size_virtual: int = 20,
                  chunk_size_metadata_ollama: int = 10,
@@ -48,6 +49,7 @@ class LLMOrganizer:
         self.llm_vram_scheduling_enabled = llm_vram_scheduling_enabled
         self.llm_request_parallelism_enabled = llm_request_parallelism_enabled
         self.llm_request_parallelism_max_workers = max(1, llm_request_parallelism_max_workers)
+        self.request_timeout = request_timeout
         self.coherence_threshold = coherence_threshold
         self.chunk_size_virtual = chunk_size_virtual
         self.chunk_size_metadata_ollama = chunk_size_metadata_ollama
@@ -860,7 +862,7 @@ RULES:
                     num_ctx=effective_num_ctx,
                 )
                 try:
-                    response = requests.post(url, headers=headers, json=payload, timeout=600)
+                    response = requests.post(url, headers=headers, json=payload, timeout=self.request_timeout)
                     if response.status_code == 200:
                         res_json = response.json()
                         message = res_json.get("message", {})

@@ -5,7 +5,7 @@
 ## 1. 監査基準 (Audit Criteria)
 
 ### 1.1 物理的証拠の最優先 (Physical First)
-*   **GROUND TRUTH**: FINGERPRINT（音声指紋）の一致は物理的な事実に基づきます。
+*   **GROUND TRUTH**: STEAMによる情報は、公式のものとしてこれを正とします。
 *   `physical_match_ratio` が 80% を超えている場合、メタデータの文字列に多少の差異があっても **Identity Confidence を 95% 以上** と設定してください。
 
 ### 1.2 意味的な同一性の許容 (Semantic Aliases)
@@ -19,12 +19,13 @@
 ### 2.1 フィールド別フォールバック原則
 本ルールは、システムがメタデータを構築する際の固定原則（フォールバック主導）を示します。
 
-1.  **タイトル (TIT2) / トラック番号 (TRCK)**: Steam 公式データを絶対視し、存在しない場合のみ FINGERPRINT または MBZ にフォールバックする。
+1.  **タイトル (TIT2) / トラック番号 (TRCK)**: Steam 公式データを絶対視し、存在しない場合のみ FINGERPRINT, MBZ_SEARCH, LOCAL にフォールバックする。
 2.  **アーティスト (TPE1) / レーベル (TPUB)**: MusicBrainz (MBZ) を最優先し、欠落時のみ Steam や埋め込みから取得する。
-3.  **年 (TYER)**: MusicBrainz (MBZ) を最優先する。
+3.  **年 (TYER)**: MusicBrainz (MBZ) を最優先し、欠落時のみ Steam や埋め込みから取得する。
 
 ### 2.2 タイトルのクリーニング
-*   "01. Title" や "1- Title" のようなトラック番号の混入は、LLMが責任を持って削除（Cleaning）してください。
+*   Steam 公式データを絶対的な正とします。
+*   Steam 公式データが欠落している場合のみ、"01. Title" や "1- Title" のようなトラック番号の混入は、LLMが責任を持って削除（Cleaning）してください。
 
 ## 3. アーカイブ判定 (Judgement)
 
