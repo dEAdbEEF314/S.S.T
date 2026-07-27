@@ -590,3 +590,7 @@ docs/LOGIC.md, docs/TAGGING_RULE.md: VGMdb連携およびバイリンガル仕�
 2026/07/13 21:24:00, docs/SST.md docs/TAGGING_RULE.md docs/Virtual_Album.md .env, 古いフィールドごとの優先順位指定に関する記述と設定項目を削除し、Virtual Album構想に基づく決定論的フォールバック仕様にドキュメントを統一
 2026/07/13 21:38:00, docs/DEPLOYMENT_GUIDE_jp.md README.md, 実行環境からWSL2およびDocker Desktopの依存記述を排除し、純粋なLinux・APIベースのデプロイガイドに刷新
 2026/07/13 21:47:00, .env .env.example src/sst/config.py, 設定項目を関連度順（Steam連携、ローカル処理、LLM制御等）に整理し直し、デッドコードとなっていた優先順位関連の設定を完全に削除。併せて.env.exampleを秘密情報を抜いた汎用テンプレートとして再構築
+
+2026/07/13 22:30:34 .agents/skills/sst-batch-test/SKILL.md: 100件テスト実施と監視を連携させるスキル (sst-batch-test) を新規作成。
+2026/07/14 00:26:00, .env, 並列処理の上限（MAX_PARALLEL_ALBUMS, LLM_REQUEST_PARALLELISM_MAX_WORKERS）を2から10に引き上げ（VRAMマネージャーとレートリミッターの動的待機制御を活用して稼働率を上げるため）
+2026/07/14 03:05:00, .env / src/sst/config.py / src/sst/llm.py, LLMへのHTTPリクエストのタイムアウトを環境変数(LLM_REQUEST_TIMEOUT)で設定できるようにし、デフォルトを1800秒に延長。Ollamaのキュー待ち時間超過によるエラーを防止。

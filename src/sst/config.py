@@ -4,6 +4,7 @@ from typing import Any, Optional
 import os
 
 DEFAULT_TITLE_CLEANING_TRUSTED_SOURCES = "MBZ,FINGERPRINT"
+DEFAULT_METADATA_SOURCE_PRIORITY = "STEAM,FINGERPRINT,MBZ_SEARCH,LOCAL"
 
 
 class Config(BaseSettings):
@@ -34,6 +35,7 @@ class Config(BaseSettings):
     llm_vram_scheduling_enabled: bool = True
     llm_request_parallelism_enabled: bool = True
     llm_request_parallelism_max_workers: int = 4
+    llm_request_timeout: int = 1800
     
     # Token Stingy Tier Profiles
     llm_album_tier_small_max_tracks: int = 50
@@ -82,6 +84,7 @@ class Config(BaseSettings):
 
     # Metadata Cleaning Settings
     title_cleaning_trusted_sources: str = DEFAULT_TITLE_CLEANING_TRUSTED_SOURCES
+    metadata_source_priority: str = DEFAULT_METADATA_SOURCE_PRIORITY
 
     mbz_app_name: str = "SST-Scout"
     mbz_app_version: str = "1.0.0"
@@ -146,6 +149,7 @@ class Config(BaseSettings):
             "llm_vram_scheduling_enabled": self.llm_vram_scheduling_enabled,
             "llm_request_parallelism_enabled": self.llm_request_parallelism_enabled,
             "llm_request_parallelism_max_workers": self.llm_request_parallelism_max_workers,
+            "request_timeout": self.llm_request_timeout,
             "coherence_threshold": self.llm_coherence_threshold,
             "chunk_size_virtual": self.llm_chunk_size_virtual,
             "chunk_size_metadata_ollama": self.llm_chunk_size_metadata_ollama,

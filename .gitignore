@@ -105,6 +105,7 @@ tests/
 
 # ── Work Directory ─────────────────────────────
 sst-work/
+report/
 
 # ETC
 .ruff_cache/

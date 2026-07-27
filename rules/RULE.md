@@ -6,7 +6,7 @@
 - **プロジェクト名**: S.S.T (Steam Soundtrack Tagger)
 - **バージョン**: 1.0.0
 - **目的**: Steam上で配信されているサウンドトラックやDLC音源に対して、公式・非公式のデータベースから高品質なメタデータを取得し、LLMによる知的推論を交えてタグ付け・整理を自動化するシステム。
-- **実行環境**: Python 3.12 (uv 管理環境)、FFmpeg、SQLite3。WSL2 環境での動作を想定。
+- **実行環境**: Python 3.12 (uv 管理環境)、FFmpeg、SQLite3。Ubuntu 環境での動作を想定。
 
 ## 2. アーキテクチャと依存関係
 - **ディレクトリ構造**: 
@@ -29,7 +29,7 @@
    - `libraryfolders.vdf` や各 `appmanifest_*.acf` を解析し、対象のサントラフォルダを検出。
 2. **情報収集 (`builder.py`, `steam_vdf.py`, `ident/*`)**:
    - Steam Store API, PICS Bridge API, MusicBrainz, AcoustID (指紋) からデータを収集。
-   - 物理ファイル構成 (Local) と公式情報 (Steam), 外部DB情報 (MBZ) の「3つのVirtual Album」を構築。
+   - 物理ファイル構成 (Local) と公式情報 (Steam), 外部DB情報 (MBZ), 音声指紋情報(AcoustID + MBZ) の「4つのVirtual Album」を構築。
 3. **LLM推論 (`llm.py`)**:
    - System Prompt を通じて「Identity Confidence (同一性)」と「Integrity Quality (品質)」を判定。
    - 複数ソースから正しい曲名・タグ情報をトラックごとに推論・マッピング。
@@ -44,13 +44,13 @@
    - 設定に応じて Discord Webhook (Critical/Warning/Info/Completion) へ状態を通知。
 
 ## 4. メタデータ優先順位とクレンジング
-- **全体優先順位**: `MBZ > PICS_API > STEAM_STORE > STEAM_TAGS > EMBEDDED`
+- **全体優先順位**: `PICS_API > STEAM_STORE > STEAM_TAGS > MBZ > EMBEDDED`
 - **フィールド別優先順位**:
-  - `TIT2 (曲名)`: MBZ > PICS_API > FILE > EMBED > VDF
+  - `TIT2 (曲名)`: PICS_API > MBZ > FILE > EMBED > VDF
   - `TPE1 (アーティスト)`: MBZ > PICS_API > EMBED
   - `TRCK (トラック番号)`: PICS_API > MBZ > FILE > EMBED
   - `TPUB (パブリッシャー)`: MBZ > PICS_API
-  - `APIC (カバーアート)`: MBZ > PICS_API > WEB_API > EMBED
+  - `APIC (カバーアート)`: EMBED > MBZ > PICS_API > WEB_API 
 - **クレンジング規則**: トラック名先頭の不要な連番（例: "01. "）は、`MBZ` または `PICS_API` などの信頼済みソース (TITLE_CLEANING_TRUSTED_SOURCES) でない限り LLM 側で削除されます。
 
 ## 5. ドキュメントとコードの現状の整合性

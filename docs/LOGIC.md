@@ -9,9 +9,9 @@
 システムの挙動は `src/sst/config.py` 内の `Config` クラス（Pydantic Settings）によって制御される。
 
 ### 1.1 パス解決ロジック
-- **`STEAM_INSTALL_PATH`**: Windows形式 (`C:\...`) または WSL形式 (`/mnt/...`) を許容。内部で `utils.ensure_wsl_path` を通じて WSL ネイティブパスに正規化される。
-- **`SST_WORKING_DIR`**: デフォルト `/tmp/sst-work`。音声変換や一時バッファに使用される。
-- **`SST_OUTPUT_DIR`**: 最終成果物（ZIPアーカイブ）の出力先。Windows側ディスクI/O負荷を避けるため、ローカルWSLパス（例: `./output`）の指定を推奨。内部に `archive/` および `review/` フォルダが自動生成され、その中に ZIPファイル が出力される。
+- **`STEAM_INSTALL_PATH`**: Windows形式 (`C:\...`) または Linux形式 (`/mnt/...`) を許容。内部で `utils.ensure_wsl_path` を通じて Linuxパスに正規化される。（WSL依存が無いため、関数名を `utils.ensure_path` に変更してください）
+- **`SST_WORKING_DIR`**: デフォルト `./sst-work`。音声変換や一時バッファに使用される。
+- **`SST_OUTPUT_DIR`**: 最終成果物（ZIPアーカイブ）の出力先。Windows側ディスクI/O負荷を避けるため、ローカルパス（例: `./output`）の指定を推奨。内部に `archive/` および `review/` フォルダが自動生成され、その中に ZIPファイル が出力される。
 
 ### 1.2 メタデータ構築ロジック (フォールバック主導)
 LLM（司法）への「憲法」として、システムのフォールバック挙動が定義されている。
@@ -23,7 +23,7 @@ LLM（司法）への「憲法」として、システムのフォールバッ�
    - 最優先: `MBZ` (MusicBrainz)
    - フォールバック: `PICS_API`, `WEB_API`, ローカル埋め込みタグ (`EMBED`)
 3. **アルバムアート (APIC)**:
-   - `MBZ` -> `Steamストア` -> `ローカル埋め込み` の固定優先順位で取得。
+   - `ローカル埋め込み` -> `MBZ` -> `Steamストア` の固定優先順位で取得。
 
 ### 1.3 LLM可変設定およびレートリミット制御
 `src/sst/config.py` と `.env` により、LLM出力長とチャンク戦略、およびAPIの呼び出し速度を動的制御する。
@@ -50,7 +50,8 @@ LLM（司法）への「憲法」として、システムのフォールバッ�
 
 ### 2.2 3層 API 取得アルゴリズム (`_fetch_web_enrichment`)
 1.  **Tier 1 (Official Store API)**: `https://store.steampowered.com/api/appdetails?appids={app_id}&l={language}`
-2.  **Tier 2 (PICS Bridge via Docker)**: `http://localhost:8080/v1/info/{app_id}`
+    - 失敗時は指数バックオフ（2s, 4s, 8s）を伴う最大3回のリトライ。
+2.  **Tier 2 (PICS Bridge via SelfHost)**: `http://{SelfHost}:18080/v1/info/{app_id}`
     - 失敗時は指数バックオフ（2s, 4s, 8s）を伴う最大3回のリトライ。
 3.  **Tier 3 (Official Tags via Steam Web API)**: `IStoreBrowseService` 経由で 20件のタグを取得。
 
@@ -78,9 +79,13 @@ LLM（司法）への「憲法」として、システムのフォールバッ�
     - それ以外は `{disc}_{norm_stem}` をキーとして統合。
 
 ### 3.2 複数フォーマットの混在
-同一アルバム内に AIFF と MP3 等が混在する場合、以下の優先順位で 1 つのファイルのみを採用（Adopt）します。
-1. **Lossless**: FLAC, WAV, AIFF, ALAC
-2. **Lossy**: OGG, AAC, M4A, MP3
+同一アルバム内に複数のフォーマットが混在する場合、以下の優先順位で 1 つのファイルのみを採用（Adopt）します。
+1. **変換元音源ファイル選定**
+  - 0.**UltraLossless**: WAV
+  - 1.**Lossless**: FLAC, ALAC, AIFF
+  - 2.**Lossy**: OGG, AAC, M4A
+  - 3.**Standard**: MP3
+  ※ メタデータは、フォーマットごとにグルーピングしてアルバムメタデータとして取得、保持、比較対象とします。
 
 ### 3.3 AcoustID照合（数学的確定アルゴリズム）
 全トラックを対象に発動する、高精度同定モード（デフォルト動作）。
@@ -96,7 +101,7 @@ LLM（司法）への「憲法」として、システムのフォールバッ�
 
 ## 4. メタデータ同定と LLM 連携層 (`llm.py`, `ident/mbz.py`)
 
-現行フローでは、`LLMOrganizer` の統合入口は `consolidate_virtual_albums()` に一本化されている。旧来の `consolidate_metadata()` 経路は未使用となったため削除され、仮想アルバム比較ベースの統合のみを保守対象とする。
+現行フローでは、`LLMOrganizer` の統合入口は `consolidate_virtual_albums()` に一本化されている。仮想アルバム比較ベースの統合のみを保守対象とする。
 
 ### 4.1 MusicBrainz スコアリング (`mbz.py`) (NWO Hybrid Scoring)
 - **概要**: 候補の妥当性を物理的証拠に基づき数値化する。各配点は `.env` の `SCORE_MBZ_*` 変数で調整可能。
@@ -113,7 +118,7 @@ LLM（司法）への「憲法」として、システムのフォールバッ�
 ### 4.2 LLM による意味論的監査 (2フェーズ処理フロー)
 - **Phase 1 (Global Identity)**: アルバム全体の `identity_confidence` (閾値100) と `integrity_quality` (閾値95) を決定。
   - **決定論的ファストトラック**: 以下の条件を満たす場合、LLM をバイパスして `ARCHIVE` 判定を下す。
-    - **MBZ 直接リンク**: MBZの直接リンクがあり、かつ曲数が全ソースで一致する場合。
+    - **MBZ 直接リンク**: MBZのアルバムページからSteamストアページへの直接リンクがあり、かつ曲数が全ソースで一致する場合。
     - **Steam 信頼パス (STEAM-TRUST)**: 物理同定（指紋）が利用不可な場合でも、Steam ストアのトラックリストが全曲完備されており、LOCAL の曲数・順序・再生時間（±3秒以内）と 100% 構造的に一致する場合。
 - **Phase 1.5 (Coherence Map-Reduce)**:
   - 処理対象のトラック数が `LLM_COHERENCE_THRESHOLD`（デフォルト75曲）を超過する超巨大アルバムの場合に自動発動。
@@ -140,7 +145,7 @@ LLM（司法）への「憲法」として、システムのフォールバッ�
 
 ### 5.1 物理検閲ゲート (`validate`)
 LLM の確信度に関わらず、以下の物理的チェックに抵触した場合は強制的に `REVIEW` へ送られます。
-1.  **Dirty/Conflicting Tags**: `^(\d+)([\s.-]+)` にマッチし、かつ小数点ではない、かつ実際のトラック番号と一致する、または `0` パディング/強いセパレータを伴う場合（MBZ公式タイトルがその形式である場合を除く）。
+1.  **Dirty/Conflicting Tags**: `^(\d+)([\s.-]+)` にマッチし、かつ小数点ではない、かつ実際のトラック番号と一致する、または `0` パディング/強いセパレータを伴う場合（Steam公式タイトルがその形式である場合を除く）。
 2.  **物理的欠損 (Track #0)**: 補完を試みてもトラック番号が `0` または "Unknown" のまま残った場合。
 3.  **重複トラック**: 同一ディスク番号内に同一のトラック番号が複数存在する場合（Duplicate Disc/Track pairs）。
     - **スマート救済ロジック (Smart Rescue Logic)**: 重複が検知された場合、システムは以下の優先順位で自動修復を試みます。
