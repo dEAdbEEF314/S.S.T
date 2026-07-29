@@ -201,8 +201,8 @@ def main():
 
         # Generate Batch Report
         from .report_generator import ReportGenerator
-        from .utils import ensure_wsl_path
-        output_root = ensure_wsl_path(config.sst_output_dir)
+        from .utils import ensure_path
+        output_root = ensure_path(config.sst_output_dir)
         output_root.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         report_path = output_root / f"Result_{timestamp}.html"

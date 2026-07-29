@@ -110,7 +110,7 @@ class AudioTagger:
         return target_path, has_warnings
 
     def write_tags(self, file_path: Path, tag_map: Dict[str, Any], artwork_path: Optional[Path] = None):
-        from mutagen.id3 import TIT2, TPE1, TALB, TCON, TRCK, TPOS, COMM, TPE2, TCOM, APIC, TIT1, TYER, TPUB
+        from mutagen.id3 import TIT2, TPE1, TALB, TCON, TRCK, TPOS, COMM, TPE2, TCOM, APIC, TIT1, TYER, TPUB, TLAN
         from mutagen.aiff import AIFF
         from mutagen.mp3 import MP3
 
@@ -146,6 +146,7 @@ class AudioTagger:
             if tag_map.get("composer"):
                 tags.add(TCOM(encoding=1, text=tag_map["composer"]))
             tags.add(TIT1(encoding=1, text=tag_map["grouping"] or ""))
+            tags.add(TLAN(encoding=0, text=[tag_map["language"]]))
 
             # Comment logic
             comment_text = tag_map["comment"]

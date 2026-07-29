@@ -11,7 +11,22 @@ class TrackManager:
     @staticmethod
     def list_audio_files(directory: Path) -> List[Path]:
         exts = {".flac", ".wav", ".mp3", ".ogg", ".aac", ".m4a", ".aiff", ".aif"}
-        return [p for p in directory.rglob("*") if p.suffix.lower() in exts and not p.name.startswith(".") and "__MACOSX" not in p.parts]
+        audio_files = []
+        try:
+            if not directory.exists():
+                logger.warning(f"ディレクトリが存在しません: {directory}")
+                return []
+            for p in directory.rglob("*"):
+                try:
+                    if p.suffix.lower() in exts and not p.name.startswith(".") and "__MACOSX" not in p.parts:
+                        audio_files.append(p)
+                except OSError as e:
+                    logger.warning(f"ファイルアクセス中にエラーが発生しました ({p}): {e}")
+                    continue
+        except OSError as e:
+            logger.error(f"ディレクトリキャン中にエラーが発生しました ({directory}): {e}")
+            return []
+        return audio_files
 
     @staticmethod
     def get_duration(path: Path) -> float:
@@ -23,10 +38,8 @@ class TrackManager:
     @staticmethod
     def normalize_title(stem: str) -> str:
         stem = re.sub(r'^(\d+[\s._-]+)+', '', stem)
-        noise_pattern = r'\b(aiff|mp3|flac|wav|lossless|high-res|digital|official)\b'
-        stem = re.sub(noise_pattern, '', stem, flags=re.IGNORECASE)
-        stem = re.sub(r'\b(ost|soundtrack|original soundtrack)\b$', '', stem.strip(), flags=re.IGNORECASE)
-        stem = re.sub(r'[^\w\s]', ' ', stem)
+        stem = re.sub(r'[\s(\[]+(?:aiff|mp3|flac|wav|lossless|high[\s-]*res|ost|soundtrack|official|[\s\-])+[\s)\]]+$', '', stem, flags=re.IGNORECASE)
+        stem = re.sub(r'[^a-zA-Z0-9]', ' ', stem)
         stem = " ".join(stem.split()).lower()
         stem = stem.replace("artifical", "artificial")
         stem = re.sub(r'\s*0+(\d+)', r' \1', stem)
@@ -148,7 +161,7 @@ class TrackManager:
     @staticmethod
     def get_audio_format_priority() -> List[str]:
         import os
-        priority_str = os.getenv("AUDIO_FORMAT_PRIORITY", "flac,alac,aiff,wav,mp3,m4a,ogg")
+        priority_str = os.getenv("AUDIO_FORMAT_PRIORITY", "wav,flac,alac,aiff,aif,ogg,aac,m4a,mp3")
         return [fmt.strip().lower() for fmt in priority_str.split(",") if fmt.strip()]
 
     @staticmethod

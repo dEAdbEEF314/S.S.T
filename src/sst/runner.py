@@ -38,9 +38,13 @@ class JobRunner:
         # Determine track counts for VRAM estimation and sorting
         logger.info("動的スケジューリングのためにトラック数をスキャンしています...")
         for ost in soundtracks:
-            install_dir = Path(ost["install_dir"])
-            audio_files = TrackManager.list_audio_files(install_dir)
-            ost["_track_count"] = len(audio_files)
+            try:
+                install_dir = Path(ost["install_dir"])
+                audio_files = TrackManager.list_audio_files(install_dir)
+                ost["_track_count"] = len(audio_files)
+            except Exception as e:
+                logger.error(f"[{ost.get('app_id')}] 初期トラック数スキャン中にエラーが発生しました: {e}")
+                ost["_track_count"] = 0
 
         # Sort soundtracks by track count to process small ones first (better packing)
         soundtracks.sort(key=lambda x: x["_track_count"])
@@ -52,7 +56,7 @@ class JobRunner:
         else:
             cpu_count = multiprocessing.cpu_count()
             cloud_workers = min(int(self.config.llm_limit_rpm * 0.5), cpu_count, 5)
-            max_workers = max(self.config.max_parallel_albums, cloud_workers)
+            max_workers = min(self.config.max_parallel_albums, cloud_workers)
             logger.info(f"外部APIバックエンドを検出しました。標準スレッドプール ({max_workers} ワーカー) を使用します。")
 
         def _process_single_album(ost, progress, overall_task):
@@ -88,6 +92,7 @@ class JobRunner:
                 
             progress.update(album_task, description=f"[yellow]処理中: {ost['name']}")
 
+            result = None
             try:
                 # Use dict unpacking to ensure all fields from ost are included in SteamMetadata
                 steam_meta = SteamMetadata(**ost)
@@ -108,16 +113,21 @@ class JobRunner:
                         app_id=app_id, status="error", album_name=ost["name"], 
                         message="Process returned None", confidence_score=0
                     )
-                
-                results.append(result)
+            except Exception as e:
+                logger.error(f"[{app_id}] アルバム処理中にエラーが発生しました ({ost['name']}): {e}", exc_info=True)
+                result = LocalProcessResult(
+                    app_id=app_id, status="error", album_name=ost["name"],
+                    message=str(e), confidence_score=0
+                )
             finally:
                 if self.vram_manager and not getattr(self.config, "llm_vram_scheduling_enabled", True):
                     self.vram_manager.release(vram_cost)
 
+            results.append(result)
             progress.remove_task(album_task)
             progress.update(overall_task, advance=1)
             
-            status_color = "green" if result.status == "archive" else "yellow"
+            status_color = "green" if result.status == "archive" else ("yellow" if result.status == "review" else "red")
             self.console.print(f"[bold {status_color}]✓[/bold {status_color}] {ost['name']} -> [bold]{result.status.upper()}[/bold]")
 
         try:

@@ -10,6 +10,21 @@ from .track_grouper import TrackManager
 logger = logging.getLogger("sst.processor")
 
 
+import time
+
+def copy_with_retry(src: Path, dst: Path, retries: int = 3, initial_delay: float = 1.0):
+    for attempt in range(retries):
+        try:
+            shutil.copy2(src, dst)
+            return
+        except (OSError, IOError, PermissionError) as e:
+            if attempt == retries - 1:
+                raise
+            delay = initial_delay * (2 ** attempt)
+            logger.warning(f"File copy failed for {src.name} ({e}), retrying in {delay}s (Attempt {attempt+1}/{retries})...")
+            time.sleep(delay)
+
+
 def process_single_track(
     app_id: int,
     steam_meta_name: str,
@@ -57,11 +72,10 @@ def process_single_track(
                 pass
 
         disc_subdir = f"disc_{final_disc}"
-
         local_raw_dir = buffer_dir / disc_subdir
         local_raw_dir.mkdir(parents=True, exist_ok=True)
         local_source_path = local_raw_dir / adopted_info["path"].name
-        shutil.copy2(adopted_info["path"], local_source_path)
+        copy_with_retry(adopted_info["path"], local_source_path)
 
         processed_path, has_warnings = tagger.convert_and_limit(
             local_source_path,

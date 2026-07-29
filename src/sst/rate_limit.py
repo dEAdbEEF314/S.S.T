@@ -11,7 +11,7 @@ logger = logging.getLogger("sst.rate_limit")
 class DistributedRateLimiter:
     def __init__(self, rpm: int, tpm: int, rpd: int):
         self.limit_rpm = rpm
-        self.limit_tpm = int(tpm * 0.9) if tpm > 0 else 10**9
+        self.limit_tpm = int(tpm) if tpm > 0 else 10**9
         self.limit_rpd = rpd
         self.lock = threading.Lock()
         self.request_times = collections.deque()

@@ -1,5 +1,6 @@
 import logging
 from collections import defaultdict
+from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -17,7 +18,15 @@ def fetch_album_artwork(
     mbz_candidates: List[Dict[str, Any]],
     track_groups: Optional[Dict] = None,
 ) -> Optional[bytes]:
-    # 1. MBZ (High Quality Cover)
+    # 1. EMBED (Local File)
+    if track_groups:
+        for (disc, clean_title), files in track_groups.items():
+            art = TrackManager.get_best_artwork(files)
+            if art:
+                logger.info(f"EMBEDソースからアルバムアートワークを採用しました (トラック: {clean_title})")
+                return art
+
+    # 2. MBZ (High Quality Cover)
     if mbz_candidates:
         url = mbz_client.get_release_artwork_url(mbz_candidates[0]["mbid"])
         if url:
@@ -29,7 +38,7 @@ def fetch_album_artwork(
             except Exception as e:
                 logger.debug(f"MBZアートワークの取得に失敗しました: {e}")
 
-    # 2. Steam (Store Header)
+    # 3. Steam (Store Header)
     url = steam_meta.header_image_url
     if not url and steam_meta.app_id:
         url = f"https://cdn.akamai.steamstatic.com/steam/apps/{steam_meta.app_id}/header.jpg"
@@ -41,14 +50,6 @@ def fetch_album_artwork(
                 return r.content
         except Exception as e:
             logger.debug(f"Steamアートワークの取得に失敗しました: {e}")
-
-    # 3. EMBED (Local File)
-    if track_groups:
-        for (disc, clean_title), files in track_groups.items():
-            art = TrackManager.get_best_artwork(files)
-            if art:
-                logger.info(f"EMBEDソースからアルバムアートワークを採用しました (トラック: {clean_title})")
-                return art
 
     return None
 
@@ -216,6 +217,16 @@ def resolve_duplicate_mappings(
                         final_metadata[tid]["reason"] = f"SYSTEM: 曲名の一致により正しいインデックスを復元しました ('{st_name}')"
                         resolved_tids.add(tid)
                         break
+                else:
+                    # Fuzzy matching fallback (LOGIC.md §5.1 Heuristic 2)
+                    similarity = SequenceMatcher(None, l_title_clean, st_name).ratio()
+                    if similarity >= 0.80:
+                        if s_idx != v_idx:
+                            final_metadata[tid]["matched_v_idx"] = s_idx
+                            final_metadata[tid]["action"] = "use_steam"
+                            final_metadata[tid]["reason"] = f"SYSTEM: ファジーマッチにより正しいインデックスを復元しました ('{st_name}', 類似度: {similarity:.2f})"
+                            resolved_tids.add(tid)
+                            break
 
         remaining_tids = [t for t in tids if t not in resolved_tids]
         if len(remaining_tids) <= 1:

@@ -6,7 +6,7 @@ import json
 from typing import List, Optional, Dict, Any
 from pathlib import Path
 
-from .utils import ensure_wsl_path
+from .utils import ensure_path
 from .steam_vdf import SteamBinaryVDF, SteamLibraryDiscovery
 from .db import DatabaseManager
 
@@ -17,7 +17,7 @@ MUSIC_EXTENSIONS = {".flac", ".wav", ".mp3", ".aiff", ".aif", ".m4a", ".ogg"}
 
 class SteamScanner:
     def __init__(self, install_path: str, db: DatabaseManager, bridge_url: str, bridge_api_key: Optional[str] = None, api_key: Optional[str] = None, override_library_path: Optional[str] = None, cache_path: str = "data/scout_cache.json", language: str = "japanese"):
-        self.install_path = ensure_wsl_path(install_path)
+        self.install_path = ensure_path(install_path)
         self.db = db
         self.bridge_url = bridge_url if bridge_url.endswith("/") else bridge_url + "/"
         self.bridge_api_key = bridge_api_key
@@ -69,10 +69,10 @@ class SteamScanner:
     def _discover_all_libraries(self, override_path: Optional[str]) -> List[Path]:
         libs = SteamLibraryDiscovery.discover(self.install_path)
         # CRITICAL: Convert all Windows paths from libraryfolders.vdf to WSL paths
-        wsl_libs = [ensure_wsl_path(str(p)) for p in libs]
+        wsl_libs = [ensure_path(str(p)) for p in libs]
         
         if override_path:
-            p = ensure_wsl_path(override_path)
+            p = ensure_path(override_path)
             if p not in wsl_libs: wsl_libs.append(p)
         
         logger.info(f"{len(wsl_libs)} 個のライブラリで SteamScanner を初期化しました。")
@@ -285,14 +285,24 @@ class SteamScanner:
 
                 # --- Tier 1: Official Store API (Localized name/genres) ---
                 store_url = f"https://store.steampowered.com/api/appdetails?appids={app_id}&l={self.language}"
-                sr = session.get(store_url, headers=common_headers, timeout=15)
-                if sr.status_code == 200:
-                    s_json = sr.json()
-                    if str(app_id) in s_json and s_json[str(app_id)]["success"]:
-                        app_data = s_json[str(app_id)]["data"]
-                        result["name"] = app_data.get("name")
-                        result["genres"] = [g.get("description") for g in app_data.get("genres", []) if g.get("description")]
-                        result["release_date"] = app_data.get("release_date", {}).get("date")
+                app_data = None
+                for attempt in range(3):
+                    try:
+                        sr = session.get(store_url, headers=common_headers, timeout=15)
+                        if sr.status_code == 200:
+                            s_json = sr.json()
+                            if str(app_id) in s_json and s_json[str(app_id)]["success"]:
+                                app_data = s_json[str(app_id)]["data"]
+                                break
+                        logger.debug(f"Tier 1 の試行 {attempt+1} が失敗しました (ステータス: {sr.status_code})")
+                    except Exception as e:
+                        logger.debug(f"Tier 1 の試行 {attempt+1} エラー: {e}")
+                    time.sleep(2 ** (attempt + 1))  # 2s, 4s, 8s exponential backoff
+                
+                if app_data:
+                    result["name"] = app_data.get("name")
+                    result["genres"] = [g.get("description") for g in app_data.get("genres", []) if g.get("description")]
+                    result["release_date"] = app_data.get("release_date", {}).get("date")
 
                 # --- Tier 2: PICS Data via (Local/Remote) Bridge API ---
                 pics_url = f"{self.bridge_url}{app_id}"
@@ -315,7 +325,7 @@ class SteamScanner:
                         logger.debug(f"Tier 2 の試行 {attempt+1} が失敗しました (ステータス: {pr.status_code})")
                     except Exception as e:
                         logger.debug(f"Tier 2 の試行 {attempt+1} エラー: {e}")
-                    time.sleep(2 * (attempt + 1))
+                    time.sleep(2 ** (attempt + 1))
                 else:
                     app_pics = {} # All retries failed
 
