@@ -1,10 +1,10 @@
 import re
 from pathlib import Path
 
-def windows_to_wsl_path(win_path: str) -> Path:
+def normalize_path(win_path: str) -> Path:
     r"""
     Converts a Windows-style path (C:\...) to a WSL2 mount path (/mnt/c/...).
-    If the path is already a valid WSL path, it returns it as a Path object.
+    If the path is already a valid path, it returns it as a Path object.
     """
     if not win_path:
         return Path()
@@ -23,6 +23,6 @@ def windows_to_wsl_path(win_path: str) -> Path:
     # 3. If it doesn't match a drive letter, just normalize slashes
     return Path(win_path.replace('\\', '/'))
 
-def ensure_wsl_path(any_path: str) -> Path:
-    """Ensures the path is usable in the current WSL2 environment."""
-    return windows_to_wsl_path(any_path)
+def ensure_path(any_path: str) -> Path:
+    """Ensures the path is usable in the current environment."""
+    return normalize_path(any_path)

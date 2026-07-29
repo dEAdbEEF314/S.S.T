@@ -1,5 +1,6 @@
 import logging
 import re
+import html
 from typing import Dict, Any, List, Optional, Union
 from .config import DEFAULT_TITLE_CLEANING_TRUSTED_SOURCES
 from .models import SteamMetadata
@@ -129,16 +130,17 @@ class MetadataBuilder:
         res_title = MetadataBuilder._clean_title_logic(res_title, instr.get("override_track"))
 
         # 2.2 TPE1 (Artist)
+        # Priority: MBZ → Steam Credits → Developer (TAGGING_RULE.md §2 TPE1)
         res_artist = None
-        # MBZ details take priority if available, otherwise Steam Credits, then Local, then Steam Developer
         if mbz_album and mbz_album.get("artist"):
             res_artist = mbz_album.get("artist")
-        elif steam_meta.store_credits:
+        if not res_artist and steam_meta.store_credits:
             match = re.search(r'Artist:\s*(.*)', steam_meta.store_credits, re.IGNORECASE)
             if match: res_artist = match.group(1).strip()
         
-        if not res_artist:
-            res_artist = local_tags.get("artist") or steam_meta.developer or "Various Artists"
+        # Fallback: Developer (when missing or generic placeholder)
+        if not res_artist or res_artist.lower() in ["various artists", "va", "various"]:
+            res_artist = steam_meta.developer or "Unknown Artist"
 
         # 2.3 TRCK (Track Number)
         res_track = ""
@@ -248,7 +250,7 @@ class MetadataBuilder:
         joined_tags = f"[{'/ '.join(target_tags)}]" if target_tags else ""
         
         target_url = f"https://store.steampowered.com/app/{target_appid}"
-        new_info = f"{target_name}, {joined_tags}, {target_appid}, {target_url}"
+        new_info = f"{target_name}, {target_url}, {joined_tags}"
 
         existing_comment = local_tags.get("comment", "")
         if existing_comment and str(existing_comment).strip():
@@ -257,16 +259,19 @@ class MetadataBuilder:
             res_comment = new_info
 
         # --- 6. Construct Final Map ---
+        def _u(val):
+            return html.unescape(str(val)) if val is not None else ""
+
         return {
-            "title": (res_title or clean_title).strip(),
-            "artist": res_artist.strip(),
-            "album": steam_meta.name.strip(),
+            "title": _u(res_title or clean_title).strip(),
+            "artist": _u(res_artist).strip(),
+            "album": _u(steam_meta.name).strip(),
             "album_artist": f"{steam_meta.developer}, {steam_meta.publisher}",
             "genre": final_genre,
-            "label": res_label.strip() if res_label else "",
-            "grouping": f"{target_name}, Steam",
-            "comment": res_comment,
-            "composer": res_composer,
+            "label": _u(res_label).strip() if res_label else "",
+            "grouping": _u(f"{target_name}, Steam"),
+            "comment": _u(res_comment),
+            "composer": _u(res_composer),
             "year": res_year,
             "track_number": str(res_track).split('/')[0].strip(),
             "disc_number": f"{res_disc}/{actual_total_discs}",

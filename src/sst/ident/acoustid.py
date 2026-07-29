@@ -1,6 +1,7 @@
 import acoustid
 import logging
 import os
+import random
 import time
 import threading
 from pathlib import Path
@@ -19,11 +20,11 @@ class AcoustIDIdentifier:
             logger.warning("ACOUSTID_API_KEY not found. AcoustID matching will be disabled.")
 
     def _wait_for_rate_limit(self):
-        """Ensures at least 1.0s between global API calls."""
+        """Ensures 1.5-2.0s between global API calls per LOGIC.md §3.3."""
         with self._api_lock:
             now = time.time()
             elapsed = now - AcoustIDIdentifier._last_call_time
-            wait_time = 1.1 - elapsed # Use 1.1s for safety
+            wait_time = random.uniform(1.5, 2.0) - elapsed
             if wait_time > 0:
                 time.sleep(wait_time)
             AcoustIDIdentifier._last_call_time = time.time()

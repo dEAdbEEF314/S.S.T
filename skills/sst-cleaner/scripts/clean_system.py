@@ -5,7 +5,7 @@ import argparse
 import sqlite3
 from pathlib import Path
 from sst.config import Config
-from sst.utils import ensure_wsl_path
+from sst.utils import ensure_path
 
 def clean(keep_cache=True):
     print("--- S.S.T System Cleanup Started ---")
@@ -15,7 +15,7 @@ def clean(keep_cache=True):
     errors = []
 
     # 1. データベースのクリーンアップ (SST_DB_PATH に基づく)
-    db_path = ensure_wsl_path(config.sst_db_path)
+    db_path = ensure_path(config.sst_db_path)
     if keep_cache:
         try:
             if db_path.exists() and db_path.is_file():
@@ -58,7 +58,7 @@ def clean(keep_cache=True):
                     errors.append(f"Failed to remove log file {p}: {e}")
 
     # 4. 出力先ディレクトリ (SST_OUTPUT_DIR) 配下のクリーンアップ
-    output_dir = ensure_wsl_path(config.sst_output_dir)
+    output_dir = ensure_path(config.sst_output_dir)
     output_dirs_to_clean = [output_dir]
     
     # フォールバックとして相対パスの output も確認
@@ -86,7 +86,7 @@ def clean(keep_cache=True):
                     errors.append(f"Failed to remove output item {p}: {e}")
 
     # 5. 一時作業ディレクトリ (SST_WORKING_DIR) 配下のクリーンアップ
-    working_dir = ensure_wsl_path(config.sst_working_dir)
+    working_dir = ensure_path(config.sst_working_dir)
     if working_dir.exists() and working_dir.is_dir():
         for p in working_dir.iterdir():
             try:

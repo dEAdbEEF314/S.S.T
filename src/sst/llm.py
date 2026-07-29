@@ -632,7 +632,7 @@ Generate an audit JSON object based on these three "Virtual Albums".
         if not isinstance(ratio, dict) or not ratio:
             global_res["archive_vs_review_ratio"] = {"archive": 0, "review": 100}
         
-        if conf < 100:
+        if conf < 85:
              return {}, {"phase1_res": global_res, "phase1_log": global_log}
 
         # Phase 2: Track-by-Track Mapping with Chunking

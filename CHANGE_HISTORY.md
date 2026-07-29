@@ -594,3 +594,26 @@ docs/LOGIC.md, docs/TAGGING_RULE.md: VGMdb連携およびバイリンガル仕�
 2026/07/13 22:30:34 .agents/skills/sst-batch-test/SKILL.md: 100件テスト実施と監視を連携させるスキル (sst-batch-test) を新規作成。
 2026/07/14 00:26:00, .env, 並列処理の上限（MAX_PARALLEL_ALBUMS, LLM_REQUEST_PARALLELISM_MAX_WORKERS）を2から10に引き上げ（VRAMマネージャーとレートリミッターの動的待機制御を活用して稼働率を上げるため）
 2026/07/14 03:05:00, .env / src/sst/config.py / src/sst/llm.py, LLMへのHTTPリクエストのタイムアウトを環境変数(LLM_REQUEST_TIMEOUT)で設定できるようにし、デフォルトを1800秒に延長。Ollamaのキュー待ち時間超過によるエラーを防止。
+- 2026/07/28 16:58:00: `src/sst/ident/acoustid.py` を修正し、AcoustIDのレートリミットスリープ時間をLOGIC.mdに従い1.5〜2.0秒のランダムな値に変更。
+- 2026/07/28 16:58:00: `src/sst/scanner.py` を修正し、Tier 1 (公式ストアAPI) のデータ取得に指数バックオフを伴うリトライロジック (最大3回) を追加。
+- 2026/07/28 16:58:00: `src/sst/scanner.py` を修正し、Tier 2 (PICSデータ) のリトライ待機時間を線形 (2*n) から指数バックオフ (2**n) に変更。
+- 2026/07/28 16:58:00: `src/sst/track_grouper.py` の AUDIO_FORMAT_PRIORITY ティア順位を仕様に沿って修正。ファイル名正規化・サフィックス除去の正規表現を修正。
+- 2026/07/28 16:58:00: `src/sst/processor_support.py` のアートワーク採用優先順位をEMBED→MBZ→Steamに変更。同名トラック重複解決(Heuristic 2)にSequenceMatcherを用いたファジーマッチを追加。
+
+## 2026/07/28 16:58:00
+- `ensure_wsl_path` を `ensure_path` に、`windows_to_wsl_path` を `normalize_path` に名称変更し、WSL依存の記述をdocstringから削除しました。これに伴い各ファイル内のインポートおよび呼び出し箇所を修正しました。
+- `config.py` の `build_mbz_scoring_config` 内における `date_penalty_per_year` のマッピングが誤って `self.score_mbz_date_penalty_max` を参照していた問題を修正しました。
+- `config.py` 内の `llm_coherence_threshold` のデフォルト値を 101 から要件の 75 に修正しました。
+- `rate_limit.py` における `limit_tpm` の算出で、設定値に暗黙的に 0.9 を掛けていた処理を削除し、そのまま設定値を使用するように修正しました。
+- `runner.py` で `max_workers` を算出する際、RPM制限を超えないように `max` ではなく `min` を使用するよう修正しました。
+- 2026/07/28 17:11:00: `src/sst/builder.py` のTPE1（アーティスト）フォールバック順序を仕様準拠に修正。ローカルタグの優先参照を除去し、MBZ → Steam Credits → 開発元の順序に統一。Various Artists/VA等の汎用名チェックを追加。
+- 2026/07/28 17:11:00: `src/sst/builder.py` のCOMMタグフォーマットを仕様準拠に修正。構成順序を「親ゲーム名, ストアURL, [タグ]」に変更し、仕様外のappidフィールドを除去。
+- 2026/07/28 17:18:00: `skills/sst-cleaner/scripts/clean_system.py` の `ensure_wsl_path` 参照を `ensure_path` に更新。リファクタリングによるリネームへの追従。
+- 2026/07/28 17:18:00: `sst-cleaner` スキルを `--clear-all-cache` オプションで実行。データベース、ログ、出力、キャッシュの全クリアを実施（既にクリーン状態のため削除対象0件）。
+- 2026/07/29 06:19:25: `src/sst/track_grouper.py`, `src/sst/runner.py`, `tests/test_runner_resilience.py`, `tests/test_utils.py`: デバッグログ (`SST_DEBUG_20260728222658.log`) 精査により特定した `[Errno 112] Host is down` によるバッチ全体のクラッシュ問題を修正。`TrackManager.list_audio_files` および `JobRunner.run` 内の初期スキャンと個別のアルバム処理ループ内に `OSError` / `Exception` キャッチ処理を実装。アクセス不可なライブラリやアルバムが存在しても、安全にエラーログを記録して `status="error"` として記録を完了し、バッチ全体の処理を継続・完遂できるように改善。単体テストを追加・パス。
+- 2026/07/29 17:00:00: `report/batch_analysis_report.html`, `scratch/generate_report.py`: `./sst --limit 100 --dev` の100件処理結果（中間生成物、`output/`、`logs/`、`data/sst_local_state.db`）を多角的に分析。不自然なArchive/Review送りの原因究明（`conf < 100`ハードコード離脱問題、CIFSマウントI/Oエラー、HTMLエンティティ汚れ等）および次回Archive率85%以上を目指す具体策をまとめたダークモードHTML報告書を `report/batch_analysis_report.html` に出力。
+- 2026/07/29 17:15:00: `.agents/skills/sst-post-batch-investigator/SKILL.md`, `.agents/skills/sst-post-batch-investigator/scripts/generate_post_batch_report.py`: バッチ実行後のDB・ログ自動走査、不自然なArchive/Review結果の検出、改善ロードマップおよびダークモードHTMLレポート出力を行うワークスペース用スキル `sst-post-batch-investigator` を新規作成。
+- 2026/07/29 22:07:00: `src/sst/llm.py`, `src/sst/validator.py`, `src/sst/processor_tracks.py`, `src/sst/builder.py`, `tests/test_improvements.py`: バッチ処理改善案の施策1・2・3を実装・テスト完了。1) Phase 1 Confidence 閾値を85%に緩和し、Validator の Archive 判定条件を Confidence >= 90% / Quality >= 85% へ最適化。2) 音源コピー時の CIFS/SMB 一時的I/Oエラーに対する指数バックオフ付きリトライ (`copy_with_retry`) を導入。3) ID3タグ生成時の全テキストフィールドへの `html.unescape()` 自動アンエスケープ処理を統合。テストケースを作成し全パスを確認。
+- 2026/07/29 22:27:00: `src/sst/builder.py`, `tests/test_improvements.py`: 施策5について「Steam公式データを絶対基準とし、合致・クリーンアップできるもののみArchive処理し、例外や不一致は安全にReviewへ送る」原則に基づき整理・確認。テストケース (`test_clean_title_logic_strict_matching`) を追加し全テスト23件パスを確認。
+
+
