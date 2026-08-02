@@ -635,3 +635,4 @@ docs/LOGIC.md, docs/TAGGING_RULE.md: VGMdb連携およびバイリンガル仕�
 - VramResourceManager を起動時1回のみ実行する max_workers 計算ツールとして改修。
 2026/08/02 20:38:00 src/sst/llm/organizer.py
 - LLMOrganizer._is_truncation_log() に不足していた self パラメータを追加し、TypeErrorでクラッシュするバグを修正。
+2026/08/02 21:20:00 README.md 動的VRAMスケジューリングから起動時固定スロット計算への設計変更に伴う機能説明文の更新（日本語および英語）
