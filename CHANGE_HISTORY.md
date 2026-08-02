@@ -633,3 +633,5 @@ docs/LOGIC.md, docs/TAGGING_RULE.md: VGMdb連携およびバイリンガル仕�
 - VRAM管理方式を「リクエストごとの動的確保・num_ctx動的計算」から「起動時の固定スロット数計算・num_ctx固定化」へ刷新。
 - LLMモデルの再ロードによるオーバーヘッド（VRAMの0%への落ち込み）を完全に排除。
 - VramResourceManager を起動時1回のみ実行する max_workers 計算ツールとして改修。
+2026/08/02 20:38:00 src/sst/llm/organizer.py
+- LLMOrganizer._is_truncation_log() に不足していた self パラメータを追加し、TypeErrorでクラッシュするバグを修正。
