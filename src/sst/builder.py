@@ -261,6 +261,7 @@ class MetadataBuilder:
         final_genre = f"STEAM VGM, {joined_genres}"
 
         # --- 5. Comment/Grouping Logic ---
+        # TAGGING_RULE.md COMM spec: 既存の埋め込みコメント(先頭保持) + "親ゲーム名, 親ゲームストアURL, [タグ1/ タグ2/ ...]"
         target_name = steam_meta.parent_name or steam_meta.name
         target_appid = steam_meta.parent_app_id or app_id
         
