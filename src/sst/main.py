@@ -229,6 +229,23 @@ def main():
         
         render_summary_table(results, config.user_language, console)
 
+        if getattr(config, 'auto_audit_enabled', False):
+            import sys
+            import importlib.util
+            audit_script_path = Path(".agents/skills/sst-batch-inspector/scripts/generate_html_report.py")
+            if audit_script_path.exists():
+                console.print("\n[dim]信頼性チェックとレポート生成を実行中...[/dim]")
+                spec = importlib.util.spec_from_file_location("generate_html_report", audit_script_path)
+                if spec and spec.loader:
+                    gen_module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(gen_module)
+                    timestamp_full = datetime.now().strftime("%Y%m%d%H%M%S")
+                    total_report_path = Path(f"report/total_report_{timestamp_full}.html")
+                    success = gen_module.generate_total_html_report(Path(config.sst_db_path), total_report_path)
+                    if success:
+                        console.print(f"[bold green]📊 信頼性監査レポートが生成されました: {total_report_path}[/bold green]")
+                    else:
+                        console.print("[yellow]⚠️ 信頼性監査レポートの生成に失敗しました。[/yellow]")
     except Exception as e:
         logger.error(f"致命的なシステムエラー: {e}", exc_info=True)
         console.print(f"[bold red]致命的なエラー: {e}[/bold red]")

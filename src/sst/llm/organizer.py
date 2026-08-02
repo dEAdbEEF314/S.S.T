@@ -1,0 +1,524 @@
+import json
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List, Dict, Any, Optional, Tuple, Callable
+
+from ..config import DEFAULT_METADATA_SOURCE_PRIORITY
+from .client import LLMClient
+from .prompts import build_mapping_prompt, build_coherence_prompt, build_identity_prompt
+
+logger = logging.getLogger('sst.llm.organizer')
+
+ProgressCallback = Callable[[Dict[str, Any]], None]
+
+class LLMOrganizer:
+    def __init__(self, api_key: str, base_url: str, 
+                 model: str = 'gemini-1.5-pro', 
+                 rpm: int = 15, tpm: int = 10000000, rpd: int = 1500,
+                 user_language: str = 'ja',
+                 llm_backend: str = 'GEMINI',
+                 draft_model: Optional[str] = None,
+                 llm_cloud_max_tokens: int = 8192,
+                 ollama_num_ctx: int = 32768,
+                 ollama_num_predict: int = 4096,
+                 llm_vram_scheduling_enabled: bool = True,
+                 llm_request_parallelism_enabled: bool = True,
+                 llm_request_parallelism_max_workers: int = 4,
+                 request_timeout: int = 1800,
+                 coherence_threshold: int = 75,
+                 chunk_size_virtual: int = 20,
+                 chunk_size_metadata_ollama: int = 10,
+                 chunk_size_metadata_cloud: int = 30,
+                 chunk_adaptive: bool = True,
+                 chunk_output_tokens_per_track: int = 180,
+                 chunk_output_safety_ratio: float = 0.75,
+                 metadata_source_priority: str = DEFAULT_METADATA_SOURCE_PRIORITY):
+        self.user_language = user_language
+        self.llm_backend = llm_backend.upper()
+        self.llm_request_parallelism_enabled = llm_request_parallelism_enabled
+        self.llm_request_parallelism_max_workers = max(1, llm_request_parallelism_max_workers)
+        self.coherence_threshold = coherence_threshold
+        self.chunk_size_virtual = chunk_size_virtual
+        self.chunk_adaptive = chunk_adaptive
+        self.ollama_num_predict = ollama_num_predict
+        self.llm_cloud_max_tokens = llm_cloud_max_tokens
+        self.chunk_output_safety_ratio = max(0.2, min(0.95, chunk_output_safety_ratio))
+        self.chunk_output_tokens_per_track = max(1, chunk_output_tokens_per_track)
+        self.llm_limit_tpm = tpm
+        
+        self.client = LLMClient(
+            api_key=api_key, base_url=base_url, model=model, rpm=rpm, tpm=tpm, rpd=rpd,
+            llm_backend=llm_backend, draft_model=draft_model, llm_cloud_max_tokens=llm_cloud_max_tokens,
+            ollama_num_ctx=ollama_num_ctx, ollama_num_predict=ollama_num_predict,
+            llm_vram_scheduling_enabled=llm_vram_scheduling_enabled,
+            request_timeout=request_timeout, chunk_output_tokens_per_track=chunk_output_tokens_per_track
+        )
+
+    def set_vram_manager(self, vram_manager: Any):
+        self.client.set_vram_manager(vram_manager)
+
+    def check_availability(self) -> bool:
+        return self.client.check_availability()
+
+    def _resolve_mapping_references(
+        self,
+        start_idx: int,
+        full_ref_steam: List[Dict[str, Any]],
+        full_ref_fingerprint: List[Dict[str, Any]],
+        coherence_mappings: Optional[Dict[str, Any]],
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        ref_steam = full_ref_steam
+        ref_fingerprint = full_ref_fingerprint
+
+        if coherence_mappings:
+            c_key = f"Coherence_{(start_idx // 30) + 1}"
+            cmap = coherence_mappings.get(c_key, {})
+            if cmap:
+                s_start = cmap.get("steam_start_v_idx")
+                s_end = cmap.get("steam_end_v_idx")
+                if s_start is not None and s_end is not None:
+                    ref_steam = [t for t in full_ref_steam if s_start <= t.get("v_idx", 0) <= s_end]
+                else:
+                    ref_steam = []
+
+                f_start = cmap.get("fingerprint_start_v_idx")
+                f_end = cmap.get("fingerprint_end_v_idx")
+                if f_start is not None and f_end is not None:
+                    ref_fingerprint = [t for t in full_ref_fingerprint if f_start <= t.get("v_idx", 0) <= f_end]
+                else:
+                    ref_fingerprint = []
+
+        return ref_steam, ref_fingerprint
+
+    def _merge_track_instructions(
+        self,
+        track_res: Dict[str, Any],
+        local_tracks: List[Dict[str, Any]],
+        chunk: List[Dict[str, Any]],
+        global_res: Dict[str, Any],
+        ref_fingerprint: List[Dict[str, Any]],
+        full_ref_mbz_search: List[Dict[str, Any]],
+        v_mbz_search: Optional[Dict[str, Any]],
+        full_ref_steam: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        merged: Dict[str, Dict[str, Any]] = {}
+        if not track_res or "track_instructions" not in track_res:
+            return merged
+
+        for c_idx_str, data in track_res["track_instructions"].items():
+            try:
+                c_idx = int(c_idx_str)
+                if c_idx < 0 or c_idx >= len(local_tracks):
+                    continue
+                matching_track = local_tracks[c_idx]
+            except ValueError:
+                matching_track = next((t for t in chunk if t["title"] == c_idx_str), None)
+
+            if not matching_track:
+                continue
+
+            tid = f"{matching_track['local_key'][0]}_{matching_track['local_key'][1]}"
+
+            mv_idx = data.get("matched_v_idx")
+            if data.get("action") == "use_fingerprint" and mv_idx is not None:
+                if mv_idx < len(ref_fingerprint):
+                    ref_track = ref_fingerprint[mv_idx]
+                    data["mbz_track_index"] = ref_track.get("mbz_idx")
+                    if data.get("override_track") is None and ref_track.get("n") is not None:
+                        data["override_track"] = str(ref_track.get("n"))
+            elif data.get("action") == "use_mbz_search" and mv_idx is not None and v_mbz_search:
+                if mv_idx < len(full_ref_mbz_search):
+                    ref_track = full_ref_mbz_search[mv_idx]
+                    data["mbz_track_index"] = ref_track.get("mbz_idx")
+                    if data.get("override_track") is None and ref_track.get("n") is not None:
+                        data["override_track"] = str(ref_track.get("n"))
+            elif data.get("action") == "use_steam" and mv_idx is not None and full_ref_steam:
+                if mv_idx < len(full_ref_steam):
+                    ref_track = full_ref_steam[mv_idx]
+                    if data.get("override_track") is None and ref_track.get("n") is not None:
+                        data["override_track"] = str(ref_track.get("n"))
+
+            tags = global_res.get("global_tags", {})
+            if not isinstance(tags, dict): tags = {}
+            data.update({
+                "TPE2": tags.get("canonical_album_artist") or global_res.get("canonical_album_artist"),
+                "TCON": tags.get("canonical_genre") or global_res.get("canonical_genre"),
+                "TDRC": tags.get("canonical_year") or global_res.get("canonical_year"),
+                "TPUB": tags.get("canonical_label") or global_res.get("canonical_label"),
+                "TEXT": data.get("lyricist"),
+                "TCOM": data.get("composer"),
+                "TPE4": data.get("arranger"),
+                "identity_confidence": global_res["identity_confidence"],
+                "integrity_quality": global_res.get("integrity_quality", 0),
+                "archive_vs_review_ratio": global_res.get("archive_vs_review_ratio", {"archive": 0, "review": 100}),
+                "confidence_score": global_res.get("identity_confidence", 0),
+                "strategy": global_res.get("strategy", "UNKNOWN"),
+                "semantic_label": global_res.get("semantic_label", "Review")
+            })
+            merged[tid] = data
+
+        return merged
+
+    def _process_track_mapping_segment(
+        self,
+        app_id: int,
+        start_idx: int,
+        segment_tracks: List[Dict[str, Any]],
+        local_tracks: List[Dict[str, Any]],
+        global_res: Dict[str, Any],
+        s_mbz_search: Dict[str, Any],
+        v_mbz_search: Optional[Dict[str, Any]],
+        full_ref_steam: List[Dict[str, Any]],
+        full_ref_fingerprint: List[Dict[str, Any]],
+        full_ref_mbz_search: List[Dict[str, Any]],
+        coherence_mappings: Optional[Dict[str, Any]],
+        num_ctx: Optional[int],
+        base_chunk_size: int,
+        progress_callback: Optional[ProgressCallback],
+    ) -> Tuple[int, Dict[str, Dict[str, Any]], List[Dict[str, Any]]]:
+        segment_logs: List[Dict[str, Any]] = []
+        segment_instructions: Dict[str, Dict[str, Any]] = {}
+        current_base_chunk_size = max(1, base_chunk_size)
+        offset = 0
+
+        while offset < len(segment_tracks):
+            current_chunk_size = min(current_base_chunk_size, len(segment_tracks) - offset)
+            chunk_start = start_idx + offset
+            chunk = segment_tracks[offset:offset + current_chunk_size]
+            s_chunk = []
+            for idx, track in enumerate(chunk):
+                s_chunk.append({
+                    "chunk_idx": chunk_start + idx,
+                    "t": track.get("title"),
+                    "d": track.get("disc"),
+                    "dur": (track.get("duration_ms", 0) // 1000) if track.get("duration_ms") else None,
+                })
+
+            ref_steam, ref_fingerprint = self._resolve_mapping_references(
+                chunk_start,
+                full_ref_steam,
+                full_ref_fingerprint,
+                coherence_mappings,
+            )
+            mapping_prompt = build_mapping_prompt(
+                global_res,
+                s_mbz_search,
+                v_mbz_search,
+                ref_steam,
+                ref_fingerprint,
+                s_chunk,
+                chunk_start,
+                self.user_language,
+            )
+            track_res, track_log = self.client.call_llm(
+                app_id,
+                mapping_prompt,
+                num_ctx=num_ctx,
+                request_kind="track_mapping",
+                request_units=len(chunk),
+                progress_callback=progress_callback,
+            )
+
+            if not track_res and self._is_truncation_log(track_log) and current_chunk_size > 1:
+                shrink_to = max(1, current_chunk_size // 2)
+                logger.warning(
+                    f"[{app_id}] LLM response appears truncated for virtual chunk at index={chunk_start}. "
+                    f"Reducing chunk size {current_chunk_size} -> {shrink_to}."
+                )
+                current_base_chunk_size = shrink_to
+                continue
+
+            segment_logs.append(track_log)
+            segment_instructions.update(
+                self._merge_track_instructions(
+                    track_res,
+                    local_tracks,
+                    chunk,
+                    global_res,
+                    ref_fingerprint,
+                    full_ref_mbz_search,
+                    v_mbz_search,
+                    full_ref_steam,
+                )
+            )
+            offset += len(chunk)
+
+        return start_idx, segment_instructions, segment_logs
+
+    def _adaptive_chunk_size(self, base_chunk_size: int) -> int:
+        if not self.chunk_adaptive:
+            return max(1, base_chunk_size)
+
+        # 1. 出力限界(Max Tokens)の算出
+        if self.llm_backend == "OLLAMA":
+            budget_limit = self.ollama_num_predict
+        else:
+            budget_limit = self.llm_cloud_max_tokens
+            
+        safe_output_budget = int(budget_limit * self.chunk_output_safety_ratio)
+        by_output = max(1, safe_output_budget // self.chunk_output_tokens_per_track)
+        
+        if self.llm_backend == "OLLAMA":
+            # Ollamaの場合: VRAMはセマフォで管理されるため、出力限界までOne-shot化
+            return by_output
+        else:
+            # 外部APIの場合: 毎分トークン(TPM)の枯渇による429エラーを防止する
+            # 1曲あたりの総消費見積もり(入力150+出力180=330)、オーバーヘッド約1000
+            tpm_limit = self.llm_limit_tpm
+            safe_tpm_budget = int(tpm_limit * 0.8) # 80%の安全マージン
+            by_tpm = max(1, (safe_tpm_budget - 1000) // 330)
+            
+            # 出力破綻限界とTPM枯渇限界の、より厳しい方（小さい方）を最終的な限界チャンクとして採用
+            dynamic_limit = min(by_output, by_tpm)
+            return dynamic_limit
+
+    def _is_truncation_log(log_data: Dict[str, Any]) -> bool:
+        if not isinstance(log_data, dict):
+            return False
+        if log_data.get("error_code") == "response_truncated":
+            return True
+        err = str(log_data.get("error") or "").lower()
+        return "truncat" in err or "max_tokens" in err or "length" in err
+
+    def _simplify_v_album(self, v: Optional[Dict], sampled: bool = False) -> Optional[Dict]:
+        if not v: return None
+        v_copy = v.copy()
+        tracks = v_copy.get("tracks", [])
+        
+        # Remove heavy/redundant fields for LLM context, but KEEP credits for FINGERPRINT
+        simplified_tracks = []
+        for idx, t in enumerate(tracks):
+            if not isinstance(t, dict): 
+                simplified_tracks.append(t)
+                continue
+            st = {
+                "v_idx": idx, # Unique index in this virtual album
+                "d": t.get("disc"),
+                "n": t.get("track_num"),
+                "t": t.get("title")
+            }
+            # Keep credits if they exist (FINGERPRINT source)
+            if t.get("credits"):
+                st["c"] = t["credits"]
+            
+            # Keep internal mapping hint for fingerprint
+            if t.get("mbz_track_index") is not None:
+                st["mbz_idx"] = t["mbz_track_index"]
+                
+            simplified_tracks.append(st)
+        
+        if sampled and len(simplified_tracks) > 20:
+            v_copy["tracks"] = simplified_tracks[:15] + [{"note": f"... skipping {len(simplified_tracks)-20} tracks ..."}] + simplified_tracks[-5:]
+        else:
+            v_copy["tracks"] = simplified_tracks
+            
+        return v_copy
+
+    def _build_skeleton(self, tracks: list, step: int = 10) -> list:
+        if not tracks: return []
+        skel = []
+        for i in range(0, len(tracks), step):
+            skel.append({"v_idx": tracks[i].get("v_idx", 0), "title": tracks[i].get("title", "")})
+        if tracks[-1].get("v_idx", 0) != skel[-1]["v_idx"]:
+            skel.append({"v_idx": tracks[-1].get("v_idx", 0), "title": tracks[-1].get("title", "")})
+        return skel
+
+    def _map_coherences(
+        self,
+        app_id: str,
+        v_local: dict,
+        v_steam: dict,
+        v_fingerprint: dict,
+        num_ctx: int,
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> dict:
+        local_tracks = v_local.get("tracks", [])
+        coherences = {}
+        for i in range(0, len(local_tracks), 30):
+            c_tracks = local_tracks[i:i+30]
+            c_key = f"Coherence_{(i//30)+1}"
+            skel = []
+            if c_tracks:
+                skel.append({"v_idx": c_tracks[0].get("v_idx", 0), "title": c_tracks[0].get("title", "")})
+                if len(c_tracks) > 2:
+                    mid = len(c_tracks)//2
+                    skel.append({"v_idx": c_tracks[mid].get("v_idx", 0), "title": c_tracks[mid].get("title", "")})
+                if len(c_tracks) > 1:
+                    skel.append({"v_idx": c_tracks[-1].get("v_idx", 0), "title": c_tracks[-1].get("title", "")})
+            coherences[c_key] = skel
+        
+        steam_skel = self._build_skeleton(v_steam.get("tracks", []), 10)
+        fp_skel = self._build_skeleton(v_fingerprint.get("tracks", []), 10) if v_fingerprint else []
+
+        prompt = build_coherence_prompt(coherences, steam_skel, fp_skel)
+        res, log = self.client.call_llm(
+            app_id,
+            prompt,
+            num_ctx=num_ctx,
+            request_kind="coherence",
+            request_units=len(v_local.get("tracks", [])),
+            progress_callback=progress_callback,
+        )
+        if not res or "coherence_mappings" not in res:
+            return {}
+        return res["coherence_mappings"]
+
+    def consolidate_virtual_albums(
+        self,
+        app_id: int,
+        v_steam: Dict,
+        v_fingerprint: Optional[Dict],
+        v_mbz_search: Optional[Dict],
+        v_local: Dict,
+        execution_profile: Optional[Any] = None,
+        num_ctx: Optional[int] = None,
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+        """
+        Consolidates the four virtual albums into a final tag set using LLM.
+        """
+        full_logs = []
+        
+        # Simplify albums to save context
+        s_steam = self._simplify_v_album(v_steam, sampled=True)
+        s_fingerprint = self._simplify_v_album(v_fingerprint, sampled=True)
+        s_mbz_search = self._simplify_v_album(v_mbz_search, sampled=True)
+        s_local = self._simplify_v_album(v_local, sampled=True)
+        
+        resolved_num_ctx = num_ctx
+        if execution_profile:
+            resolved_num_ctx = execution_profile.num_ctx_cap
+
+        # Phase 1: Identity & Global Tags
+        identity_prompt = build_identity_prompt(s_steam, s_fingerprint, s_mbz_search, s_local, self.user_language)
+        local_tracks = v_local.get("tracks", [])
+        global_res, global_log = self.client.call_llm(
+            app_id,
+            identity_prompt,
+            num_ctx=resolved_num_ctx,
+            request_kind="identity",
+            request_units=len(local_tracks),
+            progress_callback=progress_callback,
+        )
+        full_logs.append(global_log)
+
+        if not global_res:
+             return None, {"phase1_res": None, "phase1_log": global_log}
+
+        # --- SYSTEM-LEVEL HEURISTICS (PRE-NORMALIZE) ---
+        # 1. STEAM-TRUST Path: If STEAM count matches LOCAL count exactly
+        # and LLM was conservative (conf < 95), trust the structural match.
+        steam_count = len(v_steam.get("tracks", []))
+        local_count = len(v_local.get("tracks", []))
+        current_conf = global_res.get("identity_confidence", 0)
+        
+        if steam_count > 0 and steam_count == local_count:
+            if current_conf < 100 and (not v_fingerprint or current_conf >= 80):
+                logger.info(f"[{app_id}] Applying STEAM-TRUST: Structural match detected ({steam_count} tracks). Boosting confidence to 100%.")
+                global_res["identity_confidence"] = 100
+                global_res["archive_vs_review_ratio"] = {"archive": 100, "review": 0}
+                global_res["strategy"] = "STEAM_BASED"
+                global_res["confidence_reason"] = f"SYSTEM: STEAM-TRUSTにより確信度を100%に引き上げました ({steam_count}トラックとの構造的一致)"
+
+        # Normalize confidence if in 0-1 range
+        conf = int(global_res.get("identity_confidence", 0))
+        if 0 < conf <= 1:
+            conf = int(conf * 100)
+            global_res["identity_confidence"] = conf
+        
+        # Ensure ratio is valid
+        ratio = global_res.get("archive_vs_review_ratio", {})
+        if not isinstance(ratio, dict) or not ratio:
+            global_res["archive_vs_review_ratio"] = {"archive": 0, "review": 100}
+        
+        if conf < 85:
+             return {}, {"phase1_res": global_res, "phase1_log": global_log}
+
+        # Phase 2: Track-by-Track Mapping with Chunking
+        final_instructions = {}
+
+        coherence_mappings = None
+        needs_coherence = len(local_tracks) >= getattr(self, "coherence_threshold", 75)
+        if execution_profile and execution_profile.force_coherence:
+            needs_coherence = True
+            
+        if needs_coherence:
+            logger.info(f"[{app_id}] Track count ({len(local_tracks)}) or execution profile dictates Map-Reduce (Coherence Routing)...")
+            coherence_mappings = self._map_coherences(app_id, v_local, v_steam, v_fingerprint, resolved_num_ctx, progress_callback=progress_callback)
+            if not coherence_mappings:
+                logger.error(f"[{app_id}] Coherence Map-Reduce failed or timed out. Falling back to review.")
+                global_res["identity_confidence"] = 0
+                global_res["confidence_reason"] = "SYSTEM: 巨大アルバムのCoherence分割（Map-Reduce）に失敗したため、安全のために手動レビューへフォールバックしました。"
+                return {}, {"phase1_res": global_res, "phase1_log": global_log}
+            logger.info(f"[{app_id}] Coherence Map-Reduce successful. Mappings: {list(coherence_mappings.keys())}")
+
+        # Prepare full simplified reference tracks for Phase 2 (not sampled)
+        full_ref_steam = self._simplify_v_album(v_steam, sampled=False).get("tracks", [])
+        full_ref_fingerprint = self._simplify_v_album(v_fingerprint, sampled=False).get("tracks", []) if v_fingerprint else []
+        full_ref_mbz_search = self._simplify_v_album(v_mbz_search, sampled=False).get("tracks", []) if v_mbz_search else []
+
+        dynamic_chunk_size = max(1, self._adaptive_chunk_size(self.chunk_size_virtual))
+        segments = [
+            (start_idx, local_tracks[start_idx:start_idx + dynamic_chunk_size])
+            for start_idx in range(0, len(local_tracks), dynamic_chunk_size)
+        ]
+
+        should_parallelize = self.llm_backend == "OLLAMA" and self.llm_request_parallelism_enabled and len(segments) > 1
+        segment_results: Dict[int, Tuple[Dict[str, Dict[str, Any]], List[Dict[str, Any]]]] = {}
+
+        if should_parallelize:
+            worker_count = min(self.llm_request_parallelism_max_workers, len(segments))
+            if execution_profile:
+                worker_count = min(execution_profile.phase2_parallel_workers, len(segments))
+            worker_count = max(1, worker_count)
+            logger.info(f"[{app_id}] Phase 2 mapping chunk を並列実行します。segments={len(segments)} workers={worker_count}")
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                future_map = {
+                    executor.submit(
+                        self._process_track_mapping_segment,
+                        app_id,
+                        start_idx,
+                        segment_tracks,
+                        local_tracks,
+                        global_res,
+                        s_mbz_search,
+                        v_mbz_search,
+                        full_ref_steam,
+                        full_ref_fingerprint,
+                        full_ref_mbz_search,
+                        coherence_mappings,
+                        resolved_num_ctx,
+                        dynamic_chunk_size,
+                        progress_callback,
+                    ): start_idx
+                    for start_idx, segment_tracks in segments
+                }
+                for future in as_completed(future_map):
+                    start_idx, instructions, segment_logs = future.result()
+                    segment_results[start_idx] = (instructions, segment_logs)
+        else:
+            for start_idx, segment_tracks in segments:
+                start_idx, instructions, segment_logs = self._process_track_mapping_segment(
+                    app_id,
+                    start_idx,
+                    segment_tracks,
+                    local_tracks,
+                    global_res,
+                    s_mbz_search,
+                    v_mbz_search,
+                    full_ref_steam,
+                    full_ref_fingerprint,
+                    full_ref_mbz_search,
+                    coherence_mappings,
+                    resolved_num_ctx,
+                    dynamic_chunk_size,
+                    progress_callback,
+                )
+                segment_results[start_idx] = (instructions, segment_logs)
+
+        for start_idx in sorted(segment_results):
+            instructions, segment_logs = segment_results[start_idx]
+            final_instructions.update(instructions)
+            full_logs.extend(segment_logs)
+
+        return final_instructions, {"phase1_res": global_res, "logs": full_logs}

@@ -9,6 +9,8 @@ from pathlib import Path
 from .utils import ensure_path
 from .steam_vdf import SteamBinaryVDF, SteamLibraryDiscovery
 from .db import DatabaseManager
+from .scanner_cache import ScannerCacheManager
+from .steam_web_api import SteamWebClient
 
 logger = logging.getLogger(__name__)
 
@@ -19,13 +21,9 @@ class SteamScanner:
     def __init__(self, install_path: str, db: DatabaseManager, bridge_url: str, bridge_api_key: Optional[str] = None, api_key: Optional[str] = None, override_library_path: Optional[str] = None, cache_path: str = "data/scout_cache.json", language: str = "japanese"):
         self.install_path = ensure_path(install_path)
         self.db = db
-        self.bridge_url = bridge_url if bridge_url.endswith("/") else bridge_url + "/"
-        self.bridge_api_key = bridge_api_key
-        self.api_key = api_key
-        self.cache_path = Path(cache_path)
-        self.language = language
-        self.cache = self._load_cache()
-        self.tag_map = self._load_tag_map()
+        
+        self.cache_manager = ScannerCacheManager(cache_path)
+        self.web_client = SteamWebClient(db, bridge_url, bridge_api_key, api_key, language)
         
         # 1. Discover all libraries
         self.library_paths = self._discover_all_libraries(override_library_path)
@@ -39,32 +37,8 @@ class SteamScanner:
             self.appinfo_dict = {}
             logger.warning(f"appinfo.vdf が {appcache_path} に見つかりません。基本スキャンにフォールバックします。")
 
-    def _load_cache(self) -> dict:
-        if self.cache_path.exists():
-            try:
-                with open(self.cache_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception as e:
-                logger.error(f"キャッシュの読み込みに失敗しました: {e}")
-        return {"enriched": {}}
 
-    def _save_cache(self):
-        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            with open(self.cache_path, "w", encoding="utf-8") as f:
-                json.dump(self.cache, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            logger.error(f"キャッシュの保存に失敗しました: {e}")
 
-    def _load_tag_map(self) -> dict:
-        tag_file = Path("data/steam_tags.json")
-        if tag_file.exists():
-            try:
-                with open(tag_file, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception as e:
-                logger.error(f"タグマップの読み込みに失敗しました: {e}")
-        return {}
 
     def _discover_all_libraries(self, override_path: Optional[str]) -> List[Path]:
         libs = SteamLibraryDiscovery.discover(self.install_path)
@@ -162,9 +136,8 @@ class SteamScanner:
 
     def _get_local_metadata(self, app_id: int) -> dict:
         """Extracts metadata from local appinfo and enriches with web data if missing."""
-        data = self.appinfo_dict.get(app_id)
-        if not data: return {}
-
+        data = self.appinfo_dict.get(app_id, {})
+        
         common = data.get("common", {})
         extended = data.get("extended", {})
         
@@ -186,7 +159,7 @@ class SteamScanner:
 
         # 1. Try to get basic enriched data from cache
         cache_key = str(app_id)
-        enriched = self.cache.get("enriched", {}).get(cache_key, {})
+        enriched = self.cache_manager.cache.get("enriched", {}).get(cache_key, {})
         metadata.update(enriched)
 
         # 2. Extract tags from local appinfo (Topic: Local Tags)
@@ -194,17 +167,17 @@ class SteamScanner:
             tag_ids = common["store_tags"]
             if isinstance(tag_ids, dict):
                 # store_tags in appinfo is like {'0': 492, '1': 1621...}
-                metadata["tags"] = [self.tag_map.get(str(tid)) for tid in tag_ids.values() if self.tag_map.get(str(tid))]
+                metadata["tags"] = [self.cache_manager.get_tag(str(tid)) for tid in tag_ids.values() if self.cache_manager.get_tag(str(tid))]
 
         # 3. Ensure Tracklist/Credits/PICS data are fetched (Phase 1)
         if not metadata.get("store_tracklist"):
-            web_data = self._fetch_web_enrichment(app_id)
+            web_data = self.web_client.fetch_web_enrichment(app_id)
             if web_data:
                 metadata.update(web_data)
                 # Update cache too for basic fields
-                if "enriched" not in self.cache: self.cache["enriched"] = {}
-                self.cache["enriched"][cache_key] = web_data
-                self._save_cache()
+                
+                self.cache_manager.set_enriched(cache_key, web_data)
+
 
         # Fallback to local genre if web failed
         if not metadata.get("genres"):
@@ -231,26 +204,26 @@ class SteamScanner:
             if "store_tags" in p_appinfo:
                 p_tag_ids = p_appinfo["store_tags"]
                 if isinstance(p_tag_ids, dict):
-                    metadata["parent_tags"] = [self.tag_map.get(str(tid)) for tid in p_tag_ids.values() if self.tag_map.get(str(tid))]
+                    metadata["parent_tags"] = [self.cache_manager.get_tag(str(tid)) for tid in p_tag_ids.values() if self.cache_manager.get_tag(str(tid))]
 
-            if p_cache_key in self.cache.get("enriched", {}):
-                p_enriched = self.cache["enriched"][p_cache_key]
+            if p_cache_key in self.cache_manager.cache.get("enriched", {}):
+                p_enriched = self.cache_manager.cache["enriched"][p_cache_key]
                 metadata["parent_name"] = p_enriched.get("name")
                 if not metadata.get("parent_tags"):
                     metadata["parent_tags"] = p_enriched.get("tags", [])
                 metadata["parent_genres"] = p_enriched.get("genres", [])
                 metadata["parent_genre"] = metadata["parent_genres"][0] if metadata["parent_genres"] else None
             else:
-                p_web = self._fetch_web_enrichment(pid)
+                p_web = self.web_client.fetch_web_enrichment(pid)
                 if p_web:
                     metadata["parent_name"] = p_web.get("name")
                     if not metadata.get("parent_tags"):
                         metadata["parent_tags"] = p_web.get("tags", [])
                     metadata["parent_genres"] = p_web.get("genres", [])
                     metadata["parent_genre"] = metadata["parent_genres"][0] if metadata["parent_genres"] else None
-                    if "enriched" not in self.cache: self.cache["enriched"] = {}
-                    self.cache["enriched"][p_cache_key] = p_web
-                    self._save_cache()
+                    
+                    self.cache_manager.set_enriched(p_cache_key, p_web)
+                    
                 else:
                     # Local fallback for parent
                     if not metadata.get("parent_name"):
@@ -258,145 +231,6 @@ class SteamScanner:
 
         return metadata
 
-    def _fetch_web_enrichment(self, app_id: int) -> Dict[str, Any]:
-        """Fetches metadata from 3 tiers of APIs (Official Store, PICS Bridge, Official Tags) with DB persistence."""
-        # 1. Check Database first
-        db_data = self.db.get_store_data(app_id)
-        
-        result = {"genres": [], "tags": [], "name": None, "store_tracklist": [], "store_credits": "", "label": None, "release_date": None}
-        
-        if db_data:
-            result["store_tracklist"] = db_data.get("tracklist", [])
-            result["store_credits"] = db_data.get("credits", "")
-            logger.debug(f"{app_id} のストアデータをDBから読み込みました")
-
-        try:
-            # Only fetch if missing or incomplete
-            if not result["store_tracklist"]:
-                # Mandatory Throttle (2s + jitter)
-                import random
-                time.sleep(2.0 + random.random())
-                
-                session = requests.Session()
-                common_headers = {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': 'application/json, text/plain, */*'
-                }
-
-                # --- Tier 1: Official Store API (Localized name/genres) ---
-                store_url = f"https://store.steampowered.com/api/appdetails?appids={app_id}&l={self.language}"
-                app_data = None
-                for attempt in range(3):
-                    try:
-                        sr = session.get(store_url, headers=common_headers, timeout=15)
-                        if sr.status_code == 200:
-                            s_json = sr.json()
-                            if str(app_id) in s_json and s_json[str(app_id)]["success"]:
-                                app_data = s_json[str(app_id)]["data"]
-                                break
-                        logger.debug(f"Tier 1 の試行 {attempt+1} が失敗しました (ステータス: {sr.status_code})")
-                    except Exception as e:
-                        logger.debug(f"Tier 1 の試行 {attempt+1} エラー: {e}")
-                    time.sleep(2 ** (attempt + 1))  # 2s, 4s, 8s exponential backoff
-                
-                if app_data:
-                    result["name"] = app_data.get("name")
-                    result["genres"] = [g.get("description") for g in app_data.get("genres", []) if g.get("description")]
-                    result["release_date"] = app_data.get("release_date", {}).get("date")
-
-                # --- Tier 2: PICS Data via (Local/Remote) Bridge API ---
-                pics_url = f"{self.bridge_url}{app_id}"
-                
-                pics_headers = common_headers.copy()
-                if self.bridge_api_key:
-                    if self.bridge_api_key.startswith("Bearer "):
-                        pics_headers["Authorization"] = self.bridge_api_key
-                    else:
-                        pics_headers["X-API-Key"] = self.bridge_api_key
-
-                # Retry logic for Tier 2 (Critical for structured data)
-                for attempt in range(3):
-                    try:
-                        pr = session.get(pics_url, headers=pics_headers, timeout=30)
-                        if pr.status_code == 200:
-                            p_json = pr.json()
-                            app_pics = p_json.get("data", {}).get(str(app_id), {})
-                            if app_pics: break # Success
-                        logger.debug(f"Tier 2 の試行 {attempt+1} が失敗しました (ステータス: {pr.status_code})")
-                    except Exception as e:
-                        logger.debug(f"Tier 2 の試行 {attempt+1} エラー: {e}")
-                    time.sleep(2 ** (attempt + 1))
-                else:
-                    app_pics = {} # All retries failed
-
-                album_meta = app_pics.get("albummetadata", {})
-                
-                # Maximum Information: Change Number and Raw PICS
-                pics_change_num = app_pics.get("_change_number")
-                
-                pics_tracks = album_meta.get("tracks", {})
-                if isinstance(pics_tracks, dict):
-                    try:
-                        sorted_keys = sorted(pics_tracks.keys(), key=lambda x: int(x))
-                        for k in sorted_keys:
-                            t = pics_tracks[k]
-                            result["store_tracklist"].append({
-                                "disc": int(t.get("discnumber", 1)),
-                                "number": str(t.get("tracknumber", "")),
-                                "title": t.get("originalname", ""),
-                                "duration_s": t.get("s", "0")
-                            })
-                    except Exception as e:
-                        logger.debug(f"PICS トラックのソート中にエラーが発生しました: {e}")
-                
-                meta_section = album_meta.get("metadata", {})
-                credits_parts = []
-                target_lang = {"ja": "japanese", "en": "english"}.get(self.language, "english")
-                
-                for role in ["artist", "composer", "label", "othercredits"]:
-                    role_data = meta_section.get(role, {})
-                    val = role_data.get(target_lang) or role_data.get("english")
-                    if val:
-                        if role == "label": result["label"] = val
-                        else: credits_parts.append(f"{role.capitalize()}: {val}")
-                
-                if credits_parts:
-                    result["store_credits"] = "\n".join(credits_parts)
-
-                # --- Tier 3: Official Tags via IStoreBrowseService (If API key exists) ---
-                if self.api_key:
-                    try:
-                        tag_url = "https://api.steampowered.com/IStoreBrowseService/GetItems/v1/"
-                        params = {
-                            "key": self.api_key,
-                            "ids": app_id,
-                            "context": json.dumps({"language": self.language, "country_code": "JP"}),
-                            "data_request": json.dumps({"include_tag_count": 20})
-                        }
-                        tr = session.get(tag_url, params=params, timeout=10)
-                        if tr.status_code == 200:
-                            t_json = tr.json()
-                            store_items = t_json.get("response", {}).get("store_items", [])
-                            if store_items:
-                                tags_data = store_items[0].get("tags", [])
-                                result["tags"] = [t.get("name") for t in tags_data if t.get("name")]
-                    except Exception as te:
-                        logger.debug(f"公式タグの取得に失敗しました: {te}")
-
-                # 4. Save to Database (Extended Storage)
-                if result["store_tracklist"]:
-                    self.db.save_store_data(
-                        app_id, 
-                        result["store_tracklist"], 
-                        result["store_credits"], 
-                        change_number=locals().get("pics_change_num"), 
-                        raw_pics=locals().get("app_pics")
-                    )
-            
-            return result
-        except Exception as e:
-            logger.debug(f"{app_id} のウェブエンリッチメントに失敗しました: {e}")
-            return None
 
     def _parse_acf(self, path: Path) -> Optional[dict]:
         try:

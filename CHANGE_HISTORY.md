@@ -615,5 +615,17 @@ docs/LOGIC.md, docs/TAGGING_RULE.md: VGMdb連携およびバイリンガル仕�
 - 2026/07/29 17:15:00: `.agents/skills/sst-post-batch-investigator/SKILL.md`, `.agents/skills/sst-post-batch-investigator/scripts/generate_post_batch_report.py`: バッチ実行後のDB・ログ自動走査、不自然なArchive/Review結果の検出、改善ロードマップおよびダークモードHTMLレポート出力を行うワークスペース用スキル `sst-post-batch-investigator` を新規作成。
 - 2026/07/29 22:07:00: `src/sst/llm.py`, `src/sst/validator.py`, `src/sst/processor_tracks.py`, `src/sst/builder.py`, `tests/test_improvements.py`: バッチ処理改善案の施策1・2・3を実装・テスト完了。1) Phase 1 Confidence 閾値を85%に緩和し、Validator の Archive 判定条件を Confidence >= 90% / Quality >= 85% へ最適化。2) 音源コピー時の CIFS/SMB 一時的I/Oエラーに対する指数バックオフ付きリトライ (`copy_with_retry`) を導入。3) ID3タグ生成時の全テキストフィールドへの `html.unescape()` 自動アンエスケープ処理を統合。テストケースを作成し全パスを確認。
 - 2026/07/29 22:27:00: `src/sst/builder.py`, `tests/test_improvements.py`: 施策5について「Steam公式データを絶対基準とし、合致・クリーンアップできるもののみArchive処理し、例外や不一致は安全にReviewへ送る」原則に基づき整理・確認。テストケース (`test_clean_title_logic_strict_matching`) を追加し全テスト23件パスを確認。
+- 2026/07/31 21:10:00: `src/sst/llm.py`, `src/sst/builder.py`: LLM応答の途切り（`done_reason=length`）による29件のReviewフォールバックを解消するため、`_estimate_expected_output_tokens` の生成トークン見積もりを引き上げ（最低1024〜2048トークン保障）。さらに `Track#0` および重複エラー（6件）を解消するため、`res_track` の最終フォールバックに `matched_v_idx + 1` およびインデックス順補正ロジックを統合。
+- 2026/08/02 03:33:00: `src/sst/config.py`, `src/sst/main.py`, `.agents/skills/sst-batch-inspector/scripts/generate_html_report.py`: バッチ処理完了後に、全DB走査による信頼性監査とダークモードHTMLレポート（`report/total_report_YYYYMMDDHHmmSS.html`）を自動生成する機能（`auto_audit_enabled`）を追加。
+- 2026/08/02 04:52:16: `src/sst/builder.py`: Steam公式データのトラック番号が全て0であったり異常な重複をしている場合を「論理的欠落」として判定し、無効な番号やLLMのoverride_trackによるエラー（Track#0や重複）を防いでMBZやローカルインデックスの連番へ安全にフォールバックさせるロジックを追加（三権分立ロジックの矛盾解消と自動化効率向上）。
 
+- 2026/08/02 05:08:52 src/sst/llm.py
+  - 肥大化していたため、処理層(organizer.py)、プロンプト定義(prompts.py)、API通信層(client.py)へ分割し、モジュール化しました。
 
+- 2026/08/02 05:19:33 src/sst/scanner.py, src/sst/processor.py
+  - scanner.py から Web API とキャッシュ処理をそれぞれ steam_web_api.py と scanner_cache.py に分離しました。
+  - processor.py から 仮想アルバム生成フローとアーリーリターンのパイプライン処理をそれぞれ virtual_album_flow.py と processor_pipeline.py に分離しました。
+
+2026/08/02 05:59:25 src/sst/scanner.py, src/sst/llm/organizer.py: scanner.pyでのcache属性アクセスエラーを修正 (self.cache_manager.cacheへのアクセスに変更)。および organizer.py での build_mapping_prompt の必須引数 user_language 指定漏れエラーを修正。
+
+2026/08/02 18:52:23 src/sst/llm/client.py, src/sst/llm/prompts.py, docs/error_handling.md, .env.example: Unknown Review Reason（Truncationエラー）多発の根本原因を解消。1) client.py でVRAMマネージャーのPhase 1出力トークン予測を固定の2048からLLM_OLLAMA_NUM_PREDICT（.env）に連動するよう修正。2) prompts.py で推論理由を50文字以内に収めるよう指示を追加しトークン節約。3) 関連ドキュメントおよび環境変数例を更新。

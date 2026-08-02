@@ -1,0 +1,214 @@
+{
+  "summary": {
+    "FINGERPRINTおよびMBZ_SEARCHが利用不可であり、STEAMとLOCALのトラックリスト構造に不一致があるため。": 1,
+    "response truncated by backend (done_reason=length)": 37,
+    "SYSTEM: 巨大アルバムのCoherence分割（Map-Reduce）に失敗したため、安全のために手動レビューへフォールバックしました。": 3
+  },
+  "details": [
+    {
+      "app_id": 12345,
+      "conf": "N/A",
+      "reason": "FINGERPRINTおよびMBZ_SEARCHが利用不可であり、STEAMとLOCALのトラックリスト構造に不一致があるため。"
+    },
+    {
+      "app_id": 1113040,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1167720,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1206340,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1297600,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1299740,
+      "conf": "N/A",
+      "reason": "SYSTEM: 巨大アルバムのCoherence分割（Map-Reduce）に失敗したため、安全のために手動レビューへフォールバックしました。"
+    },
+    {
+      "app_id": 1376240,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1386613,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1394870,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1442060,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1457010,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1480200,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1553350,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1572010,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1586440,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1586580,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1593020,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1611170,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1611180,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1611200,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1611240,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1634580,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1657310,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1663830,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1764110,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1791780,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1816580,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1832390,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1832400,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1832410,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1832490,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1843010,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 1971340,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 2054540,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 2125650,
+      "conf": "N/A",
+      "reason": "SYSTEM: 巨大アルバムのCoherence分割（Map-Reduce）に失敗したため、安全のために手動レビューへフォールバックしました。"
+    },
+    {
+      "app_id": 2198580,
+      "conf": "N/A",
+      "reason": "SYSTEM: 巨大アルバムのCoherence分割（Map-Reduce）に失敗したため、安全のために手動レビューへフォールバックしました。"
+    },
+    {
+      "app_id": 2240340,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 2260070,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 2681830,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 3107200,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    },
+    {
+      "app_id": 3162910,
+      "conf": "N/A",
+      "reason": "response truncated by backend (done_reason=length)"
+    }
+  ]
+}
