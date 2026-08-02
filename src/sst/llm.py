@@ -761,7 +761,6 @@ RULES:
 
         max_retries = 3
         retry_delay = 5
-        reserved_vram = 0
         effective_num_ctx = num_ctx or self.ollama_num_ctx
         request_started = time.monotonic()
 
@@ -772,60 +771,6 @@ RULES:
             request_kind=request_kind,
             request_units=request_units,
         )
-
-        if self.llm_backend == "OLLAMA" and self.vram_manager and self.llm_vram_scheduling_enabled:
-            self._notify_progress(
-                progress_callback,
-                phase="llm_waiting_vram",
-                app_id=app_id,
-                request_kind=request_kind,
-                request_units=request_units,
-            )
-            request_estimate = self.vram_manager.estimate_request_vram(
-                prompt=prompt,
-                expected_output_tokens=self._estimate_expected_output_tokens(request_kind, request_units),
-                kind=request_kind,
-                max_num_ctx=effective_num_ctx,
-            )
-            effective_num_ctx = request_estimate.resolved_num_ctx
-            wait_started = time.monotonic()
-            reserved_vram = self.vram_manager.acquire(request_estimate.required_bytes)
-            log_entry["vram"] = {
-                "prompt_tokens": request_estimate.prompt_tokens,
-                "expected_output_tokens": request_estimate.expected_output_tokens,
-                "total_tokens": request_estimate.total_tokens,
-                "required_bytes": request_estimate.required_bytes,
-                "reserved_bytes": reserved_vram,
-                "resolved_num_ctx": request_estimate.resolved_num_ctx,
-                "clipped_to_budget": request_estimate.clipped_to_budget,
-                "wait_seconds": round(time.monotonic() - wait_started, 3),
-            }
-            self._notify_progress(
-                progress_callback,
-                phase="llm_vram_acquired",
-                app_id=app_id,
-                request_kind=request_kind,
-                request_units=request_units,
-                reserved_mb=round(reserved_vram / (1024 ** 2), 1),
-                prompt_tokens=request_estimate.prompt_tokens,
-                num_ctx=request_estimate.resolved_num_ctx,
-            )
-            logger.info(
-                "LLM_REQUEST_VRAM %s",
-                json.dumps({
-                    "app_id": app_id,
-                    "request_kind": request_kind,
-                    "request_units": request_units,
-                    "prompt_tokens": request_estimate.prompt_tokens,
-                    "expected_output_tokens": request_estimate.expected_output_tokens,
-                    "total_tokens": request_estimate.total_tokens,
-                    "required_bytes": request_estimate.required_bytes,
-                    "reserved_bytes": reserved_vram,
-                    "resolved_num_ctx": request_estimate.resolved_num_ctx,
-                    "clipped_to_budget": request_estimate.clipped_to_budget,
-                    "wait_seconds": log_entry["vram"]["wait_seconds"],
-                }, ensure_ascii=False),
-            )
 
         try:
             if self.llm_backend == "OLLAMA":
@@ -925,7 +870,8 @@ RULES:
                                         "prompt_eval_count": log_entry.get("meta", {}).get("prompt_eval_count"),
                                         "eval_count": log_entry.get("meta", {}).get("eval_count"),
                                         "done_reason": log_entry.get("meta", {}).get("done_reason"),
-                                        "reserved_bytes": reserved_vram,
+                                        "total_tokens": 0,
+                                        "wait_seconds": 0,
                                     }, ensure_ascii=False),
                                 )
                                 self._notify_progress(
@@ -984,7 +930,6 @@ RULES:
                             "request_units": request_units,
                             "duration_seconds": round(time.monotonic() - request_started, 3),
                             "num_ctx": effective_num_ctx,
-                            "reserved_bytes": reserved_vram,
                             "error": str(e),
                         }, ensure_ascii=False),
                     )
@@ -999,23 +944,4 @@ RULES:
                     return None, log_entry
             return None, log_entry
         finally:
-            if self.llm_backend == "OLLAMA" and self.vram_manager and reserved_vram:
-                self.vram_manager.release(reserved_vram)
-                logger.info(
-                    "LLM_REQUEST_RELEASE %s",
-                    json.dumps({
-                        "app_id": app_id,
-                        "request_kind": request_kind,
-                        "request_units": request_units,
-                        "released_bytes": reserved_vram,
-                        "held_seconds": round(time.monotonic() - request_started, 3),
-                    }, ensure_ascii=False),
-                )
-                self._notify_progress(
-                    progress_callback,
-                    phase="llm_vram_released",
-                    app_id=app_id,
-                    request_kind=request_kind,
-                    request_units=request_units,
-                    released_mb=round(reserved_vram / (1024 ** 2), 1),
-                )
+            pass
