@@ -59,8 +59,7 @@ class Config(BaseSettings):
     max_parallel_albums: int = 2
     max_encoding_tasks: int = 4
     fingerprint_all: bool = True
-    
-
+    auto_audit_enabled: bool = True
     
     # MusicBrainz Scoring Settings
     score_mbz_direct_steam_link: int = 500

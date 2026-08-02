@@ -22,6 +22,8 @@ from .validator import ResultValidator
 from .report_generator import ReportGenerator
 from .processor_support import fetch_album_artwork, send_notifications, resolve_duplicate_mappings
 from .processor_tracks import process_single_track
+from .virtual_album_flow import build_and_consolidate_virtual_albums
+from .processor_pipeline import handle_early_review_return
 
 from dataclasses import dataclass
 
@@ -161,56 +163,8 @@ class LocalProcessor:
             execution_profile = self._build_album_execution_profile(track_count)
             logger.info(f"[{app_id}] 実行プロファイル: {execution_profile.tier_name} (Tracks: {track_count}, num_ctx: {execution_profile.num_ctx_cap}, workers: {execution_profile.phase2_parallel_workers})")
 
-            # --- NEW EXPERIMENTAL VIRTUAL ALBUM FLOW ---
-            logger.info(f"[{app_id}] アイデンティティ統合のために仮想アルバムを構築しています...")
-            
-            # 1. STEAM Virtual Album
-            v_steam = self.virtual_album_builder.build_steam_album(steam_meta)
-            
-            # 2. LOCAL Virtual Album
-            v_local = self.virtual_album_builder.build_local_album(track_groups)
-            
-            # 3. FINGERPRINT Virtual Album (Majority Vote)
-            v_fingerprint = self.virtual_album_builder.build_fingerprint_album(
-                track_groups, on_track_complete=on_track_complete
-            )
-            _diag("VIRTUAL_ALBUM_FINGERPRINT_BUILT", has_fingerprint=bool(v_fingerprint))
-            
-            # 4. MBZ_SEARCH Virtual Album (Semantic Truth)
-            # Create a simple local_baseline for scoring
-            local_baseline = {
-                "publisher": steam_meta.publisher,
-                "year": steam_meta.release_date[:4] if steam_meta.release_date else None,
-                "tracks": [(t.get("title", ""), t.get("duration_ms", 0)) for t in v_local["tracks"]]
-            }
-            v_mbz_search = self.virtual_album_builder.build_mbz_search_album(
-                app_id, steam_meta.name, len(steam_meta.store_tracklist), steam_meta, local_baseline
-            )
-            _diag("VIRTUAL_ALBUM_MBZ_SEARCH_BUILT", has_mbz_search=bool(v_mbz_search))
-            
-            # Unification logic
-            if v_fingerprint and v_mbz_search and v_fingerprint.get("mbid") == v_mbz_search.get("mbid"):
-                logger.info(f"[{app_id}] FINGERPRINT and MBZ_SEARCH point to the same MBID. Creating VERIFIED Virtual Album.")
-                v_fingerprint["source"] = "VERIFIED_MBZ"
-                v_fingerprint["evidence"] = v_mbz_search.get("evidence", []) + ["AUDIO_TEXT_PERFECT_MATCH"]
-                v_mbz_search = None # Drop the duplicate
-            
-            # --- LLM Consolidation via Virtual Albums ---
-            mbz_log = {"status": "virtual_album_flow"} # Initialize for log bundle
-            final_metadata, llm_log = self.llm.consolidate_virtual_albums(
-                app_id,
-                v_steam,
-                v_fingerprint,
-                v_mbz_search,
-                v_local,
-                execution_profile=execution_profile,
-                progress_callback=llm_progress_callback,
-            )
-            _diag(
-                "LLM_CONSOLIDATED",
-                final_metadata_type=type(final_metadata).__name__,
-                phase1_has_result=isinstance(llm_log.get("phase1_res"), dict),
-                phase1_has_log=isinstance(llm_log.get("phase1_log"), dict),
+            final_metadata, llm_log, v_steam, v_local, v_fingerprint, v_mbz_search, mbz_log = build_and_consolidate_virtual_albums(
+                app_id, steam_meta, track_groups, self.virtual_album_builder, self.llm, execution_profile, _diag, on_track_complete, llm_progress_callback
             )
             
             # --- SMART DUPLICATE RESOLUTION (Post-LLM Cleanup) ---
@@ -254,69 +208,11 @@ class LocalProcessor:
             
             # --- END OF NEW FLOW ---
             if not final_metadata:
-                p1_log = llm_log.get("phase1_log", {})
-                score = p1_res.get("identity_confidence", 0) if isinstance(p1_res, dict) else 0
-                error_msg = p1_res.get("confidence_reason") if isinstance(p1_res, dict) else (p1_log.get("error") or "Manual Review Required")
-                if error_msg is None:
-                    error_msg = "No reason provided by LLM."
-                diagnostics["review_cause_code"] = "EARLY_REVIEW_RETURN"
-                diagnostics["upstream_cause_code"] = "LLM_RESPONSE_MISSING" if final_metadata is None else "LOW_CONFIDENCE_GATE"
-                _diag(
-                    "EARLY_REVIEW_RETURN",
-                    review_cause_code=diagnostics["review_cause_code"],
-                    upstream_cause_code=diagnostics["upstream_cause_code"],
-                    identity_confidence=score,
-                    error=error_msg,
+                return handle_early_review_return(
+                    app_id, steam_meta, track_count, llm_log, v_steam, v_local, v_fingerprint, v_mbz_search,
+                    diagnostics, _diag, self._get_localized_now, self._send_notifications,
+                    self.working_dir, self.config.sst_output_dir, self.db, self.config
                 )
-                
-                final_msg = f"LLM Failure: {error_msg}" if final_metadata is None else f"Low Confidence ({diagnostics['upstream_cause_code']}): {error_msg}"
-                
-                summary_meta = {
-                    "app_id": app_id,
-                    "album_name": steam_meta.name,
-                    "status": "review",
-                    "confidence_score": score,
-                    "confidence_reason": error_msg,
-                    "processed_at": self._get_localized_now().isoformat(),
-                    "tracks": [],
-                    "steam_info": steam_meta.model_dump(),
-                    "diagnostics": diagnostics,
-                }
-                
-                mbz_candidates = []
-                discord_msg = self._send_notifications(app_id, steam_meta.name, "review", final_msg, score, error_msg, llm_log, False, track_count, mbz_candidates)
-                
-                virtual_albums_bundle = {
-                    "STEAM": v_steam if 'v_steam' in locals() else None,
-                    "FINGERPRINT": v_fingerprint if 'v_fingerprint' in locals() else None,
-                    "MBZ_SEARCH": v_mbz_search if 'v_mbz_search' in locals() else None,
-                    "LOCAL": v_local if 'v_local' in locals() else None
-                }
-                
-                localized_now_str = self._get_localized_now().strftime('%Y-%m-%d %H:%M:%S')
-                log_bundle = {
-                    "metadata.json": summary_meta,
-                    "llm_log.json": llm_log,
-                    "AUDIT_REPORT.html": ReportGenerator.generate_html_report(app_id, steam_meta, "review", final_msg, score, error_msg, [], llm_log, mbz_candidates, localized_now_str, self.config.metadata_source_priority, quality=0, virtual_albums=virtual_albums_bundle)
-                }
-                if discord_msg:
-                    log_bundle["DISCORD_MESSAGE.md"] = discord_msg
-                if p1_log.get("human_prompt"): log_bundle["LLM_PROMPT.md"] = p1_log["human_prompt"]
-                elif p1_log.get("prompt"): log_bundle["LLM_PROMPT.md"] = p1_log["prompt"]
-                
-                run_id = datetime.now().strftime('%H%M%S')
-                temp_output = self.working_dir / f"early_review_{app_id}_{run_id}"
-                temp_output.mkdir(parents=True, exist_ok=True)
-                
-                diagnostics["packager_invoked"] = True
-                _diag("PACKAGE_SAVE_START", status="review", output_root=self.config.sst_output_dir)
-                PackageManager.save_local_package(app_id, "review", steam_meta.name, temp_output, log_bundle, self.config.sst_output_dir)
-                _diag("PACKAGE_SAVE_DONE", status="review")
-                
-                shutil.rmtree(temp_output, ignore_errors=True)
-                
-                self.db.record_processed(app_id, "review", steam_meta.name, self._get_localized_now().isoformat(), summary_meta)
-                return LocalProcessResult(app_id=app_id, status="review", album_name=steam_meta.name, confidence_score=score, confidence_reason=error_msg, message=final_msg)
 
             run_id = datetime.now().strftime('%H%M%S')
             temp_output = self.working_dir / f"final_{app_id}_{run_id}"

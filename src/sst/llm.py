@@ -68,12 +68,12 @@ class LLMOrganizer:
 
     def _estimate_expected_output_tokens(self, request_kind: str, request_units: int) -> int:
         if request_kind == "identity":
-            return 1200
+            return 2048
         if request_kind == "coherence":
-            return max(1200, request_units * 64)
+            return max(2048, request_units * 128)
         if request_kind == "track_mapping":
-            return max(256, request_units * self.chunk_output_tokens_per_track)
-        return max(256, request_units * self.chunk_output_tokens_per_track)
+            return max(1024, request_units * max(512, self.chunk_output_tokens_per_track))
+        return max(1024, request_units * max(512, self.chunk_output_tokens_per_track))
 
     def _notify_progress(self, progress_callback: Optional[ProgressCallback], **event: Any):
         if not progress_callback:

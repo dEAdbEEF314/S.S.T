@@ -78,6 +78,17 @@ class MetadataBuilder:
         # 1. 常にSTEAM情報をGround Truthとするため、アクションに関わらず matched_v_idx があれば最優先で取得
         if s_idx is not None and s_idx >= 0 and s_idx < len(steam_meta.store_tracklist):
             pics_track = steam_meta.store_tracklist[s_idx]
+            
+        # Check if Steam track numbering is broken (massive duplicates or zeros)
+        is_steam_numbering_broken = False
+        if steam_meta and steam_meta.store_tracklist:
+            numbers = [str(t.get("number", "0")) for t in steam_meta.store_tracklist]
+            zeros = numbers.count("0")
+            if len(numbers) > 0:
+                from collections import Counter
+                most_common_num, count = Counter(numbers).most_common(1)[0]
+                if count >= len(numbers) * 0.5 or zeros >= len(numbers) * 0.5:
+                    is_steam_numbering_broken = True
         
         # 2. matched_v_idxが無くても、use_local以外ならSTEAMトラックリストからのファジーマッチを試みて補完する
         if not pics_track and instr.get("action") != "use_local":
@@ -144,9 +155,9 @@ class MetadataBuilder:
 
         # 2.3 TRCK (Track Number)
         res_track = ""
-        if pics_track and pics_track.get("number"):
+        if pics_track and pics_track.get("number") and not is_steam_numbering_broken:
             res_track = str(pics_track.get("number"))
-        elif instr.get("override_track") and str(instr.get("override_track")) != "0":
+        elif instr.get("override_track") and str(instr.get("override_track")) != "0" and not is_steam_numbering_broken:
             res_track = str(instr.get("override_track"))
         elif instr.get("action") == "use_steam" and instr.get("matched_v_idx") is not None:
             res_track = str(int(instr.get("matched_v_idx")) + 1)
@@ -161,6 +172,13 @@ class MetadataBuilder:
         
         if not res_track or res_track == "0":
             res_track = str(adopted_info.get("filename_track") or 0)
+
+        if not res_track or res_track == "0":
+            if s_idx is not None and s_idx >= 0:
+                res_track = str(s_idx + 1)
+
+        if not res_track or res_track == "0":
+            res_track = "1"
 
         # 2.4 TPOS (Disc Number)
         res_disc = ""
