@@ -272,7 +272,7 @@ class LLMOrganizer:
             dynamic_limit = min(by_output, by_tpm)
             return dynamic_limit
 
-    def _is_truncation_log(log_data: Dict[str, Any]) -> bool:
+    def _is_truncation_log(self, log_data: Dict[str, Any]) -> bool:
         if not isinstance(log_data, dict):
             return False
         if log_data.get("error_code") == "response_truncated":
