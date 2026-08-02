@@ -629,3 +629,7 @@ docs/LOGIC.md, docs/TAGGING_RULE.md: VGMdb連携およびバイリンガル仕�
 2026/08/02 05:59:25 src/sst/scanner.py, src/sst/llm/organizer.py: scanner.pyでのcache属性アクセスエラーを修正 (self.cache_manager.cacheへのアクセスに変更)。および organizer.py での build_mapping_prompt の必須引数 user_language 指定漏れエラーを修正。
 
 2026/08/02 18:52:23 src/sst/llm/client.py, src/sst/llm/prompts.py, docs/error_handling.md, .env.example: Unknown Review Reason（Truncationエラー）多発の根本原因を解消。1) client.py でVRAMマネージャーのPhase 1出力トークン予測を固定の2048からLLM_OLLAMA_NUM_PREDICT（.env）に連動するよう修正。2) prompts.py で推論理由を50文字以内に収めるよう指示を追加しトークン節約。3) 関連ドキュメントおよび環境変数例を更新。
+2026/08/02 19:45:00 docs/token_stingy.md, docs/LOGIC.md, src/sst/vram_manager.py, src/sst/runner.py, src/sst/llm.py, src/sst/llm/client.py
+- VRAM管理方式を「リクエストごとの動的確保・num_ctx動的計算」から「起動時の固定スロット数計算・num_ctx固定化」へ刷新。
+- LLMモデルの再ロードによるオーバーヘッド（VRAMの0%への落ち込み）を完全に排除。
+- VramResourceManager を起動時1回のみ実行する max_workers 計算ツールとして改修。

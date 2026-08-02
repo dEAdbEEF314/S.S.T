@@ -27,8 +27,6 @@ class JobRunner:
                 base_url=self.config.llm_base_url,
                 model=self.config.llm_model
             )
-            if getattr(self.config, "llm_vram_scheduling_enabled", True):
-                self.processor.set_vram_manager(self.vram_manager)
 
     def run(self, soundtracks: List[dict]) -> List[LocalProcessResult]:
         """Orchestrates the parallel processing of soundtracks with adaptive routing."""
@@ -49,10 +47,14 @@ class JobRunner:
         # Sort soundtracks by track count to process small ones first (better packing)
         soundtracks.sort(key=lambda x: x["_track_count"])
 
-        if self.config.llm_backend == "OLLAMA":
-            logger.info("Ollamaバックエンドを検出しました。動的VRAMディスパッチャー (Token Stingy) による自律的並列処理を開始します。")
-            # メタデータ抽出でCPU/Diskがサチュレートしない程度の適度な上限を設定しつつ、VRAMセマフォに制御を委ねる
-            max_workers = min(len(soundtracks), max(10, self.config.max_parallel_albums * 3))
+        if self.config.llm_backend == "OLLAMA" and self.vram_manager:
+            logger.info("Ollamaバックエンドを検出しました。VRAMに基づく安全な固定並列スロット数を計算します。")
+            max_workers = self.vram_manager.calculate_max_workers(
+                fixed_num_ctx=self.config.llm_ollama_num_ctx,
+                default_workers=self.config.max_parallel_albums
+            )
+            max_workers = min(len(soundtracks), max_workers)
+            logger.info(f"Ollama環境: 計算された最大並列アルバム数 ({max_workers} ワーカー) を使用します。")
         else:
             cpu_count = multiprocessing.cpu_count()
             cloud_workers = min(int(self.config.llm_limit_rpm * 0.5), cpu_count, 5)
@@ -81,14 +83,8 @@ class JobRunner:
                 elif phase == "llm_request_failed":
                     progress.update(album_task, description=f"[red]LLM失敗 ({request_kind}): {ost['name']}")
 
-            vram_cost = 0
-            if self.vram_manager:
-                vram_cost = self.vram_manager.estimate_album_vram(ost["_track_count"], ost["name"])
-                if getattr(self.config, "llm_vram_scheduling_enabled", True):
-                    progress.update(album_task, description=f"[cyan]LLM VRAM見積り ({vram_cost/(1024**2):.1f}MB): {ost['name']}")
-                else:
-                    progress.update(album_task, description=f"[cyan]VRAM確保待ち ({vram_cost/(1024**2):.1f}MB): {ost['name']}")
-                    vram_cost = self.vram_manager.acquire(vram_cost)
+            if getattr(self.config, "llm_vram_scheduling_enabled", False):
+                pass  # Disabled explicitly in the new fixed VRAM tactic.
                 
             progress.update(album_task, description=f"[yellow]処理中: {ost['name']}")
 
