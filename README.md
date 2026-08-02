@@ -31,7 +31,7 @@ S.S.T は **ハイブリッド・エッジプロセッサ** です。音声変�
 
 ## ✨ 主な機能
 - **Two-Phase Pipeline**: ネットワークI/OとLLM推論を完全に分離。APIキャッシュとマルチスレッド・フェッチにより、LLMの待機時間を排除し全体の処理を高速化。
-- **Zero-Config Dynamic VRAM Scheduling**: Ollama利用時は自律検出した空きVRAMの80%を上限とする動的セマフォで最適に並行処理（Token Stingy戦略）。外部API時はレートリミットに準拠したスレッドプールへ自動切り替え。また、OllamaのトークナイザーAPIが利用できない環境では、`tiktoken` による高精度なローカル推論へ自動フォールバックしVRAMの計算精度を保ちます。
+- **Zero-Config Fixed VRAM Scheduling**: Ollama利用時は自律検出した空きVRAMから安全な最大スロット数を起動時に事前計算し、固定コンテキスト長で再ロード遅延のない最速の並行処理を実現（Token Stingy戦略）。外部API時はレートリミットに準拠したスレッドプールへ自動切り替え。また、OllamaのトークナイザーAPIが利用できない環境では、`tiktoken` による高精度なローカル推論へ自動フォールバックしVRAMの計算精度を保ちます。
 - **三権分立ロジック**: DJ機材での視認性を重視し、`01. Title` などの Dirty Tags を原則クリーニング（ただし公式名と完全一致する場合は例外として尊重）。
 - **インテリジェント・タグ・プルーニング**: ID3v2.3の制限を遵守するため、長すぎるタグを末尾からタグ単位で自動削除。
 - **Smart Duplicate Resolution**: LLMが誤認した重複トラックを、ディスク番号や名前ベースの再検索によって自動的に正しいエントリへ再配分。
@@ -58,7 +58,7 @@ S.S.T はアルバムの曲数に応じて最適な VRAM 消費とスレッド�
 
 ### 音声エンコードおよび全体並列制御
 - **`MAX_ENCODING_TASKS`**: FFmpegによる音声フォーマット変換を同時にいくつ走らせるかを指定します。ディスクI/OとCPU負荷に直結するため、SSD環境でも `4` 〜 `8` 程度が推奨されます。
-- **`MAX_PARALLEL_ALBUMS`**: システム全体で同時に進行するアルバム処理の「基本並行数」です。クラウドAPI利用時は、RPMから自動算出された安全な並行数とこの値を比較し、**大きい方**が採用されます（手動で並行数を強制的に底上げしたい場合に使用します）。Ollama利用時はこの値に関わらずVRAMベースの自律制御が優先されます。
+- **`MAX_PARALLEL_ALBUMS`**: システム全体で同時に進行するアルバム処理の「基本並行数」です。クラウドAPI利用時は、RPMから自動算出された安全な並行数とこの値を比較し、**大きい方**が採用されます（手動で並行数を強制的に底上げしたい場合に使用します）。Ollama利用時はこの値に関わらず起動時に算出された安全な固定スロット数が優先されます。
 
 ## ✅ 確認が取れている実行環境
 - **OS**: Linux (Ubuntu 24.04 等)
@@ -133,7 +133,7 @@ S.S.T is a **Hybrid Edge Processor**. Audio conversion and data gathering are pe
 
 ## ✨ Key Features
 - **Two-Phase Pipeline**: Separates network I/O and LLM inference. API caching and multi-threaded fetching eliminate LLM idle time.
-- **Zero-Config Dynamic VRAM Scheduling**: Optimizes concurrent execution via a dynamic VRAM semaphore capped at 80% of auto-detected free VRAM for Ollama (Token Stingy strategy). Automatically switches to a rate-limited thread pool for external APIs. Additionally, automatically falls back to highly accurate local token estimation using `tiktoken` when Ollama's tokenizer API is unavailable, preserving VRAM calculation precision.
+- **Zero-Config Fixed VRAM Scheduling**: Optimizes concurrent execution by calculating a safe maximum slot count at startup based on auto-detected free VRAM, eliminating model reload delays (Token Stingy strategy). Automatically switches to a rate-limited thread pool for external APIs. Additionally, automatically falls back to highly accurate local token estimation using `tiktoken` when Ollama's tokenizer API is unavailable, preserving VRAM calculation precision.
 - **Strict Tag Enforcement**: Cleans titles like `01. Title` for maximum visibility on DJ gear (unless it perfectly matches the official title).
 - **Smart Duplicate Resolution**: Automatically rectifies track misidentifications using disc numbers and fuzzy matching.
 - **Intelligent Tag Pruning**: Automatically removes tags from the end of the list to fit ID3v2.3 size limits.
@@ -157,7 +157,7 @@ S.S.T automatically selects the optimal VRAM footprint and parallel workers base
 
 ### Audio Encoding & Parallel Limits
 - **`MAX_ENCODING_TASKS`**: Concurrent FFmpeg audio conversion processes. Impacts CPU and Disk I/O (4-8 recommended for SSDs).
-- **`MAX_PARALLEL_ALBUMS`**: The "base concurrency" for album processing. When using Cloud APIs, the system compares this value with the auto-calculated safe concurrency (based on RPM) and adopts the **larger** one (useful if you want to manually force higher concurrency). When using Ollama, VRAM-based autonomous control takes precedence regardless of this value.
+- **`MAX_PARALLEL_ALBUMS`**: The "base concurrency" for album processing. When using Cloud APIs, the system compares this value with the auto-calculated safe concurrency (based on RPM) and adopts the **larger** one (useful if you want to manually force higher concurrency). When using Ollama, the autonomous slot calculation based on VRAM takes precedence regardless of this value.
 
 ## ✅ Verified Environment
 - **OS**: Windows 11 / WSL2 (Ubuntu 24.04)
