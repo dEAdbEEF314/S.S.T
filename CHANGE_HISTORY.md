@@ -636,3 +636,8 @@ docs/LOGIC.md, docs/TAGGING_RULE.md: VGMdb連携およびバイリンガル仕�
 2026/08/02 20:38:00 src/sst/llm/organizer.py
 - LLMOrganizer._is_truncation_log() に不足していた self パラメータを追加し、TypeErrorでクラッシュするバグを修正。
 2026/08/02 21:20:00 README.md 動的VRAMスケジューリングから起動時固定スロット計算への設計変更に伴う機能説明文の更新（日本語および英語）
+
+2026/08/03 21:18:00, src/sst/tagger.py, ffmpeg呼び出し(subprocess.run)でAIFFのID3タグ書き込み時に無限ループに陥るバグを防ぐため、timeout=300を設定し、タイムアウト時はRuntimeErrorを送出するように修正。
+2026/08/03 21:24:00, docs/error_handling.md, 外部コマンド（ffmpeg等）実行時に無限ループを防止するため、原則として600秒（10分）のタイムアウトを設定する仕様をセクション7として追記。
+2026/08/03 21:36:00, src/sst/config.py ほか, LLMの推論・キュー待ちタイムアウトのデフォルト設定を1800秒(30分)から3600秒(60分)に延長するように修正。
+2026/08/03 21:44:00, docs/configuration.md, システムの動作を制御する環境変数(.env)とハードコーディングされた設定値を一覧化したドキュメントを新規作成。

@@ -23,7 +23,7 @@ class LLMClient:
                  ollama_num_ctx: int = 32768,
                  ollama_num_predict: int = 4096,
                  llm_vram_scheduling_enabled: bool = True,
-                 request_timeout: int = 1800,
+                 request_timeout: int = 3600,
                  chunk_output_tokens_per_track: int = 180):
         self.base_url = base_url.rstrip('/')
         self.api_key = api_key
