@@ -24,7 +24,7 @@ class LLMOrganizer:
                  llm_vram_scheduling_enabled: bool = True,
                  llm_request_parallelism_enabled: bool = True,
                  llm_request_parallelism_max_workers: int = 4,
-                 request_timeout: int = 1800,
+                 request_timeout: int = 3600,
                  coherence_threshold: int = 75,
                  chunk_size_virtual: int = 20,
                  chunk_size_metadata_ollama: int = 10,

@@ -97,7 +97,12 @@ class AudioTagger:
         cmd.append(str(target_path))
         
         # Capture output as binary to avoid UnicodeDecodeError when paths contain non-UTF-8 characters
-        process = subprocess.run(cmd, capture_output=True)
+        try:
+            process = subprocess.run(cmd, capture_output=True, timeout=600)
+        except subprocess.TimeoutExpired:
+            logger.error(f"FFmpeg process timed out after 600 seconds for {source_path.name}")
+            raise RuntimeError(f"FFmpeg conversion timed out for {source_path.name}")
+            
         has_warnings = False
         if process.stderr:
             # Decode safely by ignoring characters that cannot be decoded as UTF-8

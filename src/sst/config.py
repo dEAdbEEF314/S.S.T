@@ -35,7 +35,7 @@ class Config(BaseSettings):
     llm_vram_scheduling_enabled: bool = True
     llm_request_parallelism_enabled: bool = True
     llm_request_parallelism_max_workers: int = 4
-    llm_request_timeout: int = 1800
+    llm_request_timeout: int = 3600
     
     # Token Stingy Tier Profiles
     llm_album_tier_small_max_tracks: int = 50
