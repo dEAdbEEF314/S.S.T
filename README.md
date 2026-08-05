@@ -10,51 +10,42 @@ Steam API、MusicBrainz、およびローカルの埋め込みタグからの情
 - 最新のドキュメント整合チェック結果: `report/doc_consistency_check_20260627.md`
 
 ### ドキュメント導線
+- 正本: `docs/METADATA_SOURCE_SPEC.md`
 - コア仕様: `docs/SST.md`, `docs/LOGIC.md`, `docs/TAGGING_RULE.md`
-- 運用/環境: `docs/DEPLOYMENT_GUIDE_jp.md`, `docs/TEST_ENVIRONMENT.md`, `docs/error_handling.md`
-- 補助仕様: `docs/Virtual_Album.md`, `docs/data_flow_diagram.md`, `docs/cache_architecture.md`, `docs/api_rate_limit.md`, `docs/discord_integration.md`, `docs/smart_duplicate_resolution.md`, `docs/wsl_path_conversion.md`
-- エージェント向け: `docs/AGENT_GUIDE.md`, `docs/VIRTUAL_ALBUM_RULES.md`
-- 提案メモ（歴史資料）: `docs/archive/Inference_Optimization.md`, `docs/archive/Parallel_Optimization.md`
+- 運用/環境: `docs/DEPLOYMENT_GUIDE_jp.md`, `docs/configuration.md`, `docs/TEST_ENVIRONMENT.md`, `docs/error_handling.md`
+- 補助資料: `docs/data_flow_diagram.md`, `docs/api_rate_limit.md`
+- バックアップ: `docs/archive/old/`, `docs/archive/v0.1/`
 
-## 🚀 システムアーキテクチャ: ハイブリッド・エッジ処理
-S.S.T は **ハイブリッド・エッジプロセッサ** です。音声変換やデータ取得などの重い処理はローカルマシン上で実行し、LLM推論はユーザーの好みに応じてクラウドAPI（Gemini等）またはローカル環境（Ollama）を選択して実行します。これにより、環境に応じたパフォーマンスとプライバシーのバランスを実現します。
+## 🚀 システムアーキテクチャ
+S.S.T は **Steam を構造の絶対的な正本とするローカル処理系** です。処理はローカルマシン上で完結し、LLM は必要時のみトラック整列の判断者として使います。
 
-### コア・パイプライン (Two-Phase Architecture)
-1. **スキャン**: Steamライブラリをスキャンし、ローカルのSQLiteデータベースを参照して未処理のアルバムを特定。
-2. **Phase 1: Data Gathering & Pre-Fetch (事前一括取得)**:
-    - LLMを待たせずに、対象アルバムの音声指紋(`fpcalc`)計算と外部API (AcoustID, MusicBrainz) からのメタデータ取得をマルチスレッドで一括実行し、ローカルDBへキャッシュします。
-3. **Phase 2: LLM Consolidation (推論と統合)**:
-    - 4つの仮想アルバム (STEAM公式, ローカル実体, 音声指紋, テキスト検索) を構築し、LLMが情報を比較・推論。
-    - Steam公式データを構造の絶対的な正本（憲法）とし、不足情報をMBZや指紋から補完（フォールバック）する堅牢な推論を行い、システムが物理的なクリーンネス（トラック番号除去等）を強制執行。
-4. **出力 (Read-Onlyライブラリ保護)**:
-    - Steamライブラリ内の実ファイルは絶対に書き換えず、変換やID3v2.3タグ付けを行いながら、直接指定された出力先 (`SST_OUTPUT_DIR`) にZIPアーカイブ等として出力します。
+### コア・パイプライン
+1. **STEAM 骨格構築**: AppID からアルバム情報とストアトラック一覧を取得し、正規スロットを定義します。
+2. **シグナル収集**: ローカル全ファイルから duration、埋め込みタグ、ファイル名情報、AcoustID、ディスク推定を集めます。
+3. **ファストトラック判定**: 曲数一致とトラック番号の 1:1 対応が明確なら、LLM を呼ばずに整列を確定します。
+4. **LLM アライメント**: あいまいさが残る場合のみ、LLM が各ファイルを STEAM スロットへ割り当てます。
+5. **タグ構築と出力**: 変換元は Tier 規則で機械的に選び、ID3v2.3 タグを付与して archive/review に出力します。
 
 ## ✨ 主な機能
-- **Two-Phase Pipeline**: ネットワークI/OとLLM推論を完全に分離。APIキャッシュとマルチスレッド・フェッチにより、LLMの待機時間を排除し全体の処理を高速化。
-- **Zero-Config Fixed VRAM Scheduling**: Ollama利用時は自律検出した空きVRAMから安全な最大スロット数を起動時に事前計算し、固定コンテキスト長で再ロード遅延のない最速の並行処理を実現（Token Stingy戦略）。外部API時はレートリミットに準拠したスレッドプールへ自動切り替え。また、OllamaのトークナイザーAPIが利用できない環境では、`tiktoken` による高精度なローカル推論へ自動フォールバックしVRAMの計算精度を保ちます。
-- **三権分立ロジック**: DJ機材での視認性を重視し、`01. Title` などの Dirty Tags を原則クリーニング（ただし公式名と完全一致する場合は例外として尊重）。
-- **インテリジェント・タグ・プルーニング**: ID3v2.3の制限を遵守するため、長すぎるタグを末尾からタグ単位で自動削除。
-- **Smart Duplicate Resolution**: LLMが誤認した重複トラックを、ディスク番号や名前ベースの再検索によって自動的に正しいエントリへ再配分。
+- **STEAM First**: トラック構造、アルバム構造、タイトル骨格は STEAM を絶対基準とします。
+- **Selective LLM**: 整ったアルバムでは LLM をバイパスし、あいまいケースにだけ判断を委譲します。
+- **Deterministic Source Selection**: 変換元ファイル選択とタグフォールバックを機械規則で固定します。
+- **Slot-wise EMBED Pickup**: 同一スロット内の別フォーマットから APIC や既存コメントを救済できます。
+- **Review Isolation**: 確証不足ケースを黙って通さず、review と理由付きで隔離します。
 
 ## ⚙️ システムカスタマイズ (System Customization)
 S.S.T は `.env` ファイルを通じて、システムの並列性能やAPIの安全性を極限までチューニングできます。
 
-メタデータソースは「Steam公式データ」を構造の絶対的な正本とし、アーティストなどの付加情報を「MusicBrainz」から優先的に取得するフォールバック設計で統一されています。
+メタデータソースは 6 分類（STEAM / ACOUSTID / MBZ_RELEASE / MBZ_SEARCH / EMBED / LOCAL）で整理され、各フィールドの採用順序は `docs/METADATA_SOURCE_SPEC.md` で固定されています。
 
 ### LLM チャンク制御およびAPIレートリミット
-APIの頭打ちを防ぎつつ、モデルのスペック限界までコンテキスト長を最大化（One-shot処理化）するための設定群です。
-- **`LLM_OLLAMA_NUM_CTX`**: (Ollama専用) モデルに割り当てる最大コンテキスト長（例: Llama 3 8B なら 8192、Qwen 2.5 なら 32768）。この値が大きいほど長大なアルバムを一撃処理できますが、比例してVRAM（KVキャッシュ）を大量消費します。並列実行数を増やしたい場合は意図的に下げる（例: 4096）チューニングが有効です。
-- **`LLM_OLLAMA_NUM_PREDICT`**: (Ollama専用) モデルが幻覚や構造破綻を起こさずに長文JSONを出力し続けられる「信頼度の天井」となるトークン数（推奨: 大型モデルなら8192、小型なら4096等）。実際の通信では出力を途切らせないため `-1` (無限) を付与しますが、この設定値がチャンク計算の数学的上限として機能しモデルを保護します。
-- **`LLM_LIMIT_RPM` / `LLM_LIMIT_TPM`**: (クラウドAPI専用) ご利用のAPI（無料枠・有料枠等）の「毎分リクエスト数」「毎分トークン数」の上限を正確に指定してください。システムはこれらの値から安全な同時実行数と限界曲数を自動算出します。
-- **`LLM_CLOUD_MAX_TOKENS`**: (クラウドAPI専用) 使用するモデルの最大出力トークンを指定します。
-- **`LLM_CHUNK_ADAPTIVE`**: (デフォルト `true`)。固定のチャンクサイズ指定を無視し、上記の設定から「エラーを起こさず一撃処理できる限界曲数」を動的算出するマスタースイッチです。
-- **`LLM_COHERENCE_THRESHOLD`**: (デフォルト `75`)。アルバムの曲数がこの閾値を超えた場合に、超巨大アルバム専用の「階層型Map-Reduce（Coherence処理）」を自動発動させます。プロンプト上限（Context Window）やVRAM枯渇を防ぐための安全装置です。
+LLM はあいまいな整列ケースにだけ使います。主な調整項目は次です。
+- **`LLM_OLLAMA_NUM_CTX` / `LLM_OLLAMA_NUM_PREDICT`**: Ollama 利用時のコンテキスト長と出力上限。
+- **`LLM_LIMIT_RPM` / `LLM_LIMIT_TPM` / `LLM_LIMIT_RPD`**: クラウド API 利用時の上限制御。
+- **`LLM_CLOUD_MAX_TOKENS`**: クラウドモデルの最大出力トークン。
+- **`MAX_PARALLEL_ALBUMS`**: アルバム単位の基本並列数。
 
-#### ornith:9b 向け Tiered Profile (階層型実行プロファイル)
-S.S.T はアルバムの曲数に応じて最適な VRAM 消費とスレッド並列度を自動選択します。
-- **Small (1-50曲)**: スループット優先 (`num_ctx_cap=8192`, `workers=3`)
-- **Medium (51-100曲)**: バランス型 (`num_ctx_cap=16384`, `workers=2` 標準推奨)
-- **Large (101曲-)**: 一貫性優先 (`num_ctx_cap=32768`, `workers=1`, 強制Coherence発動)
+これらは実行性能を調整するための設定であり、メタデータの採用優先順位そのものは変更しません。詳細は `docs/configuration.md` を参照してください。
 
 ### 音声エンコードおよび全体並列制御
 - **`MAX_ENCODING_TASKS`**: FFmpegによる音声フォーマット変換を同時にいくつ走らせるかを指定します。ディスクI/OとCPU負荷に直結するため、SSD環境でも `4` 〜 `8` 程度が推奨されます。
@@ -67,7 +58,7 @@ S.S.T はアルバムの曲数に応じて最適な VRAM 消費とスレッド�
   - **FFmpeg**: 必須（音声変換用）。必ずOSにインストールしてパスを通してください。
   - **Python**: 3.12 以上 (`uv` での管理を推奨)
   - **Ollama**: ローカルLLM推論用 (オプション)
-  - **PICS Bridge API**: Steam内部DBアクセス用に互換API環境（steamcmd/api等）へのアクセスが必要
+  - **PICS Bridge API**: Steam 商品情報取得のためにアクセス可能なエンドポイントが必要
 
 ## 🏗️ セットアップと起動
 
@@ -88,10 +79,10 @@ uv sync
 ```
 
 ## 🏷️ タグ表記仕様 (COMM欄)
-DJ機材での視認性と情報の網羅性を両立した形式を採用しています。
-- **書式**: `親ゲーム名, [タグ1/ タグ2/ ...], AppID, URL`
-- **セパレータ**: タグ区切りには `/ ` を使用。
-- **自動調整**: 文字数制限（約2000バイト）を超える場合、`[ ]` 内のタグを後ろからタグ単位で削除して収めます。
+COMM は次の要素で構築します。
+- **書式**: `既存コメント, 親ゲーム名, 親ゲームURL, [タグ1/ タグ2/ ...]`
+- **既存コメント**: 同一 STEAM スロット内の全フォーマットから横断検索します。
+- **自動調整**: UTF-16 で 2000 バイトを超える場合、末尾タグから削って収めます。
 
 ## ⚠️ レビュー
 - **失敗の隔離**: 確証がないアルバムは `output/review/` 配下へ ZIP で保存。理由は `AUDIT_REPORT.html` に記載。
@@ -112,60 +103,53 @@ This tool was created for personal library organization and is shared as a backu
 - Latest documentation consistency check: `report/doc_consistency_check_20260627.md`
 
 ### Documentation Map
+- Source of truth: `docs/METADATA_SOURCE_SPEC.md`
 - Core specs: `docs/SST.md`, `docs/LOGIC.md`, `docs/TAGGING_RULE.md`
-- Operations/Environment: `docs/DEPLOYMENT_GUIDE_jp.md`, `docs/TEST_ENVIRONMENT.md`, `docs/error_handling.md`
-- Supporting specs: `docs/Virtual_Album.md`, `docs/data_flow_diagram.md`, `docs/cache_architecture.md`, `docs/api_rate_limit.md`, `docs/discord_integration.md`, `docs/smart_duplicate_resolution.md`, `docs/wsl_path_conversion.md`
-- Agent-facing: `docs/AGENT_GUIDE.md`, `docs/VIRTUAL_ALBUM_RULES.md`
-- Proposal notes (historical): `docs/archive/Inference_Optimization.md`, `docs/archive/Parallel_Optimization.md`
+- Operations/Environment: `docs/DEPLOYMENT_GUIDE_jp.md`, `docs/configuration.md`, `docs/TEST_ENVIRONMENT.md`, `docs/error_handling.md`
+- Supporting specs: `docs/data_flow_diagram.md`, `docs/api_rate_limit.md`
+- Backups only: `docs/archive/old/`, `docs/archive/v0.1/`
 
-## 🚀 System Architecture: Hybrid Edge Processing
-S.S.T is a **Hybrid Edge Processor**. Audio conversion and data gathering are performed locally, while LLM inference can be offloaded to cloud APIs (like Gemini) or run locally (via Ollama) depending on your preference for performance or privacy.
+## 🚀 System Architecture
+S.S.T is a **local processing pipeline with STEAM as the structural source of truth**. The LLM is used only when track alignment is ambiguous.
 
-### Core Pipeline (Two-Phase Architecture)
-1. **Scan**: Identifies unprocessed albums using a local SQLite database.
-2. **Phase 1: Data Gathering & Pre-Fetch**:
-    - Generates audio fingerprints (`fpcalc`) and fetches metadata from external APIs (AcoustID, MusicBrainz) in parallel, caching the results in a local DB before invoking the LLM.
-3. **Phase 2: LLM Consolidation**:
-    - Constructs 4 Virtual Albums (STEAM, LOCAL, FINGERPRINT, MBZ_SEARCH) for comparison.
-    - LLM infers titles by strictly trusting Steam official data as the structural source of truth, falling back to MBZ or FINGERPRINT only when necessary, while the System enforces physical cleanliness.
-4. **Process (Strict Read-Only)**:
-    - The original Steam Library is never modified. Audio is converted and strict ID3v2.3 tags are written directly to the output directory (`SST_OUTPUT_DIR`), typically packaged as ZIP archives.
+### Core Pipeline
+1. **Build the STEAM skeleton**: Collect album-level metadata and the store track list from the AppID.
+2. **Collect local signals**: Read duration, embedded tags, filename hints, AcoustID, and disc hints from every local audio file.
+3. **Fast-track decision**: If the local set maps cleanly to STEAM slots, finalize without the LLM.
+4. **LLM alignment**: Only ambiguous albums go through slot assignment by the LLM.
+5. **Tagging and output**: Select the conversion source deterministically, build ID3v2.3 tags, and write archive/review outputs.
 
 ## ✨ Key Features
-- **Two-Phase Pipeline**: Separates network I/O and LLM inference. API caching and multi-threaded fetching eliminate LLM idle time.
-- **Zero-Config Fixed VRAM Scheduling**: Optimizes concurrent execution by calculating a safe maximum slot count at startup based on auto-detected free VRAM, eliminating model reload delays (Token Stingy strategy). Automatically switches to a rate-limited thread pool for external APIs. Additionally, automatically falls back to highly accurate local token estimation using `tiktoken` when Ollama's tokenizer API is unavailable, preserving VRAM calculation precision.
-- **Strict Tag Enforcement**: Cleans titles like `01. Title` for maximum visibility on DJ gear (unless it perfectly matches the official title).
-- **Smart Duplicate Resolution**: Automatically rectifies track misidentifications using disc numbers and fuzzy matching.
-- **Intelligent Tag Pruning**: Automatically removes tags from the end of the list to fit ID3v2.3 size limits.
+- **STEAM First**: STEAM defines the canonical album and track structure.
+- **Selective LLM usage**: Clean albums bypass the LLM entirely.
+- **Deterministic fallback rules**: Source precedence is fixed per field.
+- **Slot-wide EMBED pickup**: Artwork and existing comments can be recovered from sibling formats in the same slot.
+- **Review isolation**: Ambiguous albums are quarantined with explicit reasons instead of being silently archived.
 
 ## ⚙️ System Customization
 S.S.T can be deeply tuned for parallel performance and API safety via the `.env` file.
 
 ### LLM Chunk Control & API Rate Limits
-These settings maximize the One-shot processing context while respecting model stability and preventing 429 (Too Many Requests) errors.
-- **`LLM_OLLAMA_NUM_CTX`**: (Ollama only) The maximum context window allocated to the model. Larger values allow processing massive albums in one shot but consume significantly more VRAM (KV cache). You can intentionally lower this (e.g., to 4096) to reduce VRAM footprint and increase parallel concurrency.
-- **`LLM_OLLAMA_NUM_PREDICT`**: (Ollama only) The "trust ceiling" of your local model. It defines how many tokens the model can safely generate without hallucinating or breaking the JSON structure (e.g., 8192 for large models, 4096 for smaller ones). While the actual API request uses `-1` (infinite) to prevent cut-offs, this value mathematically limits the dynamic chunk size to protect the model.
-- **`LLM_LIMIT_RPM` / `LLM_LIMIT_TPM`**: (Cloud APIs only) Specify your API tier's exact Requests-Per-Minute and Tokens-Per-Minute limits. The system uses these to calculate safe concurrency and dynamic chunk sizes.
-- **`LLM_CLOUD_MAX_TOKENS`**: (Cloud APIs only) Maximum output tokens for your model (e.g., 8192 for Gemini 1.5 Pro).
-- **`LLM_CHUNK_ADAPTIVE`**: (Default `true`). The master switch that calculates the absolute maximum tracks per request based on the limits above, overriding any fixed chunk size settings.
+The LLM is only used for ambiguous alignment cases. The main knobs are:
+- **`LLM_OLLAMA_NUM_CTX` / `LLM_OLLAMA_NUM_PREDICT`**: Context and output limits for Ollama.
+- **`LLM_LIMIT_RPM` / `LLM_LIMIT_TPM` / `LLM_LIMIT_RPD`**: Rate controls for cloud APIs.
+- **`LLM_CLOUD_MAX_TOKENS`**: Maximum output tokens for cloud models.
+- **`MAX_PARALLEL_ALBUMS`**: Base album-level concurrency.
 
-#### Tiered Profiles for ornith:9b
-S.S.T automatically selects the optimal VRAM footprint and parallel workers based on track count.
-- **Small (1-50 tracks)**: Throughput-oriented (`num_ctx_cap=8192`, `workers=3`)
-- **Medium (51-100 tracks)**: Balanced baseline (`num_ctx_cap=16384`, `workers=2` recommended)
-- **Large (101+ tracks)**: Consistency-oriented (`num_ctx_cap=32768`, `workers=1`, forces Coherence)
+These values tune performance and stability only. They do not change source precedence or tagging rules. See `docs/configuration.md` for the authoritative settings guide.
 
 ### Audio Encoding & Parallel Limits
 - **`MAX_ENCODING_TASKS`**: Concurrent FFmpeg audio conversion processes. Impacts CPU and Disk I/O (4-8 recommended for SSDs).
 - **`MAX_PARALLEL_ALBUMS`**: The "base concurrency" for album processing. When using Cloud APIs, the system compares this value with the auto-calculated safe concurrency (based on RPM) and adopts the **larger** one (useful if you want to manually force higher concurrency). When using Ollama, the autonomous slot calculation based on VRAM takes precedence regardless of this value.
 
 ## ✅ Verified Environment
-- **OS**: Windows 11 / WSL2 (Ubuntu 24.04)
+- **OS**: Linux (Ubuntu 24.04 or equivalent)
 - **dGPU**: NVIDIA GeForce RTX 40-series (16GB VRAM recommended) *Only required for local LLM inference
 - **Software**: 
   - **FFmpeg**: Required for audio conversion. Must be installed and accessible in the system PATH.
-  - **Ollama**: For local LLM inference (Native WSL2 / Optional)
-  - **Docker Desktop for Windows**: For Steam PICS Bridge API
+  - **Python**: 3.12+ (managed with `uv` recommended)
+  - **Ollama**: For local LLM inference (optional)
+  - **PICS Bridge API**: An accessible endpoint for Steam product metadata
 
 ## 🏗️ Setup & Startup
 
@@ -189,10 +173,10 @@ uv sync
 ```
 
 ## 🏷️ Tagging Specifications (COMM Field)
-Optimized for both information density and DJ gear compatibility.
-- **Format**: `Album Name, [tag1/ tag2/ ...], AppID, URL`
-- **Separator**: Uses `/ ` as the tag delimiter.
-- **Auto-Pruning**: If the tag exceeds ID3v2.3 limits (~2000 bytes), community tags are removed from the end of the `[ ]` section one-by-one.
+COMM is built from the existing embedded comment, parent game title, parent game URL, and Steam user tags.
+- **Format**: `Existing comment, Parent game title, Parent game URL, [tag1/ tag2/ ...]`
+- **Cross-format pickup**: The embedded comment may come from another format assigned to the same STEAM slot.
+- **Auto-pruning**: If the value exceeds 2000 bytes in UTF-16, trailing tags are removed one by one.
 
 ## ⚠️ Review
 - **Isolation**: Ambiguous metadata is preserved as ZIP archives under `output/review/`. Reasoning is provided in `AUDIT_REPORT.html`.

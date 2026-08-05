@@ -1,54 +1,97 @@
-# S.S.T (Steam Soundtrack Tagger) - コア・アーキテクチャ
+# S.S.T 仕様概要
 
-このドキュメントは、S.S.T プロジェクトの設計思想、システム構成、およびデータフローを定義します。具体的な判定ロジックについては `LOGIC.md` を、タグ付けの詳細仕様については `TAGGING_RULE.md` を参照してください。
+## 1. 位置づけ
 
----
+S.S.T は、Steam で購入したサウンドトラック商品を対象に、ローカル環境だけで音源整理・タグ付け・アーカイブ化を行う CLI ツールです。
 
-## 1. 根本原理: 「一度のアーカイブで、一生の信頼を」
+本システムの最重要原則は以下です。
 
-- **目標**: 高精度かつメンテナンスフリーな音楽ライブラリの自動構築。
-- **ポリシー**: 100% の信頼性を担保できるもののみを `ARCHIVE` とし、少しでも疑念がある場合は `REVIEW` フォルダへ振り分け、人間による最終確認を必須とします。
+- STEAM を構造の絶対的な正とする。
+- LLM は既存シグナルの整列判断のみを担い、新しいメタデータを創作しない。
+- 元の Steam ライブラリ内ファイルは書き換えない。
+- 判定不能なものは黙って通さず Review へ隔離する。
 
----
+## 2. 正式な仕様書の優先順位
 
-## 2. 三権分立アーキテクチャ
+現行仕様は次の文書を正本とします。
 
-S.S.T は AI の柔軟な推論とプログラムの厳格性を両立するため、以下の「三権分立」モデルを採用しています。
+1. [docs/METADATA_SOURCE_SPEC.md](docs/METADATA_SOURCE_SPEC.md)
+2. [docs/LOGIC.md](docs/LOGIC.md)
+3. [docs/TAGGING_RULE.md](docs/TAGGING_RULE.md)
+4. [docs/configuration.md](docs/configuration.md)
+5. [docs/error_handling.md](docs/error_handling.md)
 
-- **立法 (User/Config)**: `.env` や `Config` クラスを通じて、オーディオフォーマットの処理順序（`AUDIO_FORMAT_PRIORITY`）などのシステム設定を定義します。
-- **司法 (LLM/Auditor)**: 提示された複数のソースを比較し、文脈に基づいて最適なメタデータを推論（判決）します。
-- **行政 (System/Executor)**: LLM の出力が物理的なクリーンネス基準を満たしているか検閲し、タグの書き込みとアーカイブを執行します。
+[docs/archive/old](docs/archive/old) と [docs/archive/v0.1](docs/archive/v0.1) はバックアップ専用です。現行仕様の判断材料として使いません。
 
----
+## 3. システム境界
 
-## 3. システム構成とデータフロー
+### 3.1 入力
 
-### 3.1 3層 API 統合
-スクレイピングを排除し、信頼性の高いデータを得るために 3 つの階層で情報を取得します。
-1. **Official Store API**: 日本語の基礎情報（名称、ジャンル）を取得。
-2. **PICS Bridge (Docker)**: Steam 内部 DB から正確なトラックリストと多言語クレジットを取得。
-3. **Official Tags via Steam Web API**: `IStoreBrowseService` 経由で公式タグを取得。
+- Steam 商品情報
+- Steam ストア上のトラックリスト
+- ローカル音声ファイル
+- 埋め込みタグ
+- AcoustID / MusicBrainz の補助情報
 
-補助的に、ローカルの `appinfo.vdf` から `store_tags` を読み込み、SteamタグIDの名前解決済みキャッシュと組み合わせてコミュニティタグを補完します。
+### 3.2 出力
 
-### 3.2 処理パイプライン
-1. **Scan**: ライブラリを走査し、未処理の AppID を特定。
-2. **Identify**: MusicBrainz および Steam API から候補を収集し、スコアリング。
-3. **Consolidate**: LLM がマッピングとクリーニングを推論。
-4. **Transform**: 
-   - **バッファリング**: `/tmp/sst-work/buffer_*` で安全に処理。
-   - **変換**: FFmpeg による AIFF/MP3 への変換。
-   - **タギング**: ID3v2.3 規格に準拠した書き込み。
-5. **Package**: Ubuntu側で ZIP アーカイブ化を行い、指定の出力先ディレクトリへ保存。Windows側への一括転送・展開はユーザが手動で行う（将来的に自動一括転送機能を実装予定）。
+- archive 判定された成果物の ZIP
+- review 判定された成果物の ZIP
+- 監査用レポートと処理ログ
 
----
+### 3.3 非対象
 
-## 4. ディレクトリ構造
+- 元ファイルの上書き更新
+- 分散ストレージやクラウド常駐ワーカー
+- LLM によるタイトル生成・補完創作
+- 仮想アルバム同士の比較を中心とした旧来アーキテクチャ
 
-- `src/sst/`: コアアプリケーション・ロジック（モジュール化済み）。
-- `data/`: SQLite データベース、タグキャッシュ、ユーザーデータ。
-- `logs/`: 実行ログ（デバッグモードでは詳細なトレースを出力）。
-- `output/`: 成果物（Archive および Review）。
-- `docs/`: 技術仕様書、判定ロジック、タギング・ルール。
-- `docs/archive/`: 提案メモや検証時点の歴史資料（現行仕様の正本としては扱わない）。
+## 4. 現行アーキテクチャ
 
+S.S.T は次の 7 段で処理します。
+
+1. AppID から STEAM アルバムメタデータセットを構築する。
+2. ローカル全ファイルからシグナルを収集する。
+3. ファストトラック条件を判定する。
+4. 条件未達なら LLM アライメントを行う。
+5. 各 STEAM スロットで変換元ファイルを機械的に選ぶ。
+6. フィールド定義に従って最終タグを構築する。
+7. confidence / data quality を評価して archive または review へ送る。
+
+詳細は [docs/LOGIC.md](docs/LOGIC.md) を参照してください。
+
+## 5. 情報ソースの扱い
+
+S.S.T が扱う情報ソースは、信頼度の根拠により次の 6 分類です。
+
+- STEAM
+- ACOUSTID
+- MBZ_RELEASE
+- MBZ_SEARCH
+- EMBED
+- LOCAL
+
+この分類と各フィールドの採用順序は [docs/METADATA_SOURCE_SPEC.md](docs/METADATA_SOURCE_SPEC.md) に従います。
+
+## 6. 廃止された概念
+
+以下は現行仕様では使いません。
+
+- Virtual Album を中心にした設計
+- track_grouper による事前のフォーマット統合
+- Phase 1 / Phase 1.5 / Phase 2 という旧来の多段 LLM 設計
+- TPUB を最終タグとして保持する運用
+- LLM による変換元ファイル選択
+
+これらが記載された文書はバックアップ扱いであり、現行仕様では参照しません。
+
+## 7. 関連文書
+
+- 処理フロー: [docs/LOGIC.md](docs/LOGIC.md)
+- タグ仕様: [docs/TAGGING_RULE.md](docs/TAGGING_RULE.md)
+- 導入手順: [docs/DEPLOYMENT_GUIDE_jp.md](docs/DEPLOYMENT_GUIDE_jp.md)
+- 設定値: [docs/configuration.md](docs/configuration.md)
+- テスト方針: [docs/TEST_ENVIRONMENT.md](docs/TEST_ENVIRONMENT.md)
+- 例外と隔離: [docs/error_handling.md](docs/error_handling.md)
+- フロー図: [docs/data_flow_diagram.md](docs/data_flow_diagram.md)
+- 外部 API 運用: [docs/api_rate_limit.md](docs/api_rate_limit.md)

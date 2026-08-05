@@ -1,73 +1,88 @@
-# S.S.T テスト環境仕様書
+# S.S.T テスト観点
 
-このドキュメントは、S.S.T のスタンドアロン CLI ロジックおよび API 統合を検証するための標準的なテスト環境を定義します。
+## 1. 目的
 
-## 1. コア・スタック
-- **OS**: Ubuntu 24.04推奨
-- **ランタイム**: `uv` によって管理された Python 3.12以上。
-- **メディアエンジン**: FFmpeg (実行環境 の `PATH` 内で利用可能であること)。
-- **データベース**: SQLite 3。
+新仕様で確認すべきなのは、単なる実行成功ではなく、STEAM を正本にした整列とタグ構築が期待どおり機能することです。
 
-## 2. インフラストラクチャ (Local Environment)
-「究極データ取得モード」の検証には、以下のコンポーネントが稼働している必要があります：
-- **PICS Bridge**: `.env` で設定された `{STEAM_PICS_BRIDGE_URL}` および `{STEAM_PICS_BRIDGE_API_KEY}` でアクセス可能な環境をユーザが用意する。
-- **LLMサービス**: ユーザー各自で用意した環境 (Gemini, Ollama, OpenAI互換API) が稼働し、`.env` で設定されていること。
+## 2. 最低限の実行確認
 
-## 3. データソース (検証ターゲット)
-テストは、以下の代表的な AppID に対して実行することを推奨します。これらは運用上有用だった**代表例**であり、システムや自動テストにハードコードされた必須ケースではありません：
-1.  **1027880** (A Dance of Fire and Ice OST): モダンな PICS トラックリストと MusicBrainz 直接リンクの検証。
-2.  **1586580** (Narita Boy): 複雑なファイル名からのトラック番号補完 (`override_track`) の検証。
-3.  **1270860** (Exit the Gungeon): FFmpeg 警告（invalid rice order）が発生するケースの検証。
-
-## 4. 環境変数 (.env)
-有効なテスト環境には以下が必須です：
-- `STEAM_WEB_API_KEY`: コミュニティタグ取得用。
-- `STEAM_PICS_BRIDGE_URL`: `.env` に設定。
-- `LLM_BACKEND`: `GEMINI`, `OLLAMA` (Native Ollama 推奨) または `OPENAI_COMPATIBLE`。
-
-## 5. 検証チェックリスト
-- [ ] ローカル出力先（`./output` 等）への正しい ZIP アーカイブの生成と保存（展開なし）。
-- [ ] `COMM` 欄に `親ゲーム名, 親ゲームSTEAMストアページURL, [タグ1/ タグ2]...` の情報が連結されていること。既存の埋め込みコメントがある場合は、その先頭保持も確認する。
-- [ ] MP3 または aiff に対する正確な ID3v2.3 タグ付け。
-
-## 6. LLM Parallelism Observation Runbook
-Ollama側のスロット使用状況をSST側のリクエストスケジューリングと照合する際は、以下の手順に従ってください。
-
-1. デバッグログを有効にして、範囲を限定したSSTの実行を開始し、出力を専用のファイルに書き出します。
+### 2.1 静的・単体確認
 
 ```bash
-cd /workspace/S.S.T
-uv run python -m sst.main --appid 1027880 --dev
+uv run pytest
 ```
 
-2. Ollamaのログを、相関スクリプトが解析可能なISOタイムスタンプ形式でエクスポートします。
+必要に応じて対象テストのみを選択して実行します。
 
-```bash
-sudo journalctl -u ollama -S "2026-07-10 09:35:00" -o short-iso > /tmp/ollama-short-iso.log
-```
+### 2.2 実アルバムのスモークテスト
 
-3. その実行のために作成されたSSTデバッグログを特定してください。
+以下の代表ケースを少数で回します。
 
-```bash
-ls -1t logs/SST_DEBUG_*.log | head -n 1
-```
+- STEAM トラック数とローカル曲数が完全一致するアルバム
+- 複数フォーマット混在のアルバム
+- 埋め込み APIC が一部フォーマットにしかないアルバム
+- STEAM トラック一覧が不完全なアルバム
+- ACOUSTID が一部しか当たらないアルバム
 
-4. Correlate SST `LLM_REQUEST_*` records with Ollama slot events.
+## 3. 判定パス別チェックリスト
 
-```bash
-uv run python Maintenance/analyze_llm_slot_correlation.py \
-	--sst-log logs/SST_DEBUG_YYYYMMDDHHMMSS.log \
-	--ollama-log /tmp/ollama-short-iso.log \
-	--app-id 1027880
-```
+### 3.1 ファストトラック
 
-5. 出力はこの順序で読んでください。
-- `peak_inflight_requests`: SST側が同時に何件の request を発行しようとしたか。
-- `LLM_REQUEST_VRAM` / `LLM_REQUEST_RELEASE`: SST側の request-level VRAM 予約と解放。
-- `slot_ids_seen`: Ollama側で実際に使われた slot ID。
-- `http 200 /api/chat` と `client_aborted`: 正常終了とクライアント切断の数。
+- 全曲にトラック番号がある
+- 重複除外後の曲数が STEAM と一致する
+- 同一番号の異フォーマットで duration 差が 1 秒未満
+- LLM を呼ばずに archive できる
 
-6. Interpretation guide.
-- `peak_inflight_requests > 1` なのに `slot_ids_seen` が `{0: ...}` だけなら、Ollama側で単一 slot 運用か、同時実行に至る前に待機している可能性が高い。
-- `LLM_REQUEST_VRAM` が複数並ぶのに `wait_seconds` が長い場合、SST側の VRAM gate が並列度を抑えている。
-- `client_aborted` や `500 /api/chat` が多い場合、slot 利用率の問題ではなく、SST側タイムアウトや接続切断を優先して調査する。
+### 3.2 LLM アライメント
+
+- slots に存在しない file_id が出ていない
+- 同一 file_id が複数スロットへ重複割当されていない
+- confidence が各スロットに存在する
+- concerns と unassigned_reason が残る
+
+### 3.3 STEAM-TRUST
+
+- ACOUSTID 不在でも STEAM 構造一致で救済される
+- ただし data_quality 低下時は review に落ちる
+
+## 4. タグ検証
+
+### 4.1 必須フィールド
+
+- TALB
+- TRCK
+- TIT2
+- TPE1
+- TPE2
+- TPOS
+- TYER
+- TCON
+- TIT1
+- COMM
+- TLAN
+- TCOM
+- APIC
+
+### 4.2 仕様チェック
+
+- ID3v2.3 で書き込まれている
+- TYER を使い TDRC を使っていない
+- COMM が 2000 バイト超時に末尾から短縮される
+- APIC が同一スロットの別フォーマットから拾える
+- 変換元と APIC 取得元が異なっても成立する
+
+## 5. Review 送りを確認すべきケース
+
+- STEAM との 1:1 対応が崩れる
+- title や track number の矛盾が解消できない
+- LLM 出力 JSON が壊れる
+- confidence は高いが必須フィールドが埋まらない
+
+## 6. 監査ログ
+
+少なくとも次を追跡できることを確認します。
+
+- app_id
+- track_id または file_id
+- どのソースから各フィールドを採用したか
+- archive / review の最終理由
