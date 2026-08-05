@@ -54,8 +54,20 @@
 - LLM_VRAM_SCHEDULING_ENABLED
 - LLM_REQUEST_PARALLELISM_ENABLED
 - LLM_REQUEST_PARALLELISM_MAX_WORKERS
+- LLM_ALBUM_TIER_SMALL_MAX_TRACKS
+- LLM_ALBUM_TIER_MEDIUM_MAX_TRACKS
+- LLM_OLLAMA_NUM_CTX_SMALL / MEDIUM / LARGE
+- LLM_REQUEST_PARALLELISM_MAX_WORKERS_SMALL / MEDIUM / LARGE
+- LLM_FORCE_COHERENCE_LARGE
 
 これらは実行性能やタイムアウト耐性に影響しますが、メタデータの正誤判定規則を変えてはいけません。
+
+Tier 制御の原則:
+
+- Small / Medium / Large はアルバム曲数で自動選択される
+- 各 tier の `num_ctx` と Phase 2 worker 数は、その tier 専用値があればそれを使う
+- tier 専用値が未設定なら、従来の `LLM_OLLAMA_NUM_CTX` と `LLM_REQUEST_PARALLELISM_MAX_WORKERS` にフォールバックする
+- `LLM_FORCE_COHERENCE_LARGE=true` の場合、大型アルバムでは通常しきい値未満でも Coherence を走らせて review 側へ倒す安全性を優先する
 
 ## 4. メタデータ関連設定
 
