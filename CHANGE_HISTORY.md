@@ -641,3 +641,6 @@ docs/LOGIC.md, docs/TAGGING_RULE.md: VGMdb連携およびバイリンガル仕�
 2026/08/03 21:24:00, docs/error_handling.md, 外部コマンド（ffmpeg等）実行時に無限ループを防止するため、原則として600秒（10分）のタイムアウトを設定する仕様をセクション7として追記。
 2026/08/03 21:36:00, src/sst/config.py ほか, LLMの推論・キュー待ちタイムアウトのデフォルト設定を1800秒(30分)から3600秒(60分)に延長するように修正。
 2026/08/03 21:44:00, docs/configuration.md, システムの動作を制御する環境変数(.env)とハードコーディングされた設定値を一覧化したドキュメントを新規作成。
+
+2026/08/05 00:00:00, docs/METADATA_SOURCE_SPEC.md: S.S.T メタデータソース定義書「真の真」(Draft v0.2) を正式仕様書として docs/METADATA_SOURCE_SPEC.md に新規追加配置。
+
