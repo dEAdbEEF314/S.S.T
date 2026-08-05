@@ -1,3 +1,5 @@
+注記: この履歴は時系列の記録です。過去の項目には旧仕様の概念や廃止済み文書名が含まれますが、現行仕様の正本は [docs/METADATA_SOURCE_SPEC.md](docs/METADATA_SOURCE_SPEC.md) です。
+
 2026/07/10 13:35:00 token_stingy_plan.md: Tier / アルバム曲数に応じて `num_ctx` と Phase 2 並列度を切り替える実装計画、および `.env.example` への tier 別設定追加計画をルート文書として作成。
 
 2026/07/10 13:20:00 .env.example, README.md: llama3.2:3b の標準推奨ベースライン（16384 / workers=2）の再検証結果を踏まえ、次の比較候補として `LLM_OLLAMA_NUM_CTX=8192` と `LLM_REQUEST_PARALLELISM_MAX_WORKERS=3` をドキュメントへ追加。
@@ -644,3 +646,6 @@ docs/LOGIC.md, docs/TAGGING_RULE.md: VGMdb連携およびバイリンガル仕�
 
 2026/08/05 00:00:00, docs/METADATA_SOURCE_SPEC.md: S.S.T メタデータソース定義書「真の真」(Draft v0.2) を正式仕様書として docs/METADATA_SOURCE_SPEC.md に新規追加配置。
 
+2026/08/05 01:10:00, README.md, CodeBase_AI.md, GEMINI.md, CHANGE_HISTORY.md, token_stingy_plan.md, docs/archive/v0.1/token_stingy_plan.md: ルートの Markdown 文書を新仕様準拠に整理。README と AI 向け指示文書を STEAM 正本・LLM アライメント中心の現行仕様へ更新し、旧 Token Stingy 計画書を docs/archive/v0.1/ へ退避。CHANGE_HISTORY.md 冒頭に「履歴と現行仕様は別」である旨の注記を追加。
+
+2026/08/05 17:20:04, src/sst/{config.py,processor.py,llm/organizer.py}, tests/test_llm_execution_profiles.py, .env.example, README.md, docs/configuration.md: album-tier 実行プロファイルの実装を開始し、Tier別 `num_ctx` / Phase 2 worker / Large向け Coherence 強制を導入。tier専用設定未指定時は既存の `LLM_OLLAMA_NUM_CTX` と `LLM_REQUEST_PARALLELISM_MAX_WORKERS` にフォールバックする後方互換も追加。

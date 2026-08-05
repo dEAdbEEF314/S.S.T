@@ -57,6 +57,28 @@ class LLMOrganizer:
     def set_vram_manager(self, vram_manager: Any):
         self.client.set_vram_manager(vram_manager)
 
+    def _resolve_execution_num_ctx(
+        self,
+        execution_profile: Optional[Any],
+        requested_num_ctx: Optional[int],
+    ) -> Optional[int]:
+        resolved_num_ctx = requested_num_ctx or self.client.ollama_num_ctx
+        if not execution_profile or resolved_num_ctx is None:
+            return resolved_num_ctx
+        return min(max(1, int(execution_profile.num_ctx_cap)), max(1, int(resolved_num_ctx)))
+
+    def _resolve_phase2_worker_count(
+        self,
+        execution_profile: Optional[Any],
+        segment_count: int,
+    ) -> int:
+        if segment_count <= 0:
+            return 1
+        worker_cap = self.llm_request_parallelism_max_workers
+        if execution_profile and getattr(execution_profile, "phase2_parallel_workers", None) is not None:
+            worker_cap = min(worker_cap, max(1, int(execution_profile.phase2_parallel_workers)))
+        return max(1, min(worker_cap, segment_count))
+
     def check_availability(self) -> bool:
         return self.client.check_availability()
 
@@ -385,9 +407,7 @@ class LLMOrganizer:
         s_mbz_search = self._simplify_v_album(v_mbz_search, sampled=True)
         s_local = self._simplify_v_album(v_local, sampled=True)
         
-        resolved_num_ctx = num_ctx
-        if execution_profile:
-            resolved_num_ctx = execution_profile.num_ctx_cap
+        resolved_num_ctx = self._resolve_execution_num_ctx(execution_profile, num_ctx)
 
         # Phase 1: Identity & Global Tags
         identity_prompt = build_identity_prompt(s_steam, s_fingerprint, s_mbz_search, s_local, self.user_language)
@@ -467,10 +487,7 @@ class LLMOrganizer:
         segment_results: Dict[int, Tuple[Dict[str, Dict[str, Any]], List[Dict[str, Any]]]] = {}
 
         if should_parallelize:
-            worker_count = min(self.llm_request_parallelism_max_workers, len(segments))
-            if execution_profile:
-                worker_count = min(execution_profile.phase2_parallel_workers, len(segments))
-            worker_count = max(1, worker_count)
+            worker_count = self._resolve_phase2_worker_count(execution_profile, len(segments))
             logger.info(f"[{app_id}] Phase 2 mapping chunk を並列実行します。segments={len(segments)} workers={worker_count}")
             with ThreadPoolExecutor(max_workers=worker_count) as executor:
                 future_map = {

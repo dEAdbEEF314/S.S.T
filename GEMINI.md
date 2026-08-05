@@ -1,23 +1,25 @@
-# S.S.T (Steam Soundtrack Tagger) Project Instructions
+# S.S.T Project Instructions
 
-## 🚨 Critical Safety & Communication Rules
+## Critical Rules
 
-1. **Read-Only Steam Library**: NEVER attempt to write, modify, delete, or move files within the Steam library directories. Access must be strictly **READ-ONLY**. All processing results must be written to the designated `SST_OUTPUT_DIR`.
-2. **Japanese Communication Mandate**: Before starting any technical task or execution phase, you MUST provide a detailed explanation of the planned work in **Japanese**. This includes the rationale, affected files, and expected outcome.
+1. Steam ライブラリ内の元ファイルは常に Read-Only で扱うこと。
+2. 現行仕様の正本は [docs/METADATA_SOURCE_SPEC.md](docs/METADATA_SOURCE_SPEC.md) であり、設計判断は必ずこれに従うこと。
+3. STEAM を構造の絶対的な正とし、その不備に対してのみ他ソースと LLM を使うこと。
+4. LLM はファイルを STEAM スロットに割り当てる判断者であり、タイトル生成やタグ値創作をしてはならない。
+5. 確証不足の結果は archive ではなく review に送ること。
+6. 変更を加えた場合は [CHANGE_HISTORY.md](CHANGE_HISTORY.md) の末尾へ日本語で追記すること。
 
-## 🛠️ Engineering Standards
+## Engineering Standards
 
-- **Tech Stack**: Python 3.12 (managed via `uv`), FFmpeg, SQLite3.
-- **Architecture**: "Separation of Powers" (Legislation: .env, Judiciary: LLM, Executive: System Logic).
-- **Environment**: Always use `uv run` for script execution. Ensure `PYTHONPATH` includes `src`.
-- **Logic Priority**: Archive reliability is paramount. If metadata is ambiguous, route to `Review`.
-- **Mandatory Change History Recording**: Whenever you make changes, modifications, new additions, or deletions to any code or files in this workspace (except for system cleanup performed before tests), you MUST append an entry to `CHANGE_HISTORY.md`. Each entry must include: "Date and time (YYYY/MM/DD hh:mm:ss), name of the modified file, and details of the changes (in Japanese)." Always append new entries to the end of the file to maintain chronological order.
-- **Installed tools**: rg, fd, uv, ruff, jq, pytest are already installed. If there are any other tools you would like to install, please explain what they are to the user and ask if they would like to install them.
-- **Missing tools**: 実行しようとしたツールやコマンドが「コマンドが見つかりません (command not found)」というエラーで失敗した場合、ユーザーに対してそのツールのインストールをリクエストしてください。
+- Tech Stack: Python 3.12, uv, FFmpeg, SQLite3
+- Execution: Prefer `uv run` for scripts and tests
+- Metadata policy: Field-level source precedence is fixed by the spec and must not be overridden casually
+- Historical docs: `docs/archive/old/` and `docs/archive/v0.1/` are backup-only and must not be treated as current spec
 
-## 📂 Directory Layout
+## Active Layout
 
-- `src/scout/`: Core application logic.
-- `data/`: Local state DB and cache.
-- `docs/`: Technical specifications and logic definitions.
-- `tests/`: Test scripts, reproduction scripts, and temporary test data. All manual verification and investigative scripts MUST be placed here.
+- `src/sst/`: Core implementation
+- `docs/`: Active specifications and operations docs
+- `docs/archive/v0.1/`: Retired documents and plans
+- `data/`: Local DB and caches
+- `tests/`: Tests and verification code

@@ -40,12 +40,12 @@ class Config(BaseSettings):
     # Token Stingy Tier Profiles
     llm_album_tier_small_max_tracks: int = 50
     llm_album_tier_medium_max_tracks: int = 100
-    llm_ollama_num_ctx_small: int = 8192
-    llm_ollama_num_ctx_medium: int = 16384
-    llm_ollama_num_ctx_large: int = 32768
-    llm_request_parallelism_max_workers_small: int = 3
-    llm_request_parallelism_max_workers_medium: int = 2
-    llm_request_parallelism_max_workers_large: int = 1
+    llm_ollama_num_ctx_small: Optional[int] = None
+    llm_ollama_num_ctx_medium: Optional[int] = None
+    llm_ollama_num_ctx_large: Optional[int] = None
+    llm_request_parallelism_max_workers_small: Optional[int] = None
+    llm_request_parallelism_max_workers_medium: Optional[int] = None
+    llm_request_parallelism_max_workers_large: Optional[int] = None
     llm_force_coherence_large: bool = True
     
     llm_coherence_threshold: int = 75
@@ -158,6 +158,18 @@ class Config(BaseSettings):
             "chunk_output_safety_ratio": self.llm_chunk_output_safety_ratio,
             "metadata_source_priority": self.metadata_source_priority,
         }
+
+    def resolve_llm_num_ctx_cap(self, tier_name: str) -> int:
+        tier_value = getattr(self, f"llm_ollama_num_ctx_{tier_name.lower()}", None)
+        if tier_value is not None:
+            return tier_value
+        return self.llm_ollama_num_ctx
+
+    def resolve_llm_parallel_workers(self, tier_name: str) -> int:
+        tier_value = getattr(self, f"llm_request_parallelism_max_workers_{tier_name.lower()}", None)
+        if tier_value is not None:
+            return tier_value
+        return self.llm_request_parallelism_max_workers
 
     @property
     def steam_language_full(self) -> str:
