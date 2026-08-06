@@ -5,7 +5,8 @@ from typing import List, Dict, Any, Optional, Tuple, Callable
 
 from ..config import DEFAULT_METADATA_SOURCE_PRIORITY
 from .client import LLMClient
-from .prompts import build_mapping_prompt, build_identity_prompt
+from .prompts import build_mapping_prompt, build_identity_prompt, build_steam_tracklist_extraction_prompt
+from ..steam_tracklist import validate_llm_tracklist
 
 logger = logging.getLogger('sst.llm.organizer')
 
@@ -57,6 +58,27 @@ class LLMOrganizer:
 
     def check_availability(self) -> bool:
         return self.client.check_availability()
+
+    def extract_steam_tracklist(
+        self,
+        app_id: int,
+        description_text: str,
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        prompt = build_steam_tracklist_extraction_prompt(description_text, self.user_language)
+        response, log_entry = self._call_llm(
+            app_id,
+            prompt,
+            request_kind="steam_tracklist_extraction",
+            request_units=1,
+            progress_callback=progress_callback,
+        )
+        tracks, errors = validate_llm_tracklist(response)
+        log_entry["validation_errors"] = errors
+        if not tracks:
+            return [], log_entry
+        log_entry["tracklist_source"] = "STEAM_TEXT_TRACKLIST_LLM"
+        return tracks, log_entry
 
     def _call_llm(
         self,

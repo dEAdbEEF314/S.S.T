@@ -22,6 +22,7 @@ class SteamMetadata(BaseModel):
     header_image_url: Optional[str] = None
     store_tracklist: List[Dict[str, Any]] = [] # Steam/PICS or official description fallback
     store_tracklist_source: Optional[str] = None # STEAM_PICS or STEAM_TEXT_TRACKLIST
+    store_tracklist_language: Optional[str] = None
     store_credits: str = "" # Scraped from HTML
 
 class TrackMetadata(BaseModel):

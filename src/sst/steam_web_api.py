@@ -8,16 +8,18 @@ from html.parser import HTMLParser
 from typing import Dict, Any, Optional
 
 from .db import DatabaseManager
+from .steam_tracklist import validate_llm_tracklist
 
 logger = logging.getLogger(__name__)
 
 class SteamWebClient:
-    def __init__(self, db: DatabaseManager, bridge_url: str, bridge_api_key: Optional[str] = None, api_key: Optional[str] = None, language: str = "japanese"):
+    def __init__(self, db: DatabaseManager, bridge_url: str, bridge_api_key: Optional[str] = None, api_key: Optional[str] = None, language: str = "japanese", llm_extractor: Any = None):
         self.db = db
         self.bridge_url = bridge_url if bridge_url.endswith("/") else bridge_url + "/"
         self.bridge_api_key = bridge_api_key
         self.api_key = api_key
         self.language = language
+        self.llm_extractor = llm_extractor
 
     @staticmethod
     def _parse_text_tracklist(description: str) -> list[Dict[str, Any]]:
@@ -69,11 +71,14 @@ class SteamWebClient:
         # 1. Check Database first
         db_data = self.db.get_store_data(app_id)
         
-        result = {"genres": [], "tags": [], "name": None, "store_tracklist": [], "store_tracklist_source": None, "store_credits": "", "label": None, "release_date": None}
+        result = {"genres": [], "tags": [], "name": None, "store_tracklist": [], "store_tracklist_source": None, "store_tracklist_language": None, "store_credits": "", "label": None, "release_date": None}
         
         if db_data:
             result["store_tracklist"] = db_data.get("tracklist", [])
             result["store_credits"] = db_data.get("credits", "")
+            if result["store_tracklist"]:
+                result["store_tracklist_source"] = result["store_tracklist"][0].get("source")
+                result["store_tracklist_language"] = db_data.get("tracklist_language")
             logger.debug(f"{app_id} のストアデータをDBから読み込みました")
 
         try:
@@ -162,12 +167,36 @@ class SteamWebClient:
                         logger.debug(f"PICS トラックのソート中にエラーが発生しました: {e}")
 
                 if not result["store_tracklist"]:
-                    text_tracks = self._parse_text_tracklist(description)
+                    description_language = self.language
+                    candidate_description = description
+                    if self.language.lower() not in {"english", "en"}:
+                        try:
+                            english_url = f"https://store.steampowered.com/api/appdetails?appids={app_id}&l=english"
+                            english_response = session.get(english_url, headers=common_headers, timeout=15)
+                            if english_response.status_code == 200:
+                                english_data = english_response.json().get(str(app_id), {})
+                                if english_data.get("success"):
+                                    candidate_description = english_data.get("data", {}).get("detailed_description", "")
+                                    description_language = "english"
+                        except Exception as language_error:
+                            logger.debug(f"{app_id} の英語説明文フォールバックに失敗しました: {language_error}")
+
+                    text_tracks = self._parse_text_tracklist(candidate_description)
                     if text_tracks:
                         for track in text_tracks:
                             track["source"] = "STEAM_TEXT_TRACKLIST"
                         result["store_tracklist"] = text_tracks
                         result["store_tracklist_source"] = "STEAM_TEXT_TRACKLIST"
+                        result["store_tracklist_language"] = description_language
+                    elif self.llm_extractor and candidate_description:
+                        llm_tracks, llm_log = self.llm_extractor.extract_steam_tracklist(app_id, self._description_text(candidate_description))
+                        if llm_tracks:
+                            result["store_tracklist"] = llm_tracks
+                            result["store_tracklist_source"] = "STEAM_TEXT_TRACKLIST_LLM"
+                            result["store_tracklist_language"] = description_language
+                            result["store_tracklist_extraction_log"] = llm_log
+                        else:
+                            result["store_tracklist_extraction_log"] = llm_log
                 
                 meta_section = album_meta.get("metadata", {})
                 credits_parts = []
@@ -210,10 +239,28 @@ class SteamWebClient:
                         result["store_tracklist"], 
                         result["store_credits"], 
                         change_number=locals().get("pics_change_num"), 
-                        raw_pics=locals().get("app_pics")
+                        raw_pics=locals().get("app_pics"),
+                        tracklist_language=result.get("store_tracklist_language")
                     )
             
             return result
+
         except Exception as e:
             logger.debug(f"{app_id} のウェブエンリッチメントに失敗しました: {e}")
             return None
+
+    @staticmethod
+    def _description_text(description: str) -> str:
+        class TextExtractor(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.parts = []
+
+            def handle_data(self, data):
+                text = data.strip()
+                if text:
+                    self.parts.append(text)
+
+        parser = TextExtractor()
+        parser.feed(description or "")
+        return "\n".join(parser.parts)[:30000]

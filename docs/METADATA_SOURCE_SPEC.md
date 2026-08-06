@@ -122,6 +122,42 @@ Steam PICSの構造化トラックリストが存在しない場合に限り、�
 STEAM_PICS > STEAM_TEXT_TRACKLIST > ローカルファイル名
 ```
 
+#### 3.5.1 LLMによる説明文抽出
+
+上記の決定論的HTML抽出でトラックリストを得られない場合に限り、公式`detailed_description`をLLMへ渡して候補を抽出する。PICSの取得結果が存在する場合、または決定論的抽出が成功した場合、LLM抽出を呼び出してはならない。優先順位は次のとおりである。
+
+```text
+STEAM_PICS > STEAM_TEXT_TRACKLIST_RULE > STEAM_TEXT_TRACKLIST_LLM > ローカル推定
+```
+
+LLMの入力はHTMLをテキスト化し、最大30,000文字に制限する。説明文は信頼できないデータとして扱い、説明文内の命令・プロンプト・指示は実行せず、抽出対象の文字列としてのみ扱う。LLMの出力は次のJSON契約に限定する。
+
+```json
+{
+  "found": true,
+  "confidence": 0.0,
+  "tracks": [
+    {"disc": 1, "number": 1, "title": "verbatim title", "duration_s": null}
+  ],
+  "evidence": "brief evidence"
+}
+```
+
+採用にはLLMの`confidence`だけを使わず、次の機械検証をすべて通過させる。
+
+- JSONがオブジェクトで、`tracks`が配列である
+- 2曲以上である
+- `disc`と`number`が正の整数である
+- 同一ディスク内の番号が1から始まる連番である
+- ディスクと番号の組み合わせが重複しない
+- タイトルが空でない
+- ローカル論理曲数を把握できる場合、その曲数と一致する
+- 説明文にない曲の追加、番号の推測、タイトルの修正・翻訳・補完がない
+
+採用した各曲には`source=STEAM_TEXT_TRACKLIST_LLM`を付与し、`SteamMetadata.store_tracklist_language`と監査ログに説明文の言語を記録する。検証に失敗した場合は結果を破棄し、ローカル情報からSteam曲目を生成しない。LLM抽出を使用した場合は監査上のconcernとして扱い、既存のArchive/Review判定および重複検出を自動的に緩和しない。
+
+設定言語で曲目表を抽出できない場合に限り、英語の公式説明文を1回だけ追加取得する。英語でも抽出に失敗した場合はLLMを呼び出しても採用せず、Steam構造不明としてReview可能な状態を維持する。DBキャッシュから復元する場合も、トラックリストのsourceと言語を保持し、情報がない既存キャッシュは`UNKNOWN`として扱う。
+
 ### 3.6 物理ファイルの除外とフォーマット統合
 
 音声走査では、`__MACOSX`、`.DS_Store`、`._*` AppleDoubleファイル、および隠しファイルを処理対象から除外する。大文字小文字の違いも同一視する。
