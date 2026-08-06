@@ -34,6 +34,7 @@ SST is a **high-precision, standalone CLI tool** for automatically tagging Steam
 3. **NO Silent Failures:** Use structured logging with `app_id` and `track_id`.
 4. **NO Hardcoded Secrets:** Use `.env` via Pydantic Settings.
 5. **MBZ Tie-breaking:** Strictly prioritize Digital Media and exclude "Bandcamp" sources from MusicBrainz results.
+6. **NO Sensitive Test Fixtures:** Public tests must not contain real logs, caches, databases, audio/artwork files, credentials, or environment-identifying values. Sanitize hostnames, usernames, process IDs, timestamps, task IDs, and local paths in log fixtures; mock external services and use synthetic data instead.
 
 # Documentation Source of Truth
 - Refer to `docs/` for current specifications.

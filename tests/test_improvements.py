@@ -7,8 +7,8 @@ from sst.processor_tracks import copy_with_retry
 from sst.processor_support import build_slot_variant_index, merge_embedded_tags_for_slot
 from sst.models import SteamMetadata
 
-def test_validator_relaxed_thresholds():
-    # New three-axis llm archive path should pass validation
+def test_validator_three_axis_archive_path():
+    # The three-axis LLM archive path should pass validation.
     tracks = [{"tags": {"title": "Test Title", "track_number": "1", "disc_number": "1"}}]
     llm_log = {
         "phase1_res": {
