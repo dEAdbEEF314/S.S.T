@@ -34,6 +34,9 @@ class DatabaseManager:
                     scraped_at TEXT
                 )
             """)
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(steam_store_data)")}
+            if "tracklist_language" not in columns:
+                conn.execute("ALTER TABLE steam_store_data ADD COLUMN tracklist_language TEXT")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS api_cache (
                     service TEXT,
@@ -47,30 +50,32 @@ class DatabaseManager:
     def get_store_data(self, app_id: int) -> Optional[Dict[str, Any]]:
         """Retrieves cached Steam store data including PICS fields."""
         with sqlite3.connect(self.db_path) as conn:
-            cur = conn.execute("SELECT tracklist_json, credits_text, change_number, raw_pics_json FROM steam_store_data WHERE app_id = ?", (app_id,))
+            cur = conn.execute("SELECT tracklist_json, credits_text, change_number, raw_pics_json, tracklist_language FROM steam_store_data WHERE app_id = ?", (app_id,))
             row = cur.fetchone()
             if row:
                 return {
                     "tracklist": json.loads(row[0]),
                     "credits": row[1],
                     "change_number": row[2],
-                    "raw_pics": json.loads(row[3]) if row[3] else {}
+                    "raw_pics": json.loads(row[3]) if row[3] else {},
+                    "tracklist_language": row[4]
                 }
         return None
 
-    def save_store_data(self, app_id: int, tracklist: list, credits: str, change_number: Optional[int] = None, raw_pics: Optional[Dict] = None):
+    def save_store_data(self, app_id: int, tracklist: list, credits: str, change_number: Optional[int] = None, raw_pics: Optional[Dict] = None, tracklist_language: Optional[str] = None):
         """Saves comprehensive Steam store and PICS data."""
         from datetime import datetime
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO steam_store_data (app_id, change_number, tracklist_json, credits_text, raw_pics_json, scraped_at) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO steam_store_data (app_id, change_number, tracklist_json, credits_text, raw_pics_json, scraped_at, tracklist_language) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     app_id, 
                     change_number, 
                     json.dumps(tracklist, ensure_ascii=False), 
                     credits, 
                     json.dumps(raw_pics, ensure_ascii=False) if raw_pics else None,
-                    datetime.utcnow().isoformat()
+                    datetime.utcnow().isoformat(),
+                    tracklist_language
                 )
             )
         logger.debug(f"Saved extended store data for AppID {app_id}")

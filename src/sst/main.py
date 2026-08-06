@@ -154,6 +154,7 @@ def main():
         log_file = setup_logging(config, console, is_dev=args.dev)
         logger.info(f"S.S.Tを開始します。ログレベル: {config.log_level}。ファイル: {log_file}")
 
+        processor = LocalProcessor(config, db)
         scanner = SteamScanner(
             install_path=config.steam_install_path, 
             db=db,
@@ -164,8 +165,8 @@ def main():
             cache_path="data/sst_cache.json", 
             language=config.steam_language_full,
             tag_refresh_days=config.steam_tag_cache_refresh_days,
+            llm_extractor=processor.llm,
         )
-        processor = LocalProcessor(config, db)
         runner = JobRunner(config, processor, console)
 
         # Handle batch AppIDs

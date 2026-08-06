@@ -18,12 +18,12 @@ logger = logging.getLogger(__name__)
 MUSIC_EXTENSIONS = {".flac", ".wav", ".mp3", ".aiff", ".aif", ".m4a", ".ogg"}
 
 class SteamScanner:
-    def __init__(self, install_path: str, db: DatabaseManager, bridge_url: str, bridge_api_key: Optional[str] = None, api_key: Optional[str] = None, override_library_path: Optional[str] = None, cache_path: str = "data/scout_cache.json", language: str = "japanese", tag_refresh_days: int = 30):
+    def __init__(self, install_path: str, db: DatabaseManager, bridge_url: str, bridge_api_key: Optional[str] = None, api_key: Optional[str] = None, override_library_path: Optional[str] = None, cache_path: str = "data/scout_cache.json", language: str = "japanese", tag_refresh_days: int = 30, llm_extractor: Any = None):
         self.install_path = ensure_path(install_path)
         self.db = db
         
         self.cache_manager = ScannerCacheManager(cache_path, tag_refresh_days=tag_refresh_days)
-        self.web_client = SteamWebClient(db, bridge_url, bridge_api_key, api_key, language)
+        self.web_client = SteamWebClient(db, bridge_url, bridge_api_key, api_key, language, llm_extractor=llm_extractor)
         
         # 1. Discover all libraries
         self.library_paths = self._discover_all_libraries(override_library_path)
@@ -122,6 +122,8 @@ class SteamScanner:
                     "parent_genres": enriched.get("parent_genres", []),
                     "parent_release_date": enriched.get("parent_release_date"),
                     "store_tracklist": enriched.get("store_tracklist", []),
+                    "store_tracklist_source": enriched.get("store_tracklist_source"),
+                    "store_tracklist_language": enriched.get("store_tracklist_language"),
                     "store_credits": enriched.get("store_credits", ""),
                     "url": f"https://store.steampowered.com/app/{current_id}",
                     "header_image_url": enriched.get("header_image_url"),
@@ -153,6 +155,7 @@ class SteamScanner:
             "header_image_url": None,
             "store_tracklist": [],
             "store_tracklist_source": None,
+            "store_tracklist_language": None,
             "store_credits": "",
             "parent_app_id": common.get("parent") or common.get("fullgameid"),
             "parent_genres": []
