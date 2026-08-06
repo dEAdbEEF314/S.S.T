@@ -1,67 +1,33 @@
 ---
 name: sst-app-investigator
-description: Investigate evaluation status and reasoning for a specific Steam AppID in the S.S.T (Steam Soundtrack Tagger) project.
+description: Investigate one S.S.T AppID by reconciling SQLite state, Steam slots, LLM assignments, physical output, package metadata, and timestamp-matched logs.
 ---
 
-# S.S.T App Evaluation Investigator Skill
+# S.S.T App Investigator
 
-This skill provides the procedures and tools to investigate why a specific Steam AppID was evaluated with a certain status (e.g., `review`, `archive`, `skip`) and to trace the underlying reasoning path (including raw LLM outputs and system heuristics).
+Use this skill for one AppID. It is an evidence workflow, not a batch report generator and not a replacement for the post-batch audit.
 
-## 🛠️ Automated Investigation Tool
+## Evidence order
 
-You can use the automated script in `tests/investigate_app.py` to check the DB record and ZIP log bundle at once.
+1. Read the latest `processed_albums` row for the AppID from `data/sst_local_state.db`.
+2. Locate the matching Archive or Review ZIP under `output/` and inspect only its `json/metadata.json` and `json/llm_log.json` first.
+3. Compare `steam_info.store_tracklist` with `alignment_res.slots`, final `tracks`, `slot_key`, and the physical files represented by each record.
+4. Check `track_groups -> slot_variant_index -> adopted_files -> processed_tracks_meta`; format variants are candidates for one slot, not automatically duplicate songs.
+5. Inspect logs around the processed timestamp and correlate `FILE_RECORDS_BUILT`, duplicate-resolution messages, `VALIDATION_DONE`, package save events, and I/O exceptions.
 
-### Usage
-Run the following command in the workspace root:
-```bash
-uv run python tests/investigate_app.py <AppID>
-```
+## Required findings
 
-### Example Output
-```text
-============================================================
-AppID: 4304640 | Album Name: Blaze of Storm Soundtrack
-Current DB Status: REVIEW
-Validation Message: [Quality too low (40%)]
-Confidence Score: 100% | Integrity Quality: 40%
-System Reason: SYSTEM: STEAM-TRUSTにより確信度を100%に引き上げました (24トラックとの構造的一致)
-============================================================
-Found ZIP Package: output/review/4304640_Blaze_of_Storm_Soundtrack.zip
+Report the AppID, latest status/message/confidence fields, strategy, processed timestamp, expected Steam slot count, final track count, output formats, duplicate `(disc, track)` keys, duplicate `slot_key` values, missing/unexpected slots, `Fallback`, `LOCAL`, `Unknown`, and track `0` counts.
 
---- Raw LLM Phase 1 Response (Before System Heuristics) ---
-Raw Confidence: 60%
-Raw Quality: 40%
-Raw Reason: STEAMのトラックリストとLOCALのファイル名に共通の曲名は見られるが、LOCAL側で同一曲の重複（例: cyber diving 1, 13）や順序の不一致が顕著であり、構造的な一致が認められないため。
-Semantic Label: 不整合あり
-============================================================
-```
+Separate the cause into these categories:
 
-## 🔍 Manual Investigation Procedure
+- **Specification/data**: missing or contradictory Steam structure, malformed source metadata, or unavailable physical files.
+- **LLM alignment**: unassigned files, multiple slots for one file, one slot receiving unrelated files, or a title/number contradiction with Steam.
+- **Implementation**: a reproducible mismatch between an owning transformation boundary and its expected key/slot contract.
+- **I/O**: copy, conversion, permission, mount, or package-write failures supported by matching logs.
 
-If you need to perform manual checks, follow these steps:
+Treat the final validator result and physical output as authoritative. A high LLM confidence value does not override duplicate slots, missing Steam slots, or audio failures. Do not recommend weakening validation, lowering thresholds globally, auto-renumbering ambiguity, or replacing Steam structure with local filenames.
 
-### Step 1: Query the SQLite Database
-Query `processed_albums` in `data/sst_local_state.db` to check the current evaluation status, computed confidence score, and integrity quality:
-```sql
-SELECT status, album_name, metadata_json FROM processed_albums WHERE app_id = <AppID>;
-```
-Key parameters to observe in `metadata_json`:
-* `status`: Final outcome (`archive` / `review`).
-* `confidence_score` & `integrity_quality`: System grading metrics.
-* `message`: Shows which validators triggered (e.g., `[Quality too low (40%)]`).
-* `confidence_reason`: Reason recorded in DB. Note that system heuristics (like `STEAM-TRUST`) might have overwritten the original LLM reasoning here.
+## Privacy
 
-### Step 2: Unpack the ZIP Package Logs
-Find the output ZIP file corresponding to the AppID under `output/review/` or `output/archive/`.
-Extract `json/llm_log.json` to inspect the raw LLM responses.
-
-* **Raw Phase 1 Response**:
-  Look at `logs[0].response` inside `llm_log.json`. This contains the raw JSON output from the LLM *before* system heuristics adjusted the values.
-  Key fields in raw response:
-  * `identity_confidence`: Raw score given by LLM.
-  * `integrity_quality`: Raw quality evaluation score.
-  * `confidence_reason`: The actual raw textual reasoning explaining the discrepancies or alignment issues found.
-
-### Step 3: Map to Code Logic
-* Check `src/sst/validator.py` (`ResultValidator.validate`) to understand which rules (such as duplicates, track number 0, or quality threshold) converted the metrics into the final `review` status.
-* Check `src/sst/llm.py` (`consolidate_virtual_albums`) for any active `SYSTEM-LEVEL HEURISTICS` (e.g., `STEAM-TRUST`) that might have overridden the raw LLM scores.
+Do not paste raw logs, real local paths, hostnames, usernames, credentials, caches, audio, artwork, or database contents into public reports. Summarize the minimum evidence and use synthetic sanitized fixtures for tests.

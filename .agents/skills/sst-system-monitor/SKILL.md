@@ -1,40 +1,26 @@
 ---
 name: sst-system-monitor
-description: Monitor the S.S.T system execution and Ollama backend simultaneously to diagnose hangs, slow processing, or LLM thinking-loop issues.
+description: Monitor an active S.S.T run and Ollama backend for progress, stalls, and I/O or LLM failures without starting the batch.
 ---
 
 # S.S.T System Monitor
 
-When the S.S.T process appears to be frozen or hanging at the `[LLM PROMPT END]` stage, it is often due to the LLM backend (e.g., Ollama) taking a long time to process large contexts or generating excessive "thinking" text. 
-Use this skill to run a concurrent monitoring trace.
+Use this skill only after a batch or selected AppID run has already been started. Starting and completing the run belongs to `sst-batch-test`.
 
-## 🛠️ 3-Tier Monitoring Setup (Diagnostics Execution Steps)
+## Monitor
 
-To properly monitor the system and ensure you don't miss any context, launch these three processes concurrently in the background (using `WaitMsBeforeAsync` to stream their outputs to your context):
+Observe the active S.S.T process and its structured logs, then inspect the Ollama service and model activity using the host’s available process and journal tools. Track:
 
-1. **The Main S.S.T Process**:
-   Ensure `data/sst.lock` is removed first, then start your batch or test.
-   ```bash
-   rm -f data/sst.lock && uv run ./sst --limit <LIMIT> --fingerprint-all --dev --y
-   ```
-   *Provides high-level progress and overall task management.*
+- last log event and elapsed time;
+- AppID and track identifiers on failure lines;
+- LLM request/response or token progress;
+- file copy, conversion, mount, permission, and package-write errors;
+- whether the process is making progress or has stopped at one AppID/track.
 
-2. **S.S.T App Logs (Frontend)**:
-   Start this immediately after the main process to capture verbose application logs.
-   ```bash
-   uv run ./sst --tail
-   ```
-   *Reveals if the LLM is outputting `--- [LLM THINKING START] ---` and how long it takes before returning the actual JSON response.*
+Use `sst --tail` when available for the project’s live log view. Do not expose raw paths, usernames, hostnames, process IDs, credentials, or full private logs in public reports.
 
-3. **Ollama Server Logs (Backend)**:
-   Start this to monitor the native backend behavior.
-   ```bash
-   journalctl -u ollama.service -f
-   ```
-   *Watch for `n_tokens` sizes and `n_decoded` progress to see if the LLM is actively generating text, loading KV caches, or stuck.*
+## Stall diagnosis
 
-## 🔍 How to Analyze
+Call a run stalled only when the process has no meaningful log or token progress for a sustained interval and the backend state supports that conclusion. Distinguish an active long LLM request from an I/O hang, a dead backend, and a completed process whose output has not yet been inspected.
 
-- If `journalctl` shows a steady output of `n_decoded` metrics, the LLM is **not hung**, it is actively generating tokens.
-- If `sst --tail` shows an `[LLM THINKING START]` block that takes a long time, the model is likely bypassing the `NO PREAMBLE` rule and producing excessive verbose thoughts.
-- Before killing the process, evaluate the token generation speed and allow the model some time to finish. If it truly gets stuck in an infinite generation loop, stop the processes and consider switching the `LLM_MODEL` in `.env`.
+When the run ends, hand results to `sst-batch-inspector` or `sst-post-batch-investigator`; do not duplicate their Archive/Review classification.

@@ -1,4 +1,4 @@
-"""Compatibility entry point for the canonical post-batch analysis."""
+"""Compatibility entry point for the canonical post-batch HTML report."""
 
 from pathlib import Path
 import sys

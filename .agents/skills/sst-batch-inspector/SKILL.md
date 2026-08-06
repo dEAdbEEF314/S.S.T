@@ -1,70 +1,28 @@
 ---
 name: sst-batch-inspector
-description: Analyze and inspect processing results of a batch tagger execution in S.S.T (Steam Soundtrack Tagger) project, including detailed statistics and detection of unnatural outcomes.
+description: Summarize the latest S.S.T result row for every AppID and route structural auditing to the post-batch investigator.
 ---
 
-# S.S.T Batch Process Inspector Skill
+# S.S.T Batch Inspector
 
-This skill provides automated scripts and manual procedures to query, categorize, and inspect the overall results of a batch soundtrack tagging run. It helps detect:
-1. Aggregate statistics (Archive vs. Review ratios).
-2. Grouped root causes of `REVIEW` status (e.g. Duplicates, Track#0, Audio errors).
-3. Unnatural `ARCHIVE` outcomes (e.g. massive title deviations with MusicBrainz matching).
-4. Unnatural `REVIEW` outcomes (e.g. LLM has 100% confidence but system validator overrode it due to physical checks).
+Use this skill for a quick batch overview after processing. The detailed audit and HTML report are owned by `sst-post-batch-investigator`; do not duplicate its slot, validator, or Archive/Review classification logic here.
 
----
+## Quick inspection
 
-## 🛠️ Automated Investigation Tool
+Run the canonical report generator from the repository root:
 
-You can run the aggregate analysis script included in this skill to get a complete breakdown of the processing database.
-
-### Usage
-Run the following script to output a text-based analysis to the console:
 ```bash
-uv run python .agents/skills/sst-batch-inspector/scripts/analyze_batch_results.py
+uv run python .agents/skills/sst-post-batch-investigator/scripts/generate_post_batch_report.py
 ```
 
-To generate a beautiful, dark-mode HTML report summarizing the batch run in the `report/` directory:
-```bash
-uv run python .agents/skills/sst-batch-inspector/scripts/generate_html_report.py
-```
+The report reads the latest `processed_albums` row per AppID and writes `report/batch_analysis_report.html`. Treat that report and its canonical script as the only source for batch-level classification. Use `sst-app-investigator` for a single AppID deep dive.
 
-### Script Output Details
-*   **Status Distribution**: Gives count and percentages of overall success (Archive) vs. manual review needed.
-*   **Archive Reason Patterns**: Shows the dominant decision paths (e.g., `Success [Steam Trust]`).
-*   **Review Reason Patterns**: Groups all issues by category (e.g., Duplicates counts, Track#0 counts).
-*   **Unnatural Archive scan**: Reports any albums where the selected MusicBrainz (MBZ) release title similarity to the Steam album title is below 40%.
-*   **Unnatural Review scan**: Lists any AppIDs where the LLM returned `confidence_score == 100` but the final outcome was downgraded to `REVIEW` by the validator, showing the corresponding physical trigger.
+## Batch questions
 
----
+Summarize counts of Archive and Review results, then identify AppIDs that require deep investigation. Preserve the distinction between input format variants and final duplicate records. Steam `store_tracklist`, adopted physical files, and `ResultValidator.validate()` control the interpretation; confidence alone never proves integrity.
 
-## 🔍 Manual SQL Investigation Queries
+For detailed reasons, inspect the canonical report fields for Steam slot count, final track count, duplicate keys, missing/unexpected slots, `Fallback`, `LOCAL`, track `0`, audio errors, and LLM alignment evidence. Do not reintroduce the former `confidence >= 100` heuristic or an independent MBZ similarity classifier.
 
-For direct database inspections, query `data/sst_local_state.db` using the following references.
+## Compatibility scripts
 
-### 1. View Total Statistics
-```sql
-SELECT status, COUNT(*), ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM processed_albums), 2) || '%' AS ratio
-FROM processed_albums
-GROUP BY status;
-```
-
-### 2. Identify High-Confidence Overrides (Unnatural Review)
-Find albums where the system evaluated identity confidence at 100% but validator downgraded it to `REVIEW`:
-```sql
-SELECT app_id, album_name, 
-       json_extract(metadata_json, '$.message') as validator_msg,
-       json_extract(metadata_json, '$.confidence_reason') as reasoning
-FROM processed_albums
-WHERE status = 'review' 
-  AND json_extract(metadata_json, '$.confidence_score') >= 100;
-```
-
-### 3. Extract Tracks Mapped to MusicBrainz Releases
-To check if files are being tagged with wrong MBZ releases:
-```sql
-SELECT app_id, album_name, metadata_json
-FROM processed_albums
-WHERE status = 'archive' 
-  AND metadata_json LIKE '%"source":%"MusicBrainz"%';
-```
-*(Parse the returned metadata JSON's `tracks[].tags.album` against `album_name` using Levenshtein distance).*
+The scripts in `scripts/` are thin compatibility wrappers around the post-batch investigator. They exist for old command references and must not grow independent business logic.

@@ -108,25 +108,25 @@
 <body>
     <header>
         <h1 class="header-title">S.S.T 処理後総合調査・改善報告書</h1>
-        <div class="header-subtitle">対象件数: 100件 | 自動分析・調査モジュール出力</div>
+        <div class="header-subtitle">対象件数: 10件 | 自動分析・調査モジュール出力</div>
     </header>
 
     <div class="kpi-grid">
         <div class="kpi-card">
             <div class="kpi-label">総処理アルバム数</div>
-            <div class="kpi-value">100</div>
+            <div class="kpi-value">10</div>
         </div>
         <div class="kpi-card">
             <div class="kpi-label">Archive 判定</div>
-            <div class="kpi-value archive">42 <span style="font-size: 1rem; color: var(--text-secondary);">(42.0%)</span></div>
+            <div class="kpi-value archive">10 <span style="font-size: 1rem; color: var(--text-secondary);">(100.0%)</span></div>
         </div>
         <div class="kpi-card">
             <div class="kpi-label">Review 判定</div>
-            <div class="kpi-value review">58 <span style="font-size: 1rem; color: var(--text-secondary);">(58.0%)</span></div>
+            <div class="kpi-value review">0 <span style="font-size: 1rem; color: var(--text-secondary);">(0.0%)</span></div>
         </div>
         <div class="kpi-card">
-            <div class="kpi-label">次回 Archive 予測目標</div>
-            <div class="kpi-value target">85%+</div>
+            <div class="kpi-label">現行判定の監査対象</div>
+            <div class="kpi-value target">最新行</div>
         </div>
     </div>
 
@@ -135,19 +135,13 @@
         <h2 class="section-title archive-title">1. 総合的に不自然な Archive 送りのケースと判断理由</h2>
         <p>自動判定で <code>Archive</code> とされたものの、メタデータ品質・美観の観点からクリーンアップ不足や不自然さが残るケースを自動検出しました。</p>
 
-        <h3 class="card-subhead">検出された不自然な Archive 事例 (15件)</h3>
+        <h3 class="card-subhead">検出された不自然な Archive 事例 (4件)</h3>
         <div class="highlight-box warning">
             <ul>
 <li><code>AppID 1027880</code> (A Dance of Fire and Ice OST): AlbumArtist名に社名の二重重複が発生</li>
-<li><code>AppID 1142840</code> (Lichtspeer Soundtrack): HTMLエンティティ未デコード (1トラック): 例 "Space, Time &amp; Death", AlbumArtist名に社名の二重重複が発生</li>
-<li><code>AppID 1224940</code> (Tropico 6 - Original Soundtrack): HTMLエンティティ未デコード (1トラック): 例 "Hot &amp; Spicy"</li>
-<li><code>AppID 1232750</code> (Fury Unleashed Soundtrack): AlbumArtist名に社名の二重重複が発生</li>
-<li><code>AppID 1238761</code> (DJMAX RESPECT V - V Original Soundtrack): AlbumArtist名に社名の二重重複が発生</li>
-<li><code>AppID 1238762</code> (DJMAX RESPECT V - RESPECT Original Soundtrack): HTMLエンティティ未デコード (1トラック): 例 "quiet 29&quot; (Music Select Lock) by Mycin.T"</li>
-<li><code>AppID 1250550</code> (Spin Rhythm XD Vol.1 (Original Sound Track)): AlbumArtist名に社名の二重重複が発生</li>
-<li><code>AppID 1271680</code> (DJMAX RESPECT V - TRILOGY Original Soundtrack(REMASTERED)): AlbumArtist名に社名の二重重複が発生</li>
-<li><code>AppID 1386614</code> (DJMAX RESPECT V - TECHNIKA 2 Original Soundtrack(REMASTERED)): AlbumArtist名に社名の二重重複が発生</li>
-<li><code>AppID 1386615</code> (DJMAX RESPECT V - TECHNIKA 3 Original Soundtrack(REMASTERED)): HTMLエンティティ未デコード (4トラック): 例 "Wanna Be Your Lover by Laurent Newfield &amp; Ravenat", AlbumArtist名に社名の二重重複が発生</li>
+<li><code>AppID 1113040</code> (HARDCORE MECHA - OST): AlbumArtist名に社名の二重重複が発生</li>
+<li><code>AppID 1142840</code> (Lichtspeer Soundtrack): AlbumArtist名に社名の二重重複が発生</li>
+<li><code>AppID 1156340</code> (Nova Drift OST): AlbumArtist名に社名の二重重複が発生</li>
 
             </ul>
         </div>
@@ -157,33 +151,33 @@
     <!-- Section 2 -->
     <section>
         <h2 class="section-title review-title">2. 総合的に不自然な Review 送りのケースと判断理由</h2>
-        <p>過剰に保守的なハードコード閾値やストレージI/Oエラー等により、本来 Archive 判定されるべきデータが Review 送りになっている構造的問題の分類です。</p>
+        <p>Validatorのメッセージ、最終タグ、Steam slot、物理出力、LLM割当、ログを突合し、Reviewの原因を構造・I/O・音声警告・信頼度・LLMアライメントに分類します。</p>
 
-        <h3 class="card-subhead">原因1: ハードコード閾値 <code>if conf &lt; 100: return {}</code> による早期 Review 送り (35件)</h3>
+        <h3 class="card-subhead">原因1: 信頼度・LLM判定ゲート (0件)</h3>
         <div class="highlight-box danger">
-            <p>LLMが Confidence 90%〜98% と高い確信度を返しても、100%未満を理由に Phase 2 を実行せず即座に早期離脱 (<code>early_review</code>) するロジックが原因です。メッセージが空 (<code>None</code>) になるため `Unknown Review Reason` としてカウントされます。</p>
+            <p>物理構造が検証済みかを確認したうえで、confidence、mapping confidence、data quality、archive/review ratio、LLM strategyを根拠として扱います。<code>conf &lt; 100</code>だけでは早期Reviewの原因と断定しません。</p>
         </div>
 
-        <h3 class="card-subhead">原因2: SMB/CIFS ネットワークマウント I/Oエラーによる <code>Audio Source Error</code> 誤判定 (19件)</h3>
+        <h3 class="card-subhead">原因2: SMB/CIFS ネットワークマウント I/Oエラーによる <code>Audio Source Error</code> 誤判定 (0件)</h3>
         <div class="highlight-box danger">
             <p>LLMの判定は100%完全一致であったにも関わらず、ファイルコピー (<code>shutil.copy2</code>) 実行時に <code>[Errno 112] Host is down</code> 等のI/Oエラーが発生し、バリデータが <code>CRITICAL: Audio Source Error</code> として誤降格させたケースです。</p>
         </div>
 
-        <h3 class="card-subhead">原因3: 軽微な構造問題（Track#0 / ディスク重複）による過剰降格 (4件)</h3>
-        <p>タグの Track#0 や複数ディスク間の重複検出などの軽微な表記揺れにより降格したケースです。</p>
+        <h3 class="card-subhead">原因3: Steam構造・最終物理整合性 (0件)</h3>
+        <p><code>Duplicates</code>、<code>Track#0</code>、未知タイトル、dirty tag、slot欠落、最終slot重複など、Archiveを許可できない構造上の問題を含みます。形式違いの入力候補と最終重複レコードは区別します。</p>
     </section>
 
     <!-- Section 3 -->
     <section>
-        <h2 class="section-title action-title">3. 整備されたメタデータの正しさを高めながら、次回のArchive送りを増加させる方法</h2>
+        <h2 class="section-title action-title">3. 証拠に基づく改善候補</h2>
         <div class="highlight-box success">
             <strong>具体的な改修ロードマップ:</strong>
             <ol style="margin-left: 1.25rem; color: var(--text-secondary);">
-                <li><strong><code>conf &lt; 100</code> 早期離脱の撤廃と動的閾値化 (Archive +25〜30件見込み)</strong>: <code>conf &gt;= 85</code> で Phase 2 への遷移を許可し、<code>Confidence &gt;= 90%</code> かつ <code>Quality &gt;= 85%</code> で Archive 送りを許可する。</li>
-                <li><strong>I/Oエラーに対する自動リトライ（指数バックオフ）の実装 (Archive +15〜19件見込み)</strong>: ネットワークドライブ一時切断時に最大3回のリトライ処理を挿入。</li>
-                <li><strong><code>html.unescape()</code> の全自動適用</strong>: タイトル・アルバム・アーティスト名のタグ書き込み前に特殊文字をデコード。</li>
-                <li><strong>AlbumArtist / Genre のインテリジェント正規化</strong>: Developer/Publisher の二重重複の自動排除と、ゲームカテゴリタグの音楽ジャンル化。</li>
-                <li><strong>Track#0 および 二重プレフィックスの自動クリーンアップ</strong>: 1ベースへの自動補正とタイトル冒頭トラック番号の除去。</li>
+                <li><strong>slot identityの回帰テスト</strong>: 物理候補、<code>track_groups</code>、<code>slot_variant_index</code>、<code>adopted_files</code>、最終metadataの件数を固定する。</li>
+                <li><strong>LLM割当の矛盾検出</strong>: 未割当、1ファイルの多重割当、無関係な曲の同一slot割当を自動的にReviewへ分類する。</li>
+                <li><strong>物理I/Oの再試行</strong>: 実ログで確認できたコピー・変換失敗に限定してリトライと構造化診断を追加する。</li>
+                <li><strong>HTML/テキストソースの監査</strong>: 実際に残留したエンティティやLLM抽出ソースだけを対象に正規化を検討する。</li>
+                <li><strong>結果の再検証</strong>: 修正後は同一AppIDまたは合成fixtureを再実行し、Steam slot数、重複0、Fallback0を確認する。</li>
             </ol>
         </div>
     </section>
@@ -193,9 +187,9 @@
         <h2 class="section-title">全件処理結果一覧</h2>
         <div class="filter-bar">
             <input type="text" id="searchInput" class="search-input" placeholder="検索...">
-            <button class="filter-btn active" onclick="filterTable('all')">すべて (100)</button>
-            <button class="filter-btn" onclick="filterTable('archive')">Archive (42)</button>
-            <button class="filter-btn" onclick="filterTable('review')">Review (58)</button>
+            <button class="filter-btn active" onclick="filterTable('all')">すべて (10)</button>
+            <button class="filter-btn" onclick="filterTable('archive')">Archive (10)</button>
+            <button class="filter-btn" onclick="filterTable('review')">Review (0)</button>
         </div>
 
         <div class="table-container" style="max-height: 500px; overflow-y: auto;">
@@ -219,10 +213,10 @@
                         <td><span class="badge archive">ARCHIVE</span></td>
                         <td>100%</td>
                         <td>100%</td>
-                        <td><code>HYBRID</code></td>
+                        <td><code>FAST_TRACK</code></td>
                         <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>FINGERPRINTの照合率が100%であり、STEAMとLOCALのトラックリスト構造も完全に一致しているため。</span>
+                            <strong>Success [Deterministic Fast-Track]</strong><br>
+                            <span>SYSTEM: Deterministic fast-track</span>
                         </td>
                     </tr>
 
@@ -230,12 +224,12 @@
                         <td><code>1029810</code></td>
                         <td>The Textorcist - Soundtrack</td>
                         <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>HYBRID</code></td>
+                        <td>95%</td>
+                        <td>90%</td>
+                        <td><code>STEAM_BASED</code></td>
                         <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>フィンガープリントの合致率が100%であり、Steamとローカルのトラック構成も完全に一致しているため。</span>
+                            <strong>Success [STEAM-TRUST][Steam Trust]</strong><br>
+                            <span>SteamとMBZの一致により特定。ローカルに一部欠落あり。</span>
                         </td>
                     </tr>
 
@@ -245,10 +239,10 @@
                         <td><span class="badge archive">ARCHIVE</span></td>
                         <td>100%</td>
                         <td>100%</td>
-                        <td><code>FINGERPRINT_BASED</code></td>
+                        <td><code>FAST_TRACK</code></td>
                         <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>フィンガープリントによる一致率が100%であり、Steamのメタデータとも完全に整合しているため。</span>
+                            <strong>Success [Deterministic Fast-Track]</strong><br>
+                            <span>SYSTEM: Deterministic fast-track</span>
                         </td>
                     </tr>
 
@@ -256,38 +250,38 @@
                         <td><code>1075710</code></td>
                         <td>Katana ZERO Soundtrack</td>
                         <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>98%</td>
-                        <td><code>FINGERPRINT_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>フィンガープリントの物理的な一致率が100%であり、Steamとローカルのトラックリスト構造も完全に一致しているため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1108260</code></td>
-                        <td>The Messenger Soundtrack - Disc III: Picnic Panic</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
+                        <td>95%</td>
+                        <td>90%</td>
                         <td><code>HYBRID</code></td>
                         <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>[CRITICAL: Audio Source Error]</strong><br>
-                            <span>FINGERPRINTの一致率が100%であり、STEAMのトラックリストとも構造的に完全に一致するため。</span>
+                            <strong>Success [STEAM-TRUST][Steam Trust]</strong><br>
+                            <span>SteamとMBZのデータが一致し、高い信頼性。</span>
                         </td>
                     </tr>
 
-                    <tr class="item-row" data-status="review">
+                    <tr class="item-row" data-status="archive">
+                        <td><code>1108260</code></td>
+                        <td>The Messenger Soundtrack - Disc III: Picnic Panic</td>
+                        <td><span class="badge archive">ARCHIVE</span></td>
+                        <td>95%</td>
+                        <td>80%</td>
+                        <td><code>HYBRID</code></td>
+                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
+                            <strong>Success [STEAM-TRUST][Steam Trust]</strong><br>
+                            <span>SteamとMBZのデータが一致。</span>
+                        </td>
+                    </tr>
+
+                    <tr class="item-row" data-status="archive">
                         <td><code>1113040</code></td>
                         <td>HARDCORE MECHA - OST</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
+                        <td><span class="badge archive">ARCHIVE</span></td>
+                        <td>100%</td>
+                        <td>100%</td>
+                        <td><code>FAST_TRACK</code></td>
                         <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
+                            <strong>Success [Deterministic Fast-Track]</strong><br>
+                            <span>SYSTEM: Deterministic fast-track</span>
                         </td>
                     </tr>
 
@@ -297,1219 +291,49 @@
                         <td><span class="badge archive">ARCHIVE</span></td>
                         <td>100%</td>
                         <td>100%</td>
-                        <td><code>STEAM_BASED</code></td>
+                        <td><code>FAST_TRACK</code></td>
                         <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>STEAMのトラックリストとローカルデータの構造が一致しており、タイトルも整合しているため、STEAMを正誤の基準として採用。</span>
+                            <strong>Success [Deterministic Fast-Track]</strong><br>
+                            <span>SYSTEM: Deterministic fast-track</span>
                         </td>
                     </tr>
 
-                    <tr class="item-row" data-status="review">
+                    <tr class="item-row" data-status="archive">
                         <td><code>1156340</code></td>
                         <td>Nova Drift OST</td>
-                        <td><span class="badge review">REVIEW</span></td>
+                        <td><span class="badge archive">ARCHIVE</span></td>
                         <td>100%</td>
                         <td>100%</td>
-                        <td><code>FINGERPRINT_BASED</code></td>
+                        <td><code>FAST_TRACK</code></td>
                         <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>[CRITICAL: Audio Source Error]</strong><br>
-                            <span>FINGERPRINTによる物理一致率が100%であり、STEAMとLOCALのトラックリスト構造も完全に一致するため。</span>
+                            <strong>Success [Deterministic Fast-Track]</strong><br>
+                            <span>SYSTEM: Deterministic fast-track</span>
                         </td>
                     </tr>
 
-                    <tr class="item-row" data-status="review">
+                    <tr class="item-row" data-status="archive">
                         <td><code>1167720</code></td>
                         <td>Artifact Adventure Gaiden DX Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
+                        <td><span class="badge archive">ARCHIVE</span></td>
+                        <td>100%</td>
+                        <td>100%</td>
+                        <td><code>FAST_TRACK</code></td>
                         <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
+                            <strong>Success [Deterministic Fast-Track]</strong><br>
+                            <span>SYSTEM: Deterministic fast-track</span>
                         </td>
                     </tr>
 
-                    <tr class="item-row" data-status="review">
+                    <tr class="item-row" data-status="archive">
                         <td><code>1195480</code></td>
                         <td>DOOM Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>FINGERPRINT_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>[CRITICAL: Audio Source Error]</strong><br>
-                            <span>フィンガープリントの完全一致（100%）およびSteamとの構造的一致により、高い信頼性を確認。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1206340</code></td>
-                        <td>Hades Original Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1207000</code></td>
-                        <td>Slime Rancher: Original Soundtrack II + The Casey Sessions</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>HYBRID</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>[CRITICAL: Audio Source Error]</strong><br>
-                            <span>フィンガープリントの完全一致およびSteamとローカルデータの構造的一致により、極めて高い信頼性を確認。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1224940</code></td>
-                        <td>Tropico 6 - Original Soundtrack</td>
                         <td><span class="badge archive">ARCHIVE</span></td>
                         <td>100%</td>
                         <td>100%</td>
-                        <td><code>FINGERPRINT_BASED</code></td>
+                        <td><code>FAST_TRACK</code></td>
                         <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>フィンガープリントの一致率が100%であり、Steamのトラックリストとも完全に一致するため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1232750</code></td>
-                        <td>Fury Unleashed Soundtrack</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>FINGERPRINT_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>フィンガープリントの一致率が100%であり、Steamおよびローカルのトラックリストと構造的に一致しているため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1238761</code></td>
-                        <td>DJMAX RESPECT V - V Original Soundtrack</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>HYBRID</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>FINGERPRINTの物理一致率が非常に高く、STEAMとLOCALのトラックリスト構造が完全に一致しているため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1238762</code></td>
-                        <td>DJMAX RESPECT V - RESPECT Original Soundtrack</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>98%</td>
-                        <td><code>STEAM_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>STEAMとLOCALのトラックリスト構造が完全に一致しており、FINGERPRINTによる高いマッチ率（98.4%）によってコンテンツの同一性が確認されたため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1250550</code></td>
-                        <td>Spin Rhythm XD Vol.1 (Original Sound Track)</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>FINGERPRINT_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>フィンガープリントの照合率が100%であり、Steamとローカルのトラックリストも完全に一致しているため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1252080</code></td>
-                        <td>Yes, Your Grace Soundtrack</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>HYBRID</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>フィンガープリントの完全一致（100%）およびSteamとローカルの構造的一致により、非常に高い信頼性を確認。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1270860</code></td>
-                        <td>Exit the Gungeon Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>FINGERPRINT_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>[CRITICAL: Audio Source Error]</strong><br>
-                            <span>フィンガープリントの完全一致（100%）およびSteamとローカルの構造的一致により、高い信頼性を確認しました。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1271680</code></td>
-                        <td>DJMAX RESPECT V - TRILOGY Original Soundtrack(REMASTERED)</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>HYBRID</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>FINGERPRINTの波形一致率が100%であり、STEAMとLOCALのトラック構成も完全に一致しているため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1279740</code></td>
-                        <td>Desperados III Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>100%</td>
-                        <td>90%</td>
-                        <td><code>STEAM_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>[Duplicates (2)]</strong><br>
-                            <span>SYSTEM: STEAM-TRUSTにより確信度を100%に引き上げました (87トラックとの構造的一致)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1286760</code></td>
-                        <td>Outer Wilds - Original Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>HYBRID</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>[CRITICAL: Audio Source Error]</strong><br>
-                            <span>FINGERPRINTの物理一致率が100%であり、STEAMとLOCALのトラック構成も完全に一致しているため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1292200</code></td>
-                        <td>Sound of Windshift sound track vol.001</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>STEAM_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>[CRITICAL: Audio Source Error]</strong><br>
-                            <span>STEAMのトラックリストとLOCALのデータが構造的および内容的に一致しているため、STEAMを正解として採用。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1295830</code></td>
-                        <td>Colt Canyon Soundtrack</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>FINGERPRINT_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>フィンガープリントの照合率が100%であり、Steamのトラックリストとも完全に一致しているため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1297600</code></td>
-                        <td>art of rally OST</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1299740</code></td>
-                        <td>FlatOut 4: Total Insanity Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>SYSTEM: 巨大アルバムのCoherence分割（Map-Reduce）に失敗したため、安全のために手動レビューへフォールバックしました。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1315140</code></td>
-                        <td>DJMAX RESPECT V - Clazziquai Edition Original Soundtrack(REMASTERED)</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>STEAM_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>SteamのトラックリストとLocalの構成が完全に一致しており、タイトルも対応しているため、STEAM_BASED戦略を採用。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1315150</code></td>
-                        <td>DJMAX RESPECT V - BLACK SQUARE Original Soundtrack(REMASTERED)</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>STEAM_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>Steamのトラックリスト構造とLocalのデータが完全に一致しており、信頼性の高いソースに基づいているため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1376240</code></td>
-                        <td>The Spike Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1386613</code></td>
-                        <td>DJMAX RESPECT V - TECHNIKA Original Soundtrack(REMASTERED)</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1386614</code></td>
-                        <td>DJMAX RESPECT V - TECHNIKA 2 Original Soundtrack(REMASTERED)</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>FINGERPRINT_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>FINGERPRINTによる物理的な一致率が100%であり、STEAMのトラックリストとも完全に一致しているため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1386615</code></td>
-                        <td>DJMAX RESPECT V - TECHNIKA 3 Original Soundtrack(REMASTERED)</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>FINGERPRINT_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>FINGERPRINTの物理一致率が100%であり、STEAMおよびLOCALのデータと完全に整合しているため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1394870</code></td>
-                        <td>Going Under Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1396440</code></td>
-                        <td>Neon Abyss Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>HYBRID</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>[CRITICAL: Audio Source Error]</strong><br>
-                            <span>FINGERPRINTの物理一致率が100%であり、MBZ_SEARCHおよびSTEAMの情報と完全に整合しているため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1418580</code></td>
-                        <td>Gato Roboto Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>100%</td>
-                        <td>95%</td>
-                        <td><code>HYBRID</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>[CRITICAL: Audio Source Error]</strong><br>
-                            <span>フィンガープリントの照合率が100%であり、Steamとローカルのトラックリスト構造も完全に一致しているため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1440610</code></td>
-                        <td>Superliminal Double-Album Soundtrack</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>FINGERPRINT_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>フィンガープリントの照合率が100%であり、Steamのデータと構造的に完全に一致しているため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1442060</code></td>
-                        <td>Batbarian: Testament of the Primordials Original Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1457010</code></td>
-                        <td>Jelly Brawl Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1475790</code></td>
-                        <td>PHOGS! Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>FINGERPRINT_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>[CRITICAL: Audio Source Error]</strong><br>
-                            <span>フィンガープリントの照合率が100%であり、STEAMのトラックリストとローカルファイルの構造が完全に一致しているため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1477620</code></td>
-                        <td>奴隷闘士サラ サウンドトラック</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>95%</td>
-                        <td><code>STEAM_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>STEAMのトラックリストとLOCALの構成が完全に一致しており、主要な曲名（Never Despair, Get The Liberty）も一致するため、Steam-Trustパスを適用し高信頼度と</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1480200</code></td>
-                        <td>Chronicle: Unit Eight Original Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1495710</code></td>
-                        <td>Cyberpunk 2077 Bonus Content</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1517040</code></td>
-                        <td>CrossCode Original Soundtrack EX</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>FINGERPRINT_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>フィンガープリントの照合率が100%であり、Steamの情報ともトラックリストの構造およびタイトルが完全に一致しているため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1543230</code></td>
-                        <td>Speed Limit Soundtrack</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>STEAM_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>Steamのトラックリストとローカルファイルの構造が完全に一致しており、STEAM-TRUSTパスを適用するため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1549040</code></td>
-                        <td>Incredibox Tracks</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1553350</code></td>
-                        <td>30XX Original Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1562200</code></td>
-                        <td>Loop Hero Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>FINGERPRINT_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>[CRITICAL: Audio Source Error]</strong><br>
-                            <span>フィンガープリントの物理一致率が100%であり、Steamとローカルのトラックリスト構造も完全に一致しているため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1568690</code></td>
-                        <td>DJMAX RESPECT V - Portable 3 Original Soundtrack(REMASTERED)</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>FINGERPRINT_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>FINGERPRINTによる波形照合が100%であり、STEAMのトラックリストおよびLOCALの構成と完全に一致しているため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1572010</code></td>
-                        <td>ラストコマンド　デジタルサウンドトラック</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1580110</code></td>
-                        <td>Inspector Waffles Soundtrack</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>STEAM_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>Steamのデータとローカルファイルのトラックリストが構造および内容の両面で完全に一致しているため、STEAMを正誤の基準として採用します。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1586440</code></td>
-                        <td>Smelter&#x27;s Mix Tape - The Official Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1586580</code></td>
-                        <td>Narita Boy Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1593020</code></td>
-                        <td>Milk inside a bag of milk inside a bag of milk Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1611170</code></td>
-                        <td>Capcom Arcade Stadium: ミニアルバム Track 01 - A Brand New Day</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1611180</code></td>
-                        <td>Capcom Arcade Stadium: ミニアルバム Track 02 - OPENING　ファイナルファイト</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1611190</code></td>
-                        <td>Capcom Arcade Stadium: ミニアルバム Track 03 - CREDIT~GAME START~PLAYER SELECT　キャプテンコマンドー</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>FINGERPRINT_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>FINGERPRINTの物理一致率が100%であり、STEAMおよびLOCALのトラック情報とも完全に一致しているため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1611200</code></td>
-                        <td>Capcom Arcade Stadium: ミニアルバム Track 04 - DEMO　天地を喰らうⅡ - 赤壁の戦い -</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1611210</code></td>
-                        <td>Capcom Arcade Stadium: ミニアルバム Track 05 - Cammy&#x27;stheme　スーパーストリートファイターIIX</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>100%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>FINGERPRINTの物理一致率が100%であり、STEAMとLOCALの構造も完全に一致しているため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1611220</code></td>
-                        <td>Capcom Arcade Stadium: ミニアルバム Track 06 - Teenage Blues</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>FINGERPRINT_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>FINGERPRINTの照合率が100%であり、STEAMの情報と構造的に一致するため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1611230</code></td>
-                        <td>Capcom Arcade Stadium: ミニアルバム Track 07 - Opening　パワードギア</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>FINGERPRINT_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>FINGERPRINTの照合率が100%であり、STEAMの情報とも整合性が取れるため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1611240</code></td>
-                        <td>Capcom Arcade Stadium: ミニアルバム Track 08 - オープニング　バトルサーキット</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1611250</code></td>
-                        <td>Capcom Arcade Stadium: ミニアルバム Track 09 - 平地BGM　魔界村</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>100%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>FINGERPRINTの照合率が100%であり、STEAMのメタデータと内容が一致しているため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1611260</code></td>
-                        <td>Capcom Arcade Stadium: ミニアルバム Track 10 - ステージ１メドレー　ストライダー飛竜</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>FINGERPRINT_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>FINGERPRINTの波形一致率が100%であり、STEAMのトラック構成とも完全に一致するため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1621040</code></td>
-                        <td>HUNTDOWN Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>HYBRID</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>[CRITICAL: Audio Source Error]</strong><br>
-                            <span>FINGERPRINTの波形一致率が100%であり、STEAMとLOCALのトラック構成も完全に一致しているため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1631300</code></td>
-                        <td>Gearshifters - Original Soundtrack</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>FINGERPRINT_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>FINGERPRINTの物理一致率が100%であり、STEAMとLOCALのトラックリストも完全に一致するため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1634570</code></td>
-                        <td>Astalon: Tears of the Earth - Original Sound Version</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>FINGERPRINT_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>フィンガープリントの完全一致およびSteamとの構造的一致により、高い信頼性を確認。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1634580</code></td>
-                        <td>Astalon: Tears of the Earth - Super Arrange Version</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1645220</code></td>
-                        <td>NEEDY GIRL OVERDOSE Soundtrack</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>FINGERPRINT_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>フィンガープリントの照合率が100%であり、Steamとローカルのトラック構成も完全に一致しているため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1657310</code></td>
-                        <td>Operation: Tango - Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1663820</code></td>
-                        <td>Super Magbot: Original Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>HYBRID</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>[Track#0 x14, Duplicates (13)]</strong><br>
-                            <span>FINGERPRINTの物理一致率が100%であり、STEAMのトラック構造とも完全に整合しているため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1663830</code></td>
-                        <td>Super Magbot: The Broken Worlds Original Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1668440</code></td>
-                        <td>Prodeus MIDI Soundtrack</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>HYBRID</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>フィンガープリントの完全一致、およびSteamとローカルのトラックリスト構造が完全に一致しているため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1702020</code></td>
-                        <td>Evertried Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>100%</td>
-                        <td>95%</td>
-                        <td><code>STEAM_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>[CRITICAL: Audio Source Error]</strong><br>
-                            <span>Steamのトラックリストとローカルファイルの構造が完全に一致しており、タイトルも対応しているため、STEAMを正解として採用。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1735290</code></td>
-                        <td>Super Woden GP Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>100%</td>
-                        <td>95%</td>
-                        <td><code>STEAM_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>[CRITICAL: Audio Source Error]</strong><br>
-                            <span>SteamとLocalのトラックリストが構造的および内容的に一致しているため、STEAMを正解として採用。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1749230</code></td>
-                        <td>UnMetal - Big Boom-Box Soundtrack</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>HYBRID</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>STEAMとFINGERPRINTの両方のデータが完全に一致しており、非常に高い信頼性があります。アーティスト名の差異はエイリアスとして処理されます。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1749910</code></td>
-                        <td>In Sound Mind Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>FINGERPRINGT_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>[CRITICAL: Audio Source Error]</strong><br>
-                            <span>FINGERPRINTの一致率が100%であり、STEAMおよびLOCALのトラックリストと完全に一致しているため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1754220</code></td>
-                        <td>Severed Steel Soundtrack</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>FINGERPRINT_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>フィンガープリントの照合率が100%であり、Steamのトラックリスト構造とも完全に一致するため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1761580</code></td>
-                        <td>Mayhem Brawler Original Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>100%</td>
-                        <td>95%</td>
-                        <td><code>STEAM_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>[CRITICAL: Audio Source Error]</strong><br>
-                            <span>STEAMのトラックリストとLOCALのデータが構造的および内容的に一致しているため、信頼度は非常に高いです。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1764110</code></td>
-                        <td>Phantom Breaker: Omnia Original Game Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1770530</code></td>
-                        <td>Aeon Drive Soundtrack</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>98%</td>
-                        <td><code>STEAM_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>STEAMのトラックリストとLOCALの構造が一致しており、信頼できるため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1791780</code></td>
-                        <td>Nuclear Blaze Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1796120</code></td>
-                        <td>Fights in Tight Spaces: Original Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>100%</td>
-                        <td>98%</td>
-                        <td><code>STEAM_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>[Track#0 x2, Duplicates (6)]</strong><br>
-                            <span>STEAMとMBZ_SEARCHのトラックリスト構造が完全に一致しており、FINGERPRINTの不完全なマッチングにもかかわらず高い信頼性が確認されたため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1806720</code></td>
-                        <td>Dead Estate Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>100%</td>
-                        <td>95%</td>
-                        <td><code>STEAM_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>[Track#0 x3, Duplicates (19)]</strong><br>
-                            <span>SteamとLocalのトラックリスト構造が一致しており、Fingerprintの不完全な情報をSteamのデータで補完できるため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1812720</code></td>
-                        <td>Moon Dancer Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>100%</td>
-                        <td>95%</td>
-                        <td><code>STEAM_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>[CRITICAL: Audio Source Error]</strong><br>
-                            <span>Steamのトラックリスト構造とタイトルがローカルデータと完全に一致するため、信頼度を最大に設定。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1816580</code></td>
-                        <td>Happy’s Humble Burger Farm: Rock the Warehouse (OST)</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1817050</code></td>
-                        <td>Shadow Tactics: Blades of the Shogun - Aiko&#x27;s Choice - Soundtrack</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>FINGERPRINT_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>フィンガープリントの照合率が100%であり、Steamのデータとローカルのトラックリストが完全に一致しているため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1825400</code></td>
-                        <td>Door Kickers 2 - Soundtrack</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>STEAM_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>STEAMのトラックリストとLOCALのデータが構造的にも内容的にも完全に一致しており、信頼性が非常に高いため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1831430</code></td>
-                        <td>式神の城II - サウンドトラック</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>95%</td>
-                        <td><code>STEAM_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>STEAMのトラックリストとLOCALのデータが構造的および内容的に一致しているため、STEAMを信頼できるソースとして採用。FINGERPRINTの低いマッチ率に関わらず、高い確度で特定。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1832390</code></td>
-                        <td>Happy’s Humble Burger Farm: Seacoast Row (OST)</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1832400</code></td>
-                        <td>Happy’s Humble Burger Farm: Fountain of Guts (OST)</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1832410</code></td>
-                        <td>Happy’s Humble Burger Farm: Ambush (OST)</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1832420</code></td>
-                        <td>Happy’s Humble Burger Farm: Score (OST)</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>100%</td>
-                        <td>95%</td>
-                        <td><code>STEAM_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>[CRITICAL: Audio Source Error]</strong><br>
-                            <span>STEAMとLOCALのトラックリスト構造およびタイトルが一致しているため、STEAMを正解として採用。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1832430</code></td>
-                        <td>Happy&#x27;s Humble Burger Farm: Landing Gear (OST)</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>HYBRID</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>STEAMとFINGERPRINTの両方で高い一致が確認され、トラックリストの構造も完全に一致しているため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1832440</code></td>
-                        <td>Happy&#x27;s Humble Burger Farm: Super Barnyard Buds (OST)</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>STEAM_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>SteamとLocalのトラックリストが完全に一致しており、MBZ検索による裏付けも得られるため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1832450</code></td>
-                        <td>Happy&#x27;s Humble Burger Farm: Obscura Programming (OST)</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>100%</td>
-                        <td>95%</td>
-                        <td><code>STEAM_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>[CRITICAL: Audio Source Error]</strong><br>
-                            <span>STEAMとLOCALのトラックリストが構造的および内容的に一致しているため、STEAMを正解として採用。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1832460</code></td>
-                        <td>Happy&#x27;s Humble Burger Farm: Mutual Decline (OST)</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>STEAM_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>SteamとLocalのトラックリストが完全に一致しており、MBZによる裏付けも得られているため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1832470</code></td>
-                        <td>Happy&#x27;s Humble Burger Farm: Hypnosystemic (OST)</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>STEAM_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>STEAMのトラックリストとLOCALが完全に一致しており、MBZ検索結果とも整合性が取れるため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1832490</code></td>
-                        <td>Crimzon Clover World EXplosion - Complete Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1833520</code></td>
-                        <td>Happy&#x27;s Humble Burger Farm: Departing Flight (OST)</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>STEAM_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Steam Trust]</strong><br>
-                            <span>Steamのトラックリストとローカルデータの構造が完全に一致しており、MBZ検索結果との整合性も確認されたため。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="review">
-                        <td><code>1843010</code></td>
-                        <td>DJMAX RESPECT V - V EXTENSION II Original Soundtrack</td>
-                        <td><span class="badge review">REVIEW</span></td>
-                        <td>0%</td>
-                        <td>0%</td>
-                        <td><code>N/A</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>N/A (Early Review)</strong><br>
-                            <span>response truncated by backend (done_reason=length)</span>
+                            <strong>Success [Deterministic Fast-Track]</strong><br>
+                            <span>SYSTEM: Deterministic fast-track</span>
                         </td>
                     </tr>
 

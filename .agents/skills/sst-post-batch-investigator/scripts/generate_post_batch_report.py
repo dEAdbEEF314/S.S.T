@@ -5,13 +5,54 @@ import re
 import glob
 from pathlib import Path
 
+def _track_key(track):
+    tags = track.get('tags', {})
+    disc = str(tags.get('disc_number', '1')).split('/')[0]
+    number = str(tags.get('track_number', '0')).split('/')[0]
+    return disc, number
+
+
+def _integrity_snapshot(meta, tracks):
+    expected_slots = []
+    steam_info = meta.get('steam_info') or {}
+    for slot in steam_info.get('store_tracklist') or []:
+        expected_slots.append((str(slot.get('disc', 1)), str(slot.get('number', '0'))))
+
+    track_keys = [_track_key(track) for track in tracks]
+    slot_keys = [str(track.get('slot_key', '')) for track in tracks]
+    format_counts = {}
+    for track in tracks:
+        suffix = Path(str(track.get('file_path', ''))).suffix.lower() or 'unknown'
+        format_counts[suffix] = format_counts.get(suffix, 0) + 1
+
+    return {
+        'expected_slot_count': len(expected_slots),
+        'track_keys': track_keys,
+        'duplicate_key_count': len(track_keys) - len(set(track_keys)),
+        'missing_slots': sorted(set(expected_slots) - set(track_keys)),
+        'unexpected_slots': sorted(set(track_keys) - set(expected_slots)) if expected_slots else [],
+        'slot_key_count': len(set(slot_keys)),
+        'duplicate_slot_key_count': len(slot_keys) - len(set(slot_keys)),
+        'format_counts': format_counts,
+        'fallback_count': sum(track.get('source') == 'Fallback' for track in tracks),
+        'local_title_count': sum(track.get('title_source') == 'LOCAL' for track in tracks),
+        'track_zero_count': sum(str(track.get('tags', {}).get('track_number')) == '0' for track in tracks),
+        'unknown_title_count': sum((track.get('tags', {}).get('title') or 'Unknown') == 'Unknown' for track in tracks),
+    }
+
+
 def analyze_and_generate_report(db_path='data/sst_local_state.db', output_dir='report'):
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    cursor.execute('SELECT app_id, album_name, status, metadata_json FROM processed_albums ORDER BY CAST(app_id AS INTEGER)')
+    cursor.execute('''
+        SELECT app_id, album_name, status, metadata_json
+        FROM processed_albums
+        WHERE rowid IN (SELECT MAX(rowid) FROM processed_albums GROUP BY app_id)
+        ORDER BY CAST(app_id AS INTEGER)
+    ''')
     rows = cursor.fetchall()
 
     archives = []
@@ -40,6 +81,7 @@ def analyze_and_generate_report(db_path='data/sst_local_state.db', output_dir='r
     for app_id, name, status, meta_str in rows:
         meta = json.loads(meta_str) if meta_str else {}
         tracks = meta.get('tracks', [])
+        integrity = _integrity_snapshot(meta, tracks)
         conf = meta.get('confidence_score', 0)
         qual = meta.get('integrity_quality', 0)
         msg = meta.get('message') or 'N/A (Early Review)'
@@ -56,6 +98,7 @@ def analyze_and_generate_report(db_path='data/sst_local_state.db', output_dir='r
             'reason': reason,
             'strategy': strategy,
             'track_count': len(tracks),
+            'integrity': integrity,
             'meta': meta
         }
         all_items.append(item)
@@ -82,6 +125,14 @@ def analyze_and_generate_report(db_path='data/sst_local_state.db', output_dir='r
                 issues.append(f"HTMLエンティティ未デコード ({len(html_entities)}トラック): 例 \"{html_entities[0]}\"")
             if dirty_artist:
                 issues.append("AlbumArtist名に社名の二重重複が発生")
+            if integrity['duplicate_key_count']:
+                issues.append(f"最終Disc/Track重複 ({integrity['duplicate_key_count']})")
+            if integrity['duplicate_slot_key_count']:
+                issues.append(f"最終slot_key重複 ({integrity['duplicate_slot_key_count']})")
+            if integrity['expected_slot_count'] and len(tracks) != integrity['expected_slot_count']:
+                issues.append(f"Steam slot数不一致 ({len(tracks)}/{integrity['expected_slot_count']})")
+            if integrity['fallback_count'] or integrity['local_title_count']:
+                issues.append(f"Fallback/LOCAL残留 ({integrity['fallback_count']}/{integrity['local_title_count']})")
 
             if issues:
                 unnatural_archives.append({
@@ -94,12 +145,14 @@ def analyze_and_generate_report(db_path='data/sst_local_state.db', output_dir='r
             reviews.append(item)
             app_id_int = int(app_id) if str(app_id).isdigit() else app_id
 
-            if msg == 'N/A (Early Review)' or 'No LLM response' in reason or conf < 100:
-                unnatural_reviews_conf.append(item)
-            elif app_id_int in io_error_app_ids or 'CRITICAL: Audio Source Error' in msg:
+            if app_id_int in io_error_app_ids or 'CRITICAL: Audio Source Error' in msg:
                 unnatural_reviews_io.append(item)
-            else:
+            elif any(token in msg for token in ['Duplicates', 'Track#0', 'Unknown Title', 'Dirty Tags', 'Duplicate Titles']) or integrity['duplicate_key_count'] or integrity['missing_slots']:
                 unnatural_reviews_minor.append(item)
+            elif msg == 'N/A (Early Review)' or 'No LLM response' in reason or conf < 90:
+                unnatural_reviews_conf.append(item)
+            else:
+                unnatural_reviews_conf.append(item)
 
     # HTML Generation
     report_file = output_path / 'batch_analysis_report.html'
@@ -231,8 +284,8 @@ def analyze_and_generate_report(db_path='data/sst_local_state.db', output_dir='r
             <div class="kpi-value review">{len(reviews)} <span style="font-size: 1rem; color: var(--text-secondary);">({len(reviews)/max(len(all_items),1)*100:.1f}%)</span></div>
         </div>
         <div class="kpi-card">
-            <div class="kpi-label">次回 Archive 予測目標</div>
-            <div class="kpi-value target">85%+</div>
+            <div class="kpi-label">現行判定の監査対象</div>
+            <div class="kpi-value target">最新行</div>
         </div>
     </div>
 
@@ -257,11 +310,11 @@ def analyze_and_generate_report(db_path='data/sst_local_state.db', output_dir='r
     <!-- Section 2 -->
     <section>
         <h2 class="section-title review-title">2. 総合的に不自然な Review 送りのケースと判断理由</h2>
-        <p>過剰に保守的なハードコード閾値やストレージI/Oエラー等により、本来 Archive 判定されるべきデータが Review 送りになっている構造的問題の分類です。</p>
+        <p>Validatorのメッセージ、最終タグ、Steam slot、物理出力、LLM割当、ログを突合し、Reviewの原因を構造・I/O・音声警告・信頼度・LLMアライメントに分類します。</p>
 
-        <h3 class="card-subhead">原因1: ハードコード閾値 <code>if conf &lt; 100: return {{}}</code> による早期 Review 送り ({len(unnatural_reviews_conf)}件)</h3>
+        <h3 class="card-subhead">原因1: 信頼度・LLM判定ゲート ({len(unnatural_reviews_conf)}件)</h3>
         <div class="highlight-box danger">
-            <p>LLMが Confidence 90%〜98% と高い確信度を返しても、100%未満を理由に Phase 2 を実行せず即座に早期離脱 (<code>early_review</code>) するロジックが原因です。メッセージが空 (<code>None</code>) になるため `Unknown Review Reason` としてカウントされます。</p>
+            <p>物理構造が検証済みかを確認したうえで、confidence、mapping confidence、data quality、archive/review ratio、LLM strategyを根拠として扱います。<code>conf &lt; 100</code>だけでは早期Reviewの原因と断定しません。</p>
         </div>
 
         <h3 class="card-subhead">原因2: SMB/CIFS ネットワークマウント I/Oエラーによる <code>Audio Source Error</code> 誤判定 ({len(unnatural_reviews_io)}件)</h3>
@@ -269,21 +322,21 @@ def analyze_and_generate_report(db_path='data/sst_local_state.db', output_dir='r
             <p>LLMの判定は100%完全一致であったにも関わらず、ファイルコピー (<code>shutil.copy2</code>) 実行時に <code>[Errno 112] Host is down</code> 等のI/Oエラーが発生し、バリデータが <code>CRITICAL: Audio Source Error</code> として誤降格させたケースです。</p>
         </div>
 
-        <h3 class="card-subhead">原因3: 軽微な構造問題（Track#0 / ディスク重複）による過剰降格 ({len(unnatural_reviews_minor)}件)</h3>
-        <p>タグの Track#0 や複数ディスク間の重複検出などの軽微な表記揺れにより降格したケースです。</p>
+        <h3 class="card-subhead">原因3: Steam構造・最終物理整合性 ({len(unnatural_reviews_minor)}件)</h3>
+        <p><code>Duplicates</code>、<code>Track#0</code>、未知タイトル、dirty tag、slot欠落、最終slot重複など、Archiveを許可できない構造上の問題を含みます。形式違いの入力候補と最終重複レコードは区別します。</p>
     </section>
 
     <!-- Section 3 -->
     <section>
-        <h2 class="section-title action-title">3. 整備されたメタデータの正しさを高めながら、次回のArchive送りを増加させる方法</h2>
+        <h2 class="section-title action-title">3. 証拠に基づく改善候補</h2>
         <div class="highlight-box success">
             <strong>具体的な改修ロードマップ:</strong>
             <ol style="margin-left: 1.25rem; color: var(--text-secondary);">
-                <li><strong><code>conf &lt; 100</code> 早期離脱の撤廃と動的閾値化 (Archive +25〜30件見込み)</strong>: <code>conf &gt;= 85</code> で Phase 2 への遷移を許可し、<code>Confidence &gt;= 90%</code> かつ <code>Quality &gt;= 85%</code> で Archive 送りを許可する。</li>
-                <li><strong>I/Oエラーに対する自動リトライ（指数バックオフ）の実装 (Archive +15〜19件見込み)</strong>: ネットワークドライブ一時切断時に最大3回のリトライ処理を挿入。</li>
-                <li><strong><code>html.unescape()</code> の全自動適用</strong>: タイトル・アルバム・アーティスト名のタグ書き込み前に特殊文字をデコード。</li>
-                <li><strong>AlbumArtist / Genre のインテリジェント正規化</strong>: Developer/Publisher の二重重複の自動排除と、ゲームカテゴリタグの音楽ジャンル化。</li>
-                <li><strong>Track#0 および 二重プレフィックスの自動クリーンアップ</strong>: 1ベースへの自動補正とタイトル冒頭トラック番号の除去。</li>
+                <li><strong>slot identityの回帰テスト</strong>: 物理候補、<code>track_groups</code>、<code>slot_variant_index</code>、<code>adopted_files</code>、最終metadataの件数を固定する。</li>
+                <li><strong>LLM割当の矛盾検出</strong>: 未割当、1ファイルの多重割当、無関係な曲の同一slot割当を自動的にReviewへ分類する。</li>
+                <li><strong>物理I/Oの再試行</strong>: 実ログで確認できたコピー・変換失敗に限定してリトライと構造化診断を追加する。</li>
+                <li><strong>HTML/テキストソースの監査</strong>: 実際に残留したエンティティやLLM抽出ソースだけを対象に正規化を検討する。</li>
+                <li><strong>結果の再検証</strong>: 修正後は同一AppIDまたは合成fixtureを再実行し、Steam slot数、重複0、Fallback0を確認する。</li>
             </ol>
         </div>
     </section>
