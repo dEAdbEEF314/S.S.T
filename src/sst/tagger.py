@@ -67,7 +67,9 @@ class AudioTagger:
         Enforces 24-bit / 48 kHz maximum limits for lossless files.
         Returns (output_path, has_warnings).
         """
-        target_ext = ".aif" if tier == "lossless" else ".mp3"
+        tier_value = str(tier)
+        is_lossless = tier_value == "lossless" or tier_value in {"0", "1"}
+        target_ext = ".aif" if is_lossless else ".mp3"
         out_rel_dir = self.output_dir / subdir
         out_rel_dir.mkdir(parents=True, exist_ok=True)
         target_path = out_rel_dir / (source_path.stem + target_ext)
@@ -76,7 +78,7 @@ class AudioTagger:
         cmd = ["ffmpeg", "-y", "-i", str(source_path)]
         
         # Enforce ID3v2.3 for both AIFF and MP3
-        if tier == "lossless":
+        if is_lossless:
             cmd += ["-write_id3v2", "1", "-id3v2_version", "3"]
             
             # Check source properties for conditional downsampling
@@ -115,7 +117,7 @@ class AudioTagger:
         return target_path, has_warnings
 
     def write_tags(self, file_path: Path, tag_map: Dict[str, Any], artwork_path: Optional[Path] = None):
-        from mutagen.id3 import TIT2, TPE1, TALB, TCON, TRCK, TPOS, COMM, TPE2, TCOM, APIC, TIT1, TYER, TPUB, TLAN
+        from mutagen.id3 import TIT2, TPE1, TALB, TCON, TRCK, TPOS, COMM, TPE2, TCOM, APIC, TIT1, TYER, TLAN
         from mutagen.aiff import AIFF
         from mutagen.mp3 import MP3
 
@@ -137,10 +139,6 @@ class AudioTagger:
             tags.add(TALB(encoding=1, text=tag_map["album"]))
             tags.add(TPE2(encoding=1, text=tag_map["album_artist"]))
             tags.add(TCON(encoding=1, text=tag_map["genre"]))
-
-            # Label/Publisher (TPUB)
-            if tag_map.get("label"):
-                tags.add(TPUB(encoding=1, text=tag_map["label"]))
 
             # Handle Year (Strictly TYER for ID3v2.3)
             year_val = tag_map["year"][:4] if tag_map.get("year") else "0000"

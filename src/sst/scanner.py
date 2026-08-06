@@ -18,11 +18,11 @@ logger = logging.getLogger(__name__)
 MUSIC_EXTENSIONS = {".flac", ".wav", ".mp3", ".aiff", ".aif", ".m4a", ".ogg"}
 
 class SteamScanner:
-    def __init__(self, install_path: str, db: DatabaseManager, bridge_url: str, bridge_api_key: Optional[str] = None, api_key: Optional[str] = None, override_library_path: Optional[str] = None, cache_path: str = "data/scout_cache.json", language: str = "japanese"):
+    def __init__(self, install_path: str, db: DatabaseManager, bridge_url: str, bridge_api_key: Optional[str] = None, api_key: Optional[str] = None, override_library_path: Optional[str] = None, cache_path: str = "data/scout_cache.json", language: str = "japanese", tag_refresh_days: int = 30):
         self.install_path = ensure_path(install_path)
         self.db = db
         
-        self.cache_manager = ScannerCacheManager(cache_path)
+        self.cache_manager = ScannerCacheManager(cache_path, tag_refresh_days=tag_refresh_days)
         self.web_client = SteamWebClient(db, bridge_url, bridge_api_key, api_key, language)
         
         # 1. Discover all libraries
@@ -152,6 +152,7 @@ class SteamScanner:
             "label": extended.get("publisher"),
             "header_image_url": None,
             "store_tracklist": [],
+            "store_tracklist_source": None,
             "store_credits": "",
             "parent_app_id": common.get("parent") or common.get("fullgameid"),
             "parent_genres": []
@@ -164,12 +165,9 @@ class SteamScanner:
 
         # 2. Extract tags from local appinfo (Topic: Local Tags)
         if not metadata.get("tags") and "store_tags" in common:
-            tag_ids = common["store_tags"]
-            if isinstance(tag_ids, dict):
-                # store_tags in appinfo is like {'0': 492, '1': 1621...}
-                metadata["tags"] = [self.cache_manager.get_tag(str(tid)) for tid in tag_ids.values() if self.cache_manager.get_tag(str(tid))]
+            metadata["tags"] = self._resolve_tags(app_id, common["store_tags"])
 
-        # 3. Ensure Tracklist/Credits/PICS data are fetched (Phase 1)
+        # 3. Ensure Tracklist/Credits/PICS data are fetched during signal gathering
         if not metadata.get("store_tracklist"):
             web_data = self.web_client.fetch_web_enrichment(app_id)
             if web_data:
@@ -202,9 +200,7 @@ class SteamScanner:
             # Try local appinfo for parent tags first (much faster)
             p_appinfo = self.appinfo_dict.get(pid, {}).get("common", {})
             if "store_tags" in p_appinfo:
-                p_tag_ids = p_appinfo["store_tags"]
-                if isinstance(p_tag_ids, dict):
-                    metadata["parent_tags"] = [self.cache_manager.get_tag(str(tid)) for tid in p_tag_ids.values() if self.cache_manager.get_tag(str(tid))]
+                metadata["parent_tags"] = self._resolve_tags(pid, p_appinfo["store_tags"])
 
             if p_cache_key in self.cache_manager.cache.get("enriched", {}):
                 p_enriched = self.cache_manager.cache["enriched"][p_cache_key]
@@ -230,6 +226,15 @@ class SteamScanner:
                         metadata["parent_name"] = p_appinfo.get("name")
 
         return metadata
+
+    def _resolve_tags(self, app_id: int, raw_tag_ids: Any) -> List[str]:
+        tag_ids = list(raw_tag_ids.values()) if isinstance(raw_tag_ids, dict) else list(raw_tag_ids or [])
+        normalized_ids = [str(tag_id) for tag_id in tag_ids]
+        if self.cache_manager.tag_cache_needs_refresh(self.web_client.language, normalized_ids):
+            fetched = self.web_client.fetch_store_tags(app_id)
+            if fetched:
+                self.cache_manager.merge_tag_map(self.web_client.language, fetched)
+        return [self.cache_manager.get_tag(tag_id) for tag_id in normalized_ids if self.cache_manager.get_tag(tag_id)]
 
 
     def _parse_acf(self, path: Path) -> Optional[dict]:

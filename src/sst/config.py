@@ -4,7 +4,7 @@ from typing import Any, Optional
 import os
 
 DEFAULT_TITLE_CLEANING_TRUSTED_SOURCES = "MBZ,FINGERPRINT"
-DEFAULT_METADATA_SOURCE_PRIORITY = "STEAM,FINGERPRINT,MBZ_SEARCH,LOCAL"
+DEFAULT_METADATA_SOURCE_PRIORITY = "STEAM,ACOUSTID,MBZ_RELEASE,MBZ_SEARCH,EMBED,LOCAL"
 
 
 class Config(BaseSettings):
@@ -19,6 +19,7 @@ class Config(BaseSettings):
     steam_pics_bridge_api_key: Optional[str] = None
     steam_web_api_key: Optional[str] = None
     user_language: str = "ja"
+    steam_tag_cache_refresh_days: int = 30
     log_level: str = "INFO"
     llm_backend: str = "GEMINI"
     llm_base_url: str = "http://localhost:11434"
@@ -46,9 +47,6 @@ class Config(BaseSettings):
     llm_request_parallelism_max_workers_small: int = 3
     llm_request_parallelism_max_workers_medium: int = 2
     llm_request_parallelism_max_workers_large: int = 1
-    llm_force_coherence_large: bool = True
-    
-    llm_coherence_threshold: int = 75
     llm_chunk_size_virtual: int = 20
     llm_chunk_size_metadata_ollama: int = 10
     llm_chunk_size_metadata_cloud: int = 30
@@ -81,9 +79,10 @@ class Config(BaseSettings):
     score_mbz_publisher_label_match: int = 100
     min_mbz_search_score_threshold: int = 250
 
-    # Metadata Cleaning Settings
+    # Compatibility settings retained during the migration away from the old spec.
     title_cleaning_trusted_sources: str = DEFAULT_TITLE_CLEANING_TRUSTED_SOURCES
-    metadata_source_priority: str = DEFAULT_METADATA_SOURCE_PRIORITY
+    metadata_source_priority: Optional[str] = None
+    metadata_field_fallback_priority: str = DEFAULT_METADATA_SOURCE_PRIORITY
 
     mbz_app_name: str = "SST-Scout"
     mbz_app_version: str = "1.0.0"
@@ -109,6 +108,12 @@ class Config(BaseSettings):
 
         try_set("fingerprint_all", "SST_FINGERPRINT_ALL")
         return self
+
+    @property
+    def resolved_metadata_source_priority(self) -> str:
+        legacy_value = (self.metadata_source_priority or "").strip()
+        preferred_value = (self.metadata_field_fallback_priority or "").strip()
+        return preferred_value or legacy_value or DEFAULT_METADATA_SOURCE_PRIORITY
 
     def build_mbz_scoring_config(self) -> dict[str, int]:
         return {
@@ -149,14 +154,13 @@ class Config(BaseSettings):
             "llm_request_parallelism_enabled": self.llm_request_parallelism_enabled,
             "llm_request_parallelism_max_workers": self.llm_request_parallelism_max_workers,
             "request_timeout": self.llm_request_timeout,
-            "coherence_threshold": self.llm_coherence_threshold,
             "chunk_size_virtual": self.llm_chunk_size_virtual,
             "chunk_size_metadata_ollama": self.llm_chunk_size_metadata_ollama,
             "chunk_size_metadata_cloud": self.llm_chunk_size_metadata_cloud,
             "chunk_adaptive": self.llm_chunk_adaptive,
             "chunk_output_tokens_per_track": self.llm_chunk_output_tokens_per_track,
             "chunk_output_safety_ratio": self.llm_chunk_output_safety_ratio,
-            "metadata_source_priority": self.metadata_source_priority,
+            "metadata_source_priority": self.resolved_metadata_source_priority,
         }
 
     @property

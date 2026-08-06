@@ -71,11 +71,23 @@ class AcoustIDIdentifier:
                     for recording in result.get("recordings", []):
                         # Extract all associated Release IDs for this recording
                         release_ids = [rel.get("id") for rel in recording.get("releases", []) if rel.get("id")]
+                        artists = recording.get("artists", [])
+                        artist_credit = recording.get("artist-credit") or recording.get("artist_credit") or []
+                        if artist_credit:
+                            credit_parts = []
+                            for credit in artist_credit:
+                                if isinstance(credit, dict):
+                                    credit_parts.append(str(credit.get("name") or credit.get("artist", {}).get("name") or ""))
+                                    credit_parts.append(str(credit.get("joinphrase") or ""))
+                            artist_credit_text = "".join(credit_parts).strip()
+                        else:
+                            artist_credit_text = ", ".join(str(artist.get("name")) for artist in artists if artist.get("name"))
                         candidates.append({
                             "mbid": recording.get("id"),
                             "release_ids": release_ids,
                             "title": recording.get("title"),
-                            "artist": recording.get("artists", [{}])[0].get("name") if recording.get("artists") else None,
+                            "artist": artist_credit_text or (artists[0].get("name") if artists else None),
+                            "artist_credit": artist_credit_text or None,
                             "acoustid_score": score,
                             "source": "AcoustID"
                         })

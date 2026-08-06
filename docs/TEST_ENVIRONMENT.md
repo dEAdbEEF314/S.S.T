@@ -10,9 +10,19 @@
 
 ```bash
 uv run pytest
+uv run pytest tests/test_config_loading.py -v
+uv run pytest tests/test_apic_comm_pickup.py -v
+uv run pytest tests/test_id3_tag_construction.py -v
+uv run pytest tests/test_archive_review_combined.py -v
 ```
 
 必要に応じて対象テストのみを選択して実行します。
+
+設定面の実装を進める最初の段階では、次を先に確認します。
+
+- `.env.example` の変数名と `Config` のフィールドが一致する
+- 新設定名が優先され、旧設定名は互換としてのみ扱われる
+- 音質優先順が `wav -> flac/alac/aiff/aif -> ogg/aac/m4a -> mp3` の Tier 方針に沿う
 
 ### 2.2 実アルバムのスモークテスト
 
@@ -86,3 +96,35 @@ uv run pytest
 - track_id または file_id
 - どのソースから各フィールドを採用したか
 - archive / review の最終理由
+
+## 7. 実装フェーズ別の停止点
+
+### 7.1 設定整理フェーズ
+
+- `tests/test_config_loading.py` が通る
+- 既存の実行プロファイル関連テストが壊れていない
+
+### 7.2 ファストトラック再実装フェーズ
+
+- 条件ごとの失敗理由を個別に確認できる
+- LLM スキップ経路が単体テストで確認できる
+
+### 7.3 LLM 入出力刷新フェーズ
+
+- 出力 JSON の必須フィールドが揃う
+- file_id 重複割当や未知参照が検出される
+- 旧 `track_instructions` から新 `slots` 形式への互換変換が単体テストで確認できる
+- `album_confidence`, `mapping_confidence`, `data_quality`, `concerns` の別名が揃う
+
+### 7.4 タグ構築・判定フェーズ
+
+- APIC / COMM 横断取得テストが通る
+- 3 軸判定の 4 経路が確認できる
+- 決定論的 ARCHIVE、LLM 後 ARCHIVE、STEAM-TRUST、REVIEW を個別に止めて確認できる
+
+推奨コマンド:
+
+```bash
+uv run pytest tests/test_apic_comm_pickup.py tests/test_improvements.py -v
+uv run pytest tests/test_id3_tag_construction.py tests/test_archive_review_combined.py -v
+```

@@ -1,13 +1,27 @@
 import re
 import logging
 import subprocess
+import hashlib
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
 from .ident.embedded import EmbeddedMetadataExtractor
 
 logger = logging.getLogger("sst.track_grouper")
 
+SPEC_AUDIO_FORMAT_PRIORITY = ("wav", "flac", "alac", "aiff", "aif", "ogg", "aac", "m4a", "mp3")
+
 class TrackManager:
+    @staticmethod
+    def get_quality_tier(file_format: str) -> int:
+        fmt = (file_format or "").lower()
+        if fmt == "wav":
+            return 0
+        if fmt in {"flac", "alac", "aiff", "aif"}:
+            return 1
+        if fmt in {"ogg", "aac", "m4a"}:
+            return 2
+        return 3
+
     @staticmethod
     def list_audio_files(directory: Path) -> List[Path]:
         exts = {".flac", ".wav", ".mp3", ".ogg", ".aac", ".m4a", ".aiff", ".aif"}
@@ -18,7 +32,14 @@ class TrackManager:
                 return []
             for p in directory.rglob("*"):
                 try:
-                    if p.suffix.lower() in exts and not p.name.startswith(".") and "__MACOSX" not in p.parts:
+                    path_parts = {part.lower() for part in p.parts}
+                    if (
+                        p.suffix.lower() in exts
+                        and not p.name.startswith(".")
+                        and not p.name.startswith("._")
+                        and ".ds_store" not in path_parts
+                        and "__macosx" not in path_parts
+                    ):
                         audio_files.append(p)
                 except OSError as e:
                     logger.warning(f"ファイルアクセス中にエラーが発生しました ({p}): {e}")
@@ -46,9 +67,7 @@ class TrackManager:
         return stem.strip()
 
     @staticmethod
-    def group_by_logical_track(files: List[Path], album_name: Optional[str] = None) -> Dict[Tuple[int, str], List[Dict[str, Any]]]:
-        from difflib import SequenceMatcher
-        
+    def build_file_records(files: List[Path], album_name: Optional[str] = None) -> Dict[Tuple[int, str], List[Dict[str, Any]]]:
         raw_tracks = []
         for f in files:
             meta = EmbeddedMetadataExtractor.extract(f)
@@ -94,6 +113,7 @@ class TrackManager:
                     pass
             
             raw_tracks.append({
+                "file_id": hashlib.sha1(str(f.resolve()).encode("utf-8")).hexdigest()[:16],
                 "path": f, "meta": meta, "duration": TrackManager.get_duration(f), 
                 "format": f.suffix.lower().lstrip('.'),
                 "filename_track": int(t_num.group(1)) if t_num else None,
@@ -102,41 +122,6 @@ class TrackManager:
                 "disc": disc
             })
 
-        groups: Dict[Tuple[int, str], List[Dict[str, Any]]] = {}
-        
-        for track in raw_tracks:
-            matched = False
-            for (g_disc, g_norm_stem), variants in groups.items():
-                if track["disc"] != g_disc:
-                    continue
-                
-                # Hybrid matching criteria
-                duration_diff = abs(track["duration"] - variants[0]["duration"])
-                is_duration_match = duration_diff < 1.0
-                
-                # 1. Exact stem match
-                if track["norm_stem"] == g_norm_stem:
-                    variants.append(track)
-                    matched = True
-                    break
-                
-                # 2. Track number + Duration match
-                if track["t_num_val"] and track["t_num_val"] == variants[0]["t_num_val"] and is_duration_match:
-                    variants.append(track)
-                    matched = True
-                    break
-                
-                # 3. Fuzzy match + Duration match
-                similarity = SequenceMatcher(None, track["norm_stem"], g_norm_stem).ratio()
-                if similarity >= 0.85 and is_duration_match:
-                    variants.append(track)
-                    matched = True
-                    break
-            
-            if not matched:
-                groups[(track["disc"], track["norm_stem"])] = [track]
-
-        # Post-process: Split groups that have different track numbers but same stem
         priorities = TrackManager.get_audio_format_priority()
         def sort_key(v):
             fmt = v["format"].lower()
@@ -145,52 +130,47 @@ class TrackManager:
             except ValueError:
                 return 999
 
-        final_groups = {}
-        for (disc, norm_stem), variants in groups.items():
-            sorted_variants = sorted(variants, key=sort_key)
-            t_nums = {v["t_num_val"] for v in sorted_variants if v["t_num_val"] is not None}
-            if len(t_nums) <= 1:
-                final_groups[(disc, norm_stem)] = sorted_variants
-            else:
-                for v in sorted_variants:
-                    final_track_id = f"{norm_stem} {v['t_num_val']}" if v["t_num_val"] else f"{norm_stem} unnum {sorted_variants.index(v)}"
-                    final_groups.setdefault((disc, final_track_id), []).append(v)
-                    
-        return final_groups
+        return {
+            (track["disc"], f'{track["norm_stem"]}::{track["file_id"]}'): [track]
+            for track in sorted(raw_tracks, key=sort_key)
+        }
 
     @staticmethod
     def get_audio_format_priority() -> List[str]:
-        import os
-        priority_str = os.getenv("AUDIO_FORMAT_PRIORITY", "wav,flac,alac,aiff,aif,ogg,aac,m4a,mp3")
-        return [fmt.strip().lower() for fmt in priority_str.split(",") if fmt.strip()]
-
-    @staticmethod
-    def adopt_optimal_files(track_groups: Dict) -> Dict:
-        adopted = {}
-        for key, variants in track_groups.items():
-            # variants はすでに group_by_logical_track 側でソートされているため、
-            # 先頭のファイルが最優先フォーマットとなる
-            chosen = variants[0]
-            
-            is_lossless = chosen["format"] in ["flac", "wav", "aiff", "alac", "aif"]
-            adopted[key] = {
-                "path": chosen["path"],
-                "tier": "lossless" if is_lossless else ("lossy" if chosen["format"] != "mp3" else "mp3"),
-                "filename_track": chosen["filename_track"]
-            }
-        return adopted
+        return list(SPEC_AUDIO_FORMAT_PRIORITY)
 
     @staticmethod
     def get_best_artwork(variants: List[Dict]) -> Optional[bytes]:
         from mutagen import File
+
         for v in variants:
             try:
                 audio = File(v["path"])
-                if audio and audio.tags:
-                    if v["format"] in ["mp3", "aiff"]:
-                        for tag in audio.tags.values():
-                            if hasattr(tag, 'data') and getattr(tag, 'FrameID', None) == "APIC": return tag.data
-                    elif v["format"] == "flac" and audio.pictures: return audio.pictures[0].data
+                if not audio:
+                    continue
+
+                pictures = getattr(audio, "pictures", None) or []
+                if pictures:
+                    picture_data = getattr(pictures[0], "data", None)
+                    if isinstance(picture_data, bytes) and picture_data:
+                        return picture_data
+
+                tags = getattr(audio, "tags", None)
+                if not tags:
+                    continue
+
+                getall = getattr(tags, "getall", None)
+                if getall:
+                    for frame in getall("APIC"):
+                        if getattr(frame, "data", None):
+                            return frame.data
+
+                for tag in tags.values():
+                    values = tag if isinstance(tag, (list, tuple)) else [tag]
+                    for value in values:
+                        data = getattr(value, "data", value)
+                        if isinstance(data, bytes) and data:
+                            return data
             except Exception: continue
         return None
 
@@ -240,7 +220,7 @@ class TrackManager:
                     for k, val in v["meta"].items():
                         if val and str(val).lower() not in ["", "none", "unknown", "0"] and k not in merged_tags: merged_tags[k] = val
             tid = f"{disc}_{clean_title}"
-            sources = [{"type": "filename", "content": variants[0]["path"].name, "inferred_track_num": variants[0].get("filename_track"), "duration": round(sum(v["duration"] for v in variants)/len(variants), 2), "weight": "weak"}]
+            sources = [{"type": "filename", "content": variants[0]["path"].name, "file_ids": [v["file_id"] for v in variants], "inferred_track_num": variants[0].get("filename_track"), "duration": round(sum(v["duration"] for v in variants)/len(variants), 2), "weight": "weak"}]
             if merged_tags: sources.append({"type": "embedded_merged", "tags": merged_tags, "duration": sources[0]["duration"], "weight": "strong" if len(variants) > 1 else "moderate"})
             else: sources.append({"type": "no_tags_found", "content": "No metadata found", "weight": "critical_missing"})
             context[tid] = sources

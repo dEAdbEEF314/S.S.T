@@ -5,6 +5,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 from .builder import MetadataBuilder
 from .models import SteamMetadata
+from .processor_support import merge_embedded_tags_for_slot
 from .track_grouper import TrackManager
 
 logger = logging.getLogger("sst.processor")
@@ -39,6 +40,8 @@ def process_single_track(
     buffer_dir: Path,
     tagger: Any,
     track_groups: Dict,
+    slot_variant_index: Dict[tuple[int, str], list],
+    track_to_slot_index: Dict[str, tuple[int, str]],
     album_artwork: Optional[bytes],
     notifier: Any,
     on_track_complete: Optional[Callable[[], None]] = None,
@@ -50,6 +53,10 @@ def process_single_track(
 
     try:
         instr = final_metadata.get(f"{disc}_{clean_title}") or {"action": "use_local_tag"}
+        track_id = f"{disc}_{clean_title}"
+        slot_key = track_to_slot_index.get(track_id, (disc, clean_title))
+        slot_variants = slot_variant_index.get(slot_key, track_groups[(disc, clean_title)])
+        merged_slot_tags = merge_embedded_tags_for_slot(slot_variants)
         tag_map = MetadataBuilder.build_tag_map(
             app_id,
             disc,
@@ -60,6 +67,7 @@ def process_single_track(
             mbz_candidates,
             track_sources,
             config.user_language_639_2,
+            merged_slot_tags,
             global_identity,
             total_discs=total_discs,
         )
@@ -85,7 +93,7 @@ def process_single_track(
         if local_source_path.exists():
             local_source_path.unlink()
 
-        track_art = TrackManager.get_best_artwork(track_groups[(disc, clean_title)])
+        track_art = TrackManager.get_best_artwork(slot_variants)
         final_art = tagger.process_artwork(track_art) if track_art else album_artwork
         tagger.write_tags(processed_path, tag_map, final_art)
 
@@ -99,6 +107,8 @@ def process_single_track(
                 "tags": tag_map,
                 "source": instr.get("reason", "Fallback"),
                 "title_source": tag_map.get("title_source", "UNKNOWN"),
+                "slot_key": f"{slot_key[0]}_{slot_key[1]}",
+                "tier_rank": adopted_info.get("tier_rank", 999),
             },
             "had_warning": bool(has_warnings),
             "failed": False,

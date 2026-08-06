@@ -117,7 +117,7 @@ def main():
     parser.add_argument("--dev", action="store_true", help="Run in development mode (DEBUG logs, unique log files)")
     parser.add_argument("--reset-db", action="store_true")
     parser.add_argument("--yes", "-y", action="store_true", help="Bypass confirmation prompts (Automated mode)")
-    parser.add_argument("--prefetch-only", action="store_true", help="Run only Phase 1 (Data Gathering & Caching) without invoking the LLM")
+    parser.add_argument("--prefetch-only", action="store_true", help="Run only signal gathering and caching without invoking the LLM")
     args = parser.parse_args()
     console = Console()
 
@@ -162,7 +162,8 @@ def main():
             api_key=config.steam_web_api_key,
             override_library_path=config.steam_library_path,
             cache_path="data/sst_cache.json", 
-            language=config.steam_language_full
+            language=config.steam_language_full,
+            tag_refresh_days=config.steam_tag_cache_refresh_days,
         )
         processor = LocalProcessor(config, db)
         runner = JobRunner(config, processor, console)
@@ -184,17 +185,17 @@ def main():
                 console.print("[bold red]❌ LLMサービスの準備ができていません。設定(.env)やサーバーの起動状態を確認してください。[/bold red]")
                 return
 
-        # --- Phase 1: Data Gathering (Pre-Fetch) ---
+        # --- Signal Gathering & Caching ---
         from .prefetcher import DataGatherer
         gatherer = DataGatherer(config, processor.acoustid, processor.mbz, console)
         gatherer.run(soundtracks)
 
         if args.prefetch_only:
-            logger.info("事前フェッチ専用モードのため、LLM推論へ進まずに終了します。")
-            console.print("[bold green]✅ 事前フェッチ専用モードが完了しました。[/bold green]")
+            logger.info("signal gathering 専用モードのため、LLM整列へ進まずに終了します。")
+            console.print("[bold green]✅ signal gathering 専用モードが完了しました。[/bold green]")
             return
 
-        # --- Phase 2: LLM Processing ---
+        # --- LLM Alignment & Processing ---
         start_time = datetime.now()
         results = runner.run(soundtracks)
         duration_str = str(datetime.now() - start_time).split('.')[0]

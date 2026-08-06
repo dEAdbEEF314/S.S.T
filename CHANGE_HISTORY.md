@@ -1,3 +1,7 @@
+注記: この履歴は時系列の記録です。過去の項目には旧仕様の概念や廃止済み文書名が含まれますが、現行仕様の正本は [docs/METADATA_SOURCE_SPEC.md](docs/METADATA_SOURCE_SPEC.md) です。
+
+2026/08/06: src/sst/{alignment_inputs.py,alignment_flow.py,processor.py,llm/organizer.py,llm/prompts.py,track_grouper.py,report_generator.py,processor_pipeline.py}: 旧Virtual Albumモジュール/APIを整列入力・STEAMスロット整列へ改称して退役。物理音声ファイルごとの安定`file_id`をLOCAL signalとLLMスロットマッピングへ導入し、チャンク番号依存を除去。全テスト69件通過。
+
 2026/07/10 13:35:00 token_stingy_plan.md: Tier / アルバム曲数に応じて `num_ctx` と Phase 2 並列度を切り替える実装計画、および `.env.example` への tier 別設定追加計画をルート文書として作成。
 
 2026/07/10 13:20:00 .env.example, README.md: llama3.2:3b の標準推奨ベースライン（16384 / workers=2）の再検証結果を踏まえ、次の比較候補として `LLM_OLLAMA_NUM_CTX=8192` と `LLM_REQUEST_PARALLELISM_MAX_WORKERS=3` をドキュメントへ追加。
@@ -643,4 +647,58 @@ docs/LOGIC.md, docs/TAGGING_RULE.md: VGMdb連携およびバイリンガル仕�
 2026/08/03 21:44:00, docs/configuration.md, システムの動作を制御する環境変数(.env)とハードコーディングされた設定値を一覧化したドキュメントを新規作成。
 
 2026/08/05 00:00:00, docs/METADATA_SOURCE_SPEC.md: S.S.T メタデータソース定義書「真の真」(Draft v0.2) を正式仕様書として docs/METADATA_SOURCE_SPEC.md に新規追加配置。
+
+2026/08/05 01:10:00, README.md, CodeBase_AI.md, GEMINI.md, CHANGE_HISTORY.md, token_stingy_plan.md, docs/archive/v0.1/token_stingy_plan.md: ルートの Markdown 文書を新仕様準拠に整理。README と AI 向け指示文書を STEAM 正本・LLM アライメント中心の現行仕様へ更新し、旧 Token Stingy 計画書を docs/archive/v0.1/ へ退避。CHANGE_HISTORY.md 冒頭に「履歴と現行仕様は別」である旨の注記を追加。
+
+2026/08/05 02:00:00, src/sst/config.py, src/sst/track_grouper.py, src/sst/processor.py, src/sst/processor_pipeline.py, .env.example, docs/TEST_ENVIRONMENT.md, tests/test_config_loading.py: 新仕様への移行の第一段として設定面を整理。音質優先順の新設定 `AUDIO_QUALITY_TIER_PRIORITY` と `metadata_field_fallback_priority` を追加し、旧設定名は互換扱いへ移行。TrackManager は新設定名を優先参照するよう修正し、設定ロード用テストと TEST_ENVIRONMENT の停止点を追加。
+
+2026/08/05 02:20:00, src/sst/processor.py, tests/test_fast_track.py: 新仕様のファストトラック条件に合わせて `_check_fast_track` を再実装。STEAM トラックリスト存在、全グループの track number 保有、1:1 対応、重複フォーマットの再生時間差 1.0 秒未満を条件化し、MBZ 強依存を外した。あわせて成功系と失敗系の単体テストを追加。
+
+2026/08/05 02:40:00, src/sst/llm/prompts.py, src/sst/llm/organizer.py, docs/TEST_ENVIRONMENT.md, tests/test_llm_schema_normalization.py: LLM 入出力の新仕様移行を開始。プロンプト文面を STEAM スロット + signal ベースに寄せ、旧 `track_instructions` / `identity_confidence` を維持したまま `slots`, `album_confidence`, `mapping_confidence`, `data_quality`, `concerns` の互換スキーマを追加。互換変換の単体テストと TEST_ENVIRONMENT の確認項目を追記。
+
+2026/08/05 03:00:00, src/sst/builder.py, src/sst/tagger.py, tests/test_improvements.py: タグ構築の新仕様移行を開始。`MetadataBuilder.build_tag_map` で TIT2 の機械的クリーニングを停止し、TYER は STEAM の release_date を最優先に変更。TPUB は最終タグから廃止し、tagger でも書き込まないよう修正。関連の単体テストを追加。
+
+2026/08/05 03:20:00, src/sst/validator.py, tests/test_improvements.py, docs/TEST_ENVIRONMENT.md: archive/review 判定を新仕様の 3 軸へ寄せた。`album_confidence`, `mapping_confidence`, `data_quality` を優先しつつ旧キーを別名として受理し、決定論的 ARCHIVE、LLM 後 ARCHIVE、STEAM-TRUST、REVIEW の各経路を単体テストで確認できるよう更新。
+
+2026/08/05 03:35:00, src/sst/track_grouper.py, src/sst/tagger.py, tests/test_track_grouper.py: 変換元選択の新仕様移行に向けて数値 Tier を導入。`TrackManager` に Tier 0-3 判定を追加し、採用ファイル情報に `tier_rank` を保持。tagger は数値 Tier でも lossless/lossy 判定できるよう互換対応した。
+
+2026/08/05 03:45:00, src/sst/processor_support.py, src/sst/report_generator.py, src/sst/processor_pipeline.py: 通知・監査レポート・早期 review 経路の表示メトリクスを新仕様の別名へ追従。`album_confidence`, `mapping_confidence`, `data_quality` を優先表示し、旧 `identity_confidence` / `integrity_quality` と互換を維持した。
+
+2026/08/05 04:05:00, src/sst/processor_support.py, src/sst/builder.py, src/sst/processor_tracks.py, src/sst/processor.py, tests/test_improvements.py: 新仕様の EMBED スロット横断ピックアップを開始実装。同一 STEAM スロットに割り当てられた複数ファイルから variant 束を構築し、COMM 既存コメントと APIC を採用ファイル単体ではなくスロット全体から拾えるよう配線した。
+
+2026/08/05 04:20:00, src/sst/virtual_album.py, src/sst/virtual_album_flow.py, src/sst/processor.py, src/sst/report_generator.py, src/sst/main.py, src/sst/prefetcher.py, src/sst/scanner.py: 主フローの入口名称を新仕様へ寄せた。`SignalAlignmentInputBuilder` と `collect_alignment_inputs_and_consolidate` を追加し、processor 側の呼び口を signal-based terminology へ切替。CLI とログの `Phase 1/2` 表現も signal gathering / LLM alignment に更新した。
+
+2026/08/05 04:30:00, src/sst/llm/organizer.py, tests/test_llm_schema_normalization.py: `alignment_res` の生成を実ローカルトラック順へ修正。`final_instructions` の track_id と `local_key` を対応付け、新仕様の `slots.files` が実際のローカル順序を指すよう改善した。
+
+2026/08/05 04:45:00, src/sst/virtual_album_flow.py, src/sst/processor.py, tests/test_fast_track.py: signal input 収集と LLM 整列を分離し、`process_album` から決定論的ファストトラック経路を接続。条件成立時は `consolidate_alignment_inputs` を呼ばずに archive へ進むことを回帰テストで固定した。
+
+2026/08/05 05:00:00, src/sst/virtual_album.py, src/sst/virtual_album_flow.py, src/sst/report_generator.py, src/sst/processor.py, src/sst/processor_pipeline.py: 補助 signal bundle の source 名と表示名を新仕様へ寄せた。`FINGERPRINT` を `ACOUSTID_MBID`、`LOCAL` を `LOCAL_SIGNALS` に置き換え、監査レポート上の語彙も STEAM 骨格 + signal ベースへ更新した。
+
+2026/08/05 05:10:00, src/sst/llm/organizer.py, tests/test_llm_schema_normalization.py: 旧仕様の「低 confidence なら Phase 2 を打ち切る」早期 review を撤去。identity が低くても slot alignment は継続し、最終の archive/review 判定は validator の 3 軸へ委譲するよう修正。回帰テストを追加。
+
+2026/08/05 05:20:00, src/sst/llm/prompts.py, src/sst/llm/organizer.py: 旧 `Coherence` の外向き表現を `segment routing` に変更。巨大アルバム時の互換 fallback は残しつつ、プロンプト文面とログの用語を新仕様寄りに整理した。
+
+2026/08/05 05:35:00, src/sst/virtual_album.py, src/sst/builder.py, tests/test_improvements.py: TPE1 と COMM のフォールバック精度を改善。AcoustID 由来の track-level artist を補助 signal に保持し、builder はそれを release artist より優先採用するよう修正。COMM は空タグ時の余計な区切りを除去し、album_artist も欠損値を含めない形へ整理した。
+
+2026/08/05 05:45:00, src/sst/processor_tracks.py, tests/test_apic_comm_pickup.py, docs/TEST_ENVIRONMENT.md: slot-wide EMBED/APIC pickup の実装整理と専用テスト追加。`process_single_track` は merged slot tags helper を直接使うようにし、APIC/COMM 横断取得の回帰テストと実行コマンドを TEST_ENVIRONMENT に追記した。
+
+2026/08/05 05:55:00, src/sst/processor.py, src/sst/processor_pipeline.py, src/sst/llm.py: 保存メタデータに新仕様の 3 軸 (`album_confidence`, `mapping_confidence`, `data_quality`) を追加し、未使用の旧 `src/sst/llm.py` モジュールを削除してアクティブ実装面のノイズを除去した。
+
+2026/08/05 06:05:00, src/sst/llm/prompts.py, src/sst/validator.py, src/sst/llm/organizer.py, src/sst/virtual_album.py: 残存していた active code の旧用語を整理。strategy 表記を `ACOUSTID_BASED` 側へ寄せ、LLM organizer のコメントとログも slot alignment / signal bundle の語彙に更新した。
+
+2026/08/06 00:10:00, src/sst/ident/embedded.py, src/sst/builder.py, tests/test_improvements.py: TPOS と TCOM のフォールバックを新仕様へ寄せた。Embedded metadata から composer を抽出可能にし、builder は disc_number を EMBED から、composer を Store Credits -> track-level recording artist -> EMBED composer/artist -> Developer の順で解決するよう修正した。
+
+2026/08/06 00:25:00, tests/test_id3_tag_construction.py, tests/test_archive_review_combined.py, docs/TEST_ENVIRONMENT.md: 新仕様 runbook に対応する専用テストを追加。ID3v2.3 フレーム構築、TPUB 非出力、COMM truncation、APIC Type 3 と、archive/review の 4 経路および複合 review 条件を個別テストとして固定した。
+
+2026/08/06 00:40:00, src/sst/models.py, src/sst/virtual_album.py, src/sst/virtual_album_flow.py: 新仕様移行後に未使用となった compatibility wrapper を削除し、`LocalProcessResult.processed_at` の default を timezone-aware UTC に変更して `datetime.utcnow()` 警告を解消した。
+
+2026/08/06 00:55:00, src/sst/llm/organizer.py, tests/test_llm_schema_normalization.py: LLM の新 `slots` 出力を active flow で直接扱えるようにした。organizer は explicit slot mapping を `use_steam` ベースの track instruction へ正規化し、legacy `track_instructions` 依存を一段薄くした。
+
+2026/08/06 01:05:00, src/sst/processor_pipeline.py, src/sst/processor.py: 外向きの診断フィールドを新仕様の 3 軸語彙へ整理。early review の upstream cause を `PRE_ALIGNMENT_REVIEW_GATE` に変更し、validation trace も `album_confidence` / `mapping_confidence` / `data_quality` を記録するよう更新した。
+
+2026/08/06 01:15:00, src/sst/processor.py, tests/test_fast_track.py: 決定論的 fast-track 時の `alignment_res` を追加生成するよう修正。LLM を呼ばない archive 経路でも、新仕様の slot assignment がログ上に残るようにした。
+
+2026/08/06 01:40:00, src/sst/llm/organizer.py: organizer に `_call_llm` shim を復活させ、内部呼び出しをそこへ集約した。client 直結で失われていたテスト用モックの継ぎ目を回復し、`tests/` 全体の整合性を取り戻しやすくした。
+
+2026/08/06 01:30:00, tests/analyze_llm_slot_correlation_helper.py, tests/test_llm_slot_correlation.py, Maintenance/, scratch/: `Maintenance/` と `scratch/` の整理を実施。唯一テストから参照されていた `analyze_llm_slot_correlation.py` の機能を `tests/` 配下へ移し、両ディレクトリを削除した。
 

@@ -2,7 +2,6 @@ import logging
 import re
 import html
 from typing import Dict, Any, List, Optional, Union
-from .config import DEFAULT_TITLE_CLEANING_TRUSTED_SOURCES
 from .models import SteamMetadata
 
 logger = logging.getLogger("sst.builder")
@@ -43,6 +42,7 @@ class MetadataBuilder:
         mbz_candidates: List[Dict], 
         track_sources: Dict,
         user_language_639_2: str,
+        slot_embedded_tags: Optional[Dict[str, Any]] = None,
         global_identity: Dict[str, Any] = {},
         total_discs: int = 1
     ) -> Dict[str, Any]:
@@ -53,12 +53,13 @@ class MetadataBuilder:
         Additional details (Artist, Composer, Year) are heavily augmented by MBZ.
         """
         # --- 1. Prepare Data Extractors ---
-        local_tags = {}
+        local_tags = dict(slot_embedded_tags or {})
         tid = f"{disc}_{clean_title}"
         for s in track_sources.get(tid, []):
             if s["type"] == "embedded_merged":
-                local_tags = s.get("tags", {})
-                break
+                for key, value in s.get("tags", {}).items():
+                    if key not in local_tags and value:
+                        local_tags[key] = value
 
         mbz_album = None
         mbz_track = None
@@ -118,33 +119,31 @@ class MetadataBuilder:
         res_title = None
         chosen_src = "VDF"
         
-        # Absolute priority: Steam (Ground Truth) -> LLM Override -> MBZ/Fingerprint -> Local
+        # Absolute priority: Steam (Ground Truth) -> MBZ/AcoustID evidence -> EMBED -> LOCAL
         if pics_track:
             res_title = pics_track.get("title") or pics_track.get("name")
-            chosen_src = "PICS_API"
-        elif instr.get("override_title"):
-            res_title = instr.get("override_title")
-            chosen_src = "LLM_OVERRIDE"
+            chosen_src = "STEAM"
         elif mbz_track:
             res_title = mbz_track.get("title") if isinstance(mbz_track, dict) else str(mbz_track)
-            chosen_src = "MBZ"
+            chosen_src = "MBZ_RELEASE"
         elif local_tags.get("title"):
             res_title = local_tags.get("title")
             chosen_src = "EMBED"
         else:
             res_title = clean_title
+            chosen_src = "LOCAL"
 
         res_title = res_title or clean_title
         if " / " in res_title and len(res_title) > 60:
             res_title = res_title.split(" / ", 1)[0].strip()
 
-        res_title = MetadataBuilder._clean_title_logic(res_title, instr.get("override_track"))
-
         # 2.2 TPE1 (Artist)
-        # Priority: MBZ → Steam Credits → Developer (TAGGING_RULE.md §2 TPE1)
+        # Priority: ACOUSTID recording artist -> MBZ release artist -> Steam Credits -> Developer
         res_artist = None
+        if mbz_track and isinstance(mbz_track, dict) and (mbz_track.get("recording_artist") or mbz_track.get("artist_credit")):
+            res_artist = mbz_track.get("recording_artist") or mbz_track.get("artist_credit")
         if mbz_album and mbz_album.get("artist"):
-            res_artist = mbz_album.get("artist")
+            res_artist = res_artist or mbz_album.get("artist")
         if not res_artist and steam_meta.store_credits:
             match = re.search(r'Artist:\s*(.*)', steam_meta.store_credits, re.IGNORECASE)
             if match: res_artist = match.group(1).strip()
@@ -186,6 +185,8 @@ class MetadataBuilder:
             res_disc = str(pics_track.get("disc"))
         elif instr.get("override_disc") and str(instr.get("override_disc")) != "0":
             res_disc = str(instr.get("override_disc"))
+        elif local_tags.get("disc_number"):
+            res_disc = str(local_tags.get("disc_number"))
         elif mbz_track:
             res_disc = str(mbz_track.get("disc", disc))
         else:
@@ -205,50 +206,48 @@ class MetadataBuilder:
 
         # 2.5 TYER (Year)
         res_year = None
-        if mbz_album and mbz_album.get("year"):
-            match = re.search(r'(\d{4})', str(mbz_album.get("year")))
-            if match: res_year = match.group(1)
-            
-        if not res_year:
-            raw_date = steam_meta.release_date or local_tags.get("year") or ""
+        raw_date = steam_meta.release_date or ""
+        if raw_date:
             match = re.search(r'(\d{4})', str(raw_date))
             res_year = match.group(1) if match else "0000"
 
-        # 2.6 TPUB (Label)
+        if not res_year and mbz_album and mbz_album.get("year"):
+            match = re.search(r'(\d{4})', str(mbz_album.get("year")))
+            if match:
+                res_year = match.group(1)
+
+        if not res_year:
+            raw_date = local_tags.get("year") or ""
+            match = re.search(r'(\d{4})', str(raw_date))
+            res_year = match.group(1) if match else "0000"
+
+        # 2.6 TPUB (Retired field)
         res_label = None
         if mbz_album and mbz_album.get("label") and mbz_album.get("label") not in ["無", "none", "Unknown", "N/A"]:
             res_label = mbz_album.get("label")
-        else:
-            val = steam_meta.label or global_identity.get("canonical_label") or steam_meta.publisher
-            if val and val not in ["無", "none", "Unknown", "N/A"]:
-                res_label = val
-                
-        if not res_label:
-            res_label = f"{steam_meta.developer or steam_meta.publisher}"
+        elif global_identity.get("canonical_label") and global_identity.get("canonical_label") not in ["無", "none", "Unknown", "N/A"]:
+            res_label = global_identity.get("canonical_label")
 
-        # 2.7 TCOM (Composer)
-        res_composer = instr.get("composer") or instr.get("TCOM")
-        if not res_composer or res_composer == "Unknown":
-            if steam_meta.store_credits:
-                patterns = [r'Composer:\s*(.*)', r'Music by\s*(.*)', r'Music:\s*(.*)', r'Sound by\s*(.*)', r'Soundtrack by\s*(.*)']
-                for p in patterns:
-                    match = re.search(p, steam_meta.store_credits, re.IGNORECASE)
-                    if match:
-                        res_composer = match.group(1).split('\n')[0].strip()
-                        break
+        # 2.7 TCOM (Composer): STEAM credits are authoritative; LLM output is not.
+        res_composer = None
+        if steam_meta.store_credits:
+            patterns = [r'Composer:\s*(.*)', r'Music by\s*(.*)', r'Music:\s*(.*)', r'Sound by\s*(.*)', r'Soundtrack by\s*(.*)']
+            for p in patterns:
+                match = re.search(p, steam_meta.store_credits, re.IGNORECASE)
+                if match:
+                    res_composer = match.group(1).split('\n')[0].strip()
+                    break
+        if not res_composer and mbz_track and isinstance(mbz_track, dict) and mbz_track.get("recording_artist"):
+            res_composer = mbz_track.get("recording_artist")
+        if not res_composer and local_tags.get("composer"):
+            res_composer = str(local_tags.get("composer"))
+        if not res_composer and local_tags.get("artist"):
+            res_composer = str(local_tags.get("artist"))
         
         if not res_composer:
             res_composer = steam_meta.developer or "Unknown"
 
-        # --- 3. Final System-level Cleaning (Trust Tier Logic) ---
-        trusted_sources = [s.strip().upper() for s in DEFAULT_TITLE_CLEANING_TRUSTED_SOURCES.split(",")]
-        
-        if chosen_src not in trusted_sources:
-            res_title = MetadataBuilder._clean_title_logic(res_title, res_track)
-        else:
-            logger.debug(f"信頼できるソースのタイトルクリーンアップをスキップします: {chosen_src} ('{res_title}')")
-
-        # --- 4. Genre Logic ---
+        # --- 3. Genre Logic ---
         all_genres = steam_meta.genres if steam_meta.genres else []
         if not all_genres and steam_meta.parent_genres:
             all_genres = steam_meta.parent_genres
@@ -260,16 +259,16 @@ class MetadataBuilder:
             
         final_genre = f"STEAM VGM, {joined_genres}"
 
-        # --- 5. Comment/Grouping Logic ---
+        # --- 4. Comment/Grouping Logic ---
         # TAGGING_RULE.md COMM spec: 既存の埋め込みコメント(先頭保持) + "親ゲーム名, 親ゲームストアURL, [タグ1/ タグ2/ ...]"
         target_name = steam_meta.parent_name or steam_meta.name
         target_appid = steam_meta.parent_app_id or app_id
         
         target_tags = steam_meta.parent_tags if steam_meta.parent_tags else steam_meta.tags
-        joined_tags = f"[{'/ '.join(target_tags)}]" if target_tags else ""
-        
         target_url = f"https://store.steampowered.com/app/{target_appid}"
-        new_info = f"{target_name}, {target_url}, {joined_tags}"
+        new_info_parts = [target_name, target_url]
+        new_info_parts.append(f"[{'/ '.join(target_tags)}]")
+        new_info = ", ".join(new_info_parts)
 
         existing_comment = local_tags.get("comment", "")
         if existing_comment and str(existing_comment).strip():
@@ -277,17 +276,19 @@ class MetadataBuilder:
         else:
             res_comment = new_info
 
-        # --- 6. Construct Final Map ---
+        # --- 5. Construct Final Map ---
         def _u(val):
             return html.unescape(str(val)) if val is not None else ""
+
+        album_artist_parts = [part for part in [steam_meta.developer, steam_meta.publisher] if part]
 
         return {
             "title": _u(res_title or clean_title).strip(),
             "artist": _u(res_artist).strip(),
             "album": _u(steam_meta.name).strip(),
-            "album_artist": f"{steam_meta.developer}, {steam_meta.publisher}",
+            "album_artist": ", ".join(album_artist_parts),
             "genre": final_genre,
-            "label": _u(res_label).strip() if res_label else "",
+            "label": "",
             "grouping": _u(f"{target_name}, Steam"),
             "comment": _u(res_comment),
             "composer": _u(res_composer),

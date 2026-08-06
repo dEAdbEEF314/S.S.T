@@ -7,9 +7,9 @@ from .ident.acoustid import AcoustIDIdentifier
 from .ident.mbz import MusicBrainzIdentifier
 from .models import SteamMetadata
 
-logger = logging.getLogger("sst.virtual_album")
+logger = logging.getLogger("sst.alignment")
 
-class VirtualAlbumBuilder:
+class AlignmentInputBuilder:
     def __init__(self, acoustid_client: AcoustIDIdentifier, mbz_client: MusicBrainzIdentifier, fingerprint_all: bool = False, min_mbz_search_score_threshold: int = 250):
         self.acoustid = acoustid_client
         self.mbz = mbz_client
@@ -18,9 +18,9 @@ class VirtualAlbumBuilder:
 
     def build_fingerprint_album(self, track_groups: Dict[Tuple[int, str], List[Dict[str, Any]]], on_track_complete: Optional[callable] = None) -> Optional[Dict[str, Any]]:
         """
-        Builds a virtual album using AcoustID cross-validation (majority vote) with advanced tie-break.
+        Builds the AcoustID / MBZ_RELEASE auxiliary signals using cross-validation.
         """
-        logger.info("Building FINGERPRINT virtual album using advanced cross-validation...")
+        logger.info("Building ACOUSTID/MBZ auxiliary signals using advanced cross-validation...")
         
         all_release_ids = []
         track_results = {}
@@ -109,9 +109,9 @@ class VirtualAlbumBuilder:
         chosen_rid, (best_score, release_details) = sorted_rids[0]
         logger.info(f"Advanced winner: {chosen_rid} (Score: {best_score})")
 
-        # Step 3: Construct Virtual Album with Detailed Credits
-        virtual_album = {
-            "source": "FINGERPRINT",
+        # Step 3: Construct auxiliary signal bundle with detailed credits
+        signal_bundle = {
+            "source": "ACOUSTID_MBID",
             "mbid": chosen_rid,
             "album_name": release_details.get("title"),
             "artist": release_details.get("artist-credit-phrase"),
@@ -155,6 +155,8 @@ class VirtualAlbumBuilder:
         for key, variants in track_groups.items():
             local_dur = variants[0]["duration"] * 1000 # ms
             local_title = (key[1] or "").lower()
+            acoustid_candidates = track_results.get(key, [])
+            top_acoustid = acoustid_candidates[0] if acoustid_candidates else {}
             
             best_match = None
             best_score = -1.0
@@ -176,41 +178,42 @@ class VirtualAlbumBuilder:
             if best_match:
                 used_mb_indices.add(mb_all_tracks.index(best_match))
                 matched_count += 1
-                virtual_album["tracks"].append({
+                signal_bundle["tracks"].append({
                     "local_key": key,
                     "disc": best_match["disc"],
                     "track_num": best_match["position"],
                     "title": best_match["title"],
                     "duration_ms": best_match["duration_ms"],
                     "mbid": best_match["mbid"],
+                    "recording_artist": top_acoustid.get("artist"),
                     "credits": best_match["credits"],
                     "mbz_track_index": mb_all_tracks.index(best_match)
                 })
             else:
-                virtual_album["tracks"].append({
+                signal_bundle["tracks"].append({
                     "local_key": key,
                     "disc": None,
                     "track_num": None,
                     "title": None,
                     "duration_ms": None,
                     "mbid": None,
+                    "recording_artist": top_acoustid.get("artist"),
                     "credits": None,
                     "mbz_track_index": None
                 })
         
         # Physical confidence hint
         match_ratio = (matched_count / local_track_count * 100) if local_track_count > 0 else 0
-        virtual_album["physical_match_ratio"] = round(match_ratio, 1)
-        virtual_album["match_hint"] = f"HIGH ({matched_count}/{local_track_count} tracks matched by duration)" if match_ratio > 80 else "LOW"
+        signal_bundle["physical_match_ratio"] = round(match_ratio, 1)
+        signal_bundle["match_hint"] = f"HIGH ({matched_count}/{local_track_count} tracks matched by duration)" if match_ratio > 80 else "LOW"
 
-        return virtual_album
+        return signal_bundle
 
     def build_mbz_search_album(self, app_id: int, album_name: str, expected_track_count: int, steam_meta: SteamMetadata = None, local_baseline: Dict = None) -> Optional[Dict[str, Any]]:
         """
-        Builds a virtual album by explicitly searching MusicBrainz with the album title and scoring candidates.
-        Provides a Semantic Truth (v_mbz_search) when audio fingerprinting is not available or incomplete.
+        Builds MBZ_SEARCH auxiliary signals by explicit MusicBrainz search with scoring.
         """
-        logger.info(f"[{app_id}] Building MBZ_SEARCH virtual album via text search for '{album_name}'...")
+        logger.info(f"[{app_id}] Building MBZ_SEARCH auxiliary signals via text search for '{album_name}'...")
         
         # We try to use the NWO Hybrid Scoring System from mbz.py
         # It handles fetching url-relations and giving massive boosts to direct Steam URLs.
@@ -239,8 +242,8 @@ class VirtualAlbumBuilder:
             
         logger.info(f"[{app_id}] MBZ_SEARCH selected candidate: {best.get('album')} (Score: {score})")
         
-        # Build the virtual album structure
-        virtual_album = {
+        # Build the auxiliary signal structure
+        signal_bundle = {
             "source": "MBZ_SEARCH",
             "mbid": best.get("mbid"),
             "album_name": best.get("album"),
@@ -254,7 +257,7 @@ class VirtualAlbumBuilder:
         
         # Map the tracks
         for idx, track in enumerate(best.get("tracks", [])):
-            virtual_album["tracks"].append({
+            signal_bundle["tracks"].append({
                 "disc": 1, # Simplified, mbz text search tracks don't always retain disc cleanly in the summary list
                 "track_num": track.get("position"),
                 "title": track.get("title"),
@@ -263,13 +266,13 @@ class VirtualAlbumBuilder:
                 "mbz_track_index": idx
             })
             
-        return virtual_album
+        return signal_bundle
 
     def build_steam_album(self, steam_meta: SteamMetadata) -> Dict[str, Any]:
         """
-        Builds a virtual album using Steam Store info.
+        Builds the canonical STEAM album structure.
         """
-        virtual_album = {
+        signal_bundle = {
             "source": "STEAM",
             "album_name": steam_meta.name,
             "artist": steam_meta.developer,
@@ -279,21 +282,21 @@ class VirtualAlbumBuilder:
         }
         
         for track in steam_meta.store_tracklist:
-            virtual_album["tracks"].append({
+            signal_bundle["tracks"].append({
                 "disc": int(track.get("disc", 1)),
                 "track_num": int(track.get("number") or track.get("track_number") or 0),
                 "title": track.get("title") or track.get("name"),
                 "duration_ms": (int(track.get("duration_s", 0)) * 1000) if track.get("duration_s") else None
             })
             
-        return virtual_album
+        return signal_bundle
 
     def build_local_album(self, track_groups: Dict[Tuple[int, str], List[Dict[str, Any]]]) -> Dict[str, Any]:
         """
-        Builds a virtual album using Local file tags.
+        Builds the local file signal bundle.
         """
-        virtual_album = {
-            "source": "LOCAL",
+        signal_bundle = {
+            "source": "LOCAL_SIGNALS",
             "album_name": None,
             "artist": None,
             "year": None,
@@ -319,17 +322,20 @@ class VirtualAlbumBuilder:
             if track_num is None:
                 track_num = best.get("filename_track")
                 
-            virtual_album["tracks"].append({
+            signal_bundle["tracks"].append({
                 "local_key": key,
+                "file_ids": [variant["file_id"] for variant in variants],
                 "disc": key[0],
                 "track_num": track_num, 
-                "title": key[1],
+                "title": meta.get("title") or best.get("path").stem,
                 "duration_ms": int(best["duration"] * 1000)
             })
             
         # Sort tracks by (disc, track_num)
-        virtual_album["tracks"].sort(
+        signal_bundle["tracks"].sort(
             key=lambda t: (t["disc"], t["track_num"] if t["track_num"] is not None else 999)
         )
             
-        return virtual_album
+        return signal_bundle
+
+

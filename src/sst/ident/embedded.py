@@ -26,6 +26,7 @@ class EmbeddedMetadataExtractor:
                 "title": audio.get("title", [None])[0],
                 "artist": audio.get("artist", [None])[0],
                 "album": audio.get("album", [None])[0],
+                "composer": audio.get("composer", [None])[0],
                 "track_number": audio.get("tracknumber", [None])[0],
                 "disc_number": audio.get("discnumber", [None])[0],
                 "year": audio.get("date", [None])[0],
@@ -43,6 +44,14 @@ class EmbeddedMetadataExtractor:
                             comm_frame = full_audio.tags[key]
                             if hasattr(comm_frame, "text") and comm_frame.text:
                                 metadata["comment"] = str(comm_frame.text[0])
+                                break
+
+                if not metadata.get("composer") and full_audio and full_audio.tags:
+                    for key in full_audio.tags.keys():
+                        if key.startswith("TCOM"):
+                            composer_frame = full_audio.tags[key]
+                            if hasattr(composer_frame, "text") and composer_frame.text:
+                                metadata["composer"] = str(composer_frame.text[0])
                                 break
 
                 if hasattr(full_audio, 'pictures') and full_audio.pictures:

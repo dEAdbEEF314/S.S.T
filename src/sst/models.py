@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import Dict, List, Optional, Any
-from datetime import datetime
+from datetime import UTC, datetime
 
 class SteamMetadata(BaseModel):
     app_id: int
@@ -20,7 +20,8 @@ class SteamMetadata(BaseModel):
     parent_genres: List[str] = [] # ALL parent genres
     parent_release_date: Optional[str] = None
     header_image_url: Optional[str] = None
-    store_tracklist: List[Dict[str, Any]] = [] # Scraped from HTML
+    store_tracklist: List[Dict[str, Any]] = [] # Steam/PICS or official description fallback
+    store_tracklist_source: Optional[str] = None # STEAM_PICS or STEAM_TEXT_TRACKLIST
     store_credits: str = "" # Scraped from HTML
 
 class TrackMetadata(BaseModel):
@@ -52,4 +53,4 @@ class LocalProcessResult(BaseModel):
     confidence_score: int = 0
     confidence_reason: str = "N/A"
     message: str
-    processed_at: datetime = Field(default_factory=datetime.utcnow)
+    processed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

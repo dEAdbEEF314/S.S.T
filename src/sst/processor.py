@@ -14,15 +14,15 @@ from .ident.mbz import MusicBrainzIdentifier
 from .notify import NotificationManager
 from .db import DatabaseManager
 from .packager import PackageManager
-from .virtual_album import VirtualAlbumBuilder
+from .alignment_inputs import AlignmentInputBuilder
 
 # New functional modules
 from .track_grouper import TrackManager
 from .validator import ResultValidator
 from .report_generator import ReportGenerator
-from .processor_support import fetch_album_artwork, send_notifications, resolve_duplicate_mappings
+from .processor_support import adopt_best_file_per_slot, build_slot_variant_index, fetch_album_artwork, send_notifications, resolve_duplicate_mappings
 from .processor_tracks import process_single_track
-from .virtual_album_flow import build_and_consolidate_virtual_albums
+from .alignment_flow import collect_alignment_inputs, consolidate_alignment_inputs
 from .processor_pipeline import handle_early_review_return
 
 from dataclasses import dataclass
@@ -34,7 +34,6 @@ class AlbumExecutionProfile:
     track_count_max: int
     num_ctx_cap: int
     phase2_parallel_workers: int
-    force_coherence: bool
     prefer_one_shot: bool
 
 logger = logging.getLogger("sst.processor")
@@ -54,7 +53,7 @@ class LocalProcessor:
         )
         from .ident.acoustid import AcoustIDIdentifier
         self.acoustid = AcoustIDIdentifier(config.acoustid_api_key, db=self.db)
-        self.virtual_album_builder = VirtualAlbumBuilder(self.acoustid, self.mbz, fingerprint_all=config.fingerprint_all, min_mbz_search_score_threshold=config.min_mbz_search_score_threshold)
+        self.alignment_input_builder = AlignmentInputBuilder(self.acoustid, self.mbz, fingerprint_all=config.fingerprint_all, min_mbz_search_score_threshold=config.min_mbz_search_score_threshold)
         self.llm = LLMOrganizer(**config.build_llm_organizer_kwargs())
         self.working_dir = Path(config.sst_working_dir)
 
@@ -66,60 +65,166 @@ class LocalProcessor:
         import os
         return datetime.now(timezone(timedelta(hours=9))) if os.environ.get("TZ") == "Asia/Tokyo" else datetime.now(timezone.utc)
 
-    def _check_fast_track(self, app_id: int, steam_meta: SteamMetadata, track_groups: Dict, mbz_candidates: List[Dict]) -> Tuple[bool, Optional[Dict], Optional[Dict]]:
-        if not mbz_candidates: return False, None, None
-        
-        best = mbz_candidates[0] if mbz_candidates else {}
-        evidence = best.get("evidence", [])
-        has_strong_link = any(e in evidence for e in ["DIRECT_STEAM_LINK", "DIRECT_STEAMDB_LINK"]) or any(e.startswith("ACOUSTID_MATCH") for e in evidence)
-        
-        if not has_strong_link: return False, None, None
-        
-        local_count = len(track_groups)
-        mbz_count = best.get("track_count", 0)
-        
-        # Validation
-        if local_count != mbz_count: 
+    @staticmethod
+    def _normalize_slot_key(disc_number: Any, track_number: Any) -> Optional[tuple[int, str]]:
+        if track_number in (None, "", "0", 0):
+            return None
+        try:
+            disc_value = int(disc_number or 1)
+        except (TypeError, ValueError):
+            disc_value = 1
+        track_value = str(track_number).split("/")[0].strip()
+        if not track_value.isdigit():
+            return None
+        normalized_track = str(int(track_value))
+        if normalized_track == "0":
+            return None
+        return disc_value, normalized_track
+
+    def _build_fast_track_slot_map(self, steam_meta: SteamMetadata) -> Optional[Dict[tuple[int, str], int]]:
+        slot_map: Dict[tuple[int, str], int] = {}
+        for idx, track in enumerate(steam_meta.store_tracklist or []):
+            slot_key = self._normalize_slot_key(track.get("disc", 1), track.get("number"))
+            if slot_key is None or slot_key in slot_map:
+                return None
+            slot_map[slot_key] = idx
+        return slot_map
+
+    def _build_fast_track_group_map(self, track_groups: Dict) -> Optional[Dict[str, tuple[tuple[int, str], str]]]:
+        group_map: Dict[str, tuple[tuple[int, str], str]] = {}
+        slot_durations: Dict[tuple[int, str], List[float]] = {}
+        for (disc_num, clean_title), variants in track_groups.items():
+            track_numbers = {variant.get("t_num_val") for variant in variants if variant.get("t_num_val") not in (None, "", "0")}
+            if len(track_numbers) != 1:
+                return None
+
+            slot_key = self._normalize_slot_key(disc_num, next(iter(track_numbers)))
+            if slot_key is None:
+                return None
+            slot_durations.setdefault(slot_key, []).extend(
+                float(variant.get("duration", 0.0) or 0.0) for variant in variants
+            )
+            group_map[f"{disc_num}_{clean_title}"] = (slot_key, clean_title)
+
+        if any(max(durations) - min(durations) >= 1.0 for durations in slot_durations.values() if durations):
+            return None
+        return group_map
+
+    def _check_fast_track(self, app_id: int, steam_meta: SteamMetadata, track_groups: Dict, mbz_candidates: List[Dict], fingerprint_bundle: Optional[Dict[str, Any]] = None) -> Tuple[bool, Optional[Dict], Optional[Dict]]:
+        if not steam_meta.store_tracklist:
             return False, None, None
+
+        slot_map = self._build_fast_track_slot_map(steam_meta)
+        if slot_map is None:
+            return False, None, None
+
+        group_map = self._build_fast_track_group_map(track_groups)
+        if group_map is None:
+            return False, None, None
+
+        if len({slot_key for slot_key, _ in group_map.values()}) != len(steam_meta.store_tracklist):
+            return False, None, None
+
+        if set(slot_map.keys()) != {slot_key for slot_key, _ in group_map.values()}:
+            return False, None, None
+
+        best = mbz_candidates[0] if mbz_candidates else {}
 
         logger.info(f"[{app_id}] ファストトラックが有効になりました: 確実な証拠が見つかりました。")
         
         # Global Identity Construction
         global_id = {
-            "canonical_album_artist": best.get("artist") or steam_meta.developer,
+            "canonical_album_artist": best.get("artist") or ", ".join([part for part in [steam_meta.developer, steam_meta.publisher] if part]),
             "canonical_genre": steam_meta.genres[0] if steam_meta.genres else "Game Music",
             "canonical_year": (steam_meta.release_date[:4] if steam_meta.release_date else None) or best.get("year") or "0000",
             "canonical_label": best.get("label") or steam_meta.label or steam_meta.publisher,
-            "chosen_mbz_index": 0
+            "chosen_mbz_index": 0 if best else None
         }
         
         final_map = {}
-        
-        # Mapping Logic
-        # Original MBZ name-based matching
-        mbz_tracks = best.get("tracks", [])
-        # Use alphanumeric normalization consistent with TrackManager
-        def n_alpha(s): return re.sub(r'[^a-z0-9]', '', str(s).lower())
-        norm_mbz = [n_alpha(t.get("title", "")) for t in mbz_tracks]
-        
-        for key, variants in track_groups.items():
-            disc_num, clean_title = key
-            tid = f"{disc_num}_{clean_title}"
-            norm_local = n_alpha(clean_title)
-            
-            found_idx = -1
-            for idx, n_mbz in enumerate(norm_mbz):
-                if n_mbz == norm_local:
-                    found_idx = idx
-                    break
-            
-            if found_idx == -1:
-                logger.warning(f"[{app_id}] ファストトラックのマッピングに失敗しました: {clean_title}")
-                return False, None, None
-            
-            final_map[tid] = {"action": "use_mbz", "mbz_track_index": found_idx, "reason": "Fast-track: Perfect MBZ name alignment"}
+
+        fingerprint_by_slot = {}
+        for signal_track in (fingerprint_bundle or {}).get("tracks", []):
+            track_num = signal_track.get("track_num")
+            if track_num in (None, "", 0, "0"):
+                continue
+            signal_key = self._normalize_slot_key(signal_track.get("disc") or 1, track_num)
+            if signal_key is not None and signal_key not in fingerprint_by_slot:
+                fingerprint_by_slot[signal_key] = signal_track
+
+        for track_id, (slot_key, clean_title) in group_map.items():
+            slot_idx = slot_map[slot_key]
+            disc_num, track_number = slot_key
+            instruction = {
+                "action": "use_steam",
+                "matched_v_idx": slot_idx,
+                "override_track": track_number,
+                "override_disc": str(disc_num),
+                "reason": "Fast-track: STEAM slot mapping resolved by track number and duration",
+            }
+            signal_track = fingerprint_by_slot.get(slot_key)
+            if signal_track:
+                instruction["chosen_mbz_index"] = 0
+                instruction["mbz_track_index"] = signal_track.get("mbz_track_index")
+                instruction["alignment_evidence"] = ["filename_track_number", "duration", "acoustid", "mbz_release"]
+            final_map[track_id] = instruction
             
         return True, final_map, global_id
+
+    @staticmethod
+    def _build_mbz_candidates_from_alignment_inputs(v_fingerprint: Optional[Dict[str, Any]], v_mbz_search: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        mbz_candidates = []
+        if v_fingerprint:
+            mbz_candidates.append({
+                "mbid": v_fingerprint["mbid"],
+                "album": v_fingerprint["album_name"],
+                "artist": v_fingerprint["artist"],
+                "year": v_fingerprint["year"],
+                "label": v_fingerprint["label"],
+                "score": 1000,
+                "evidence": v_fingerprint.get("evidence", ["MAJORITY_VOTE_WINNER"]),
+                "tracks": v_fingerprint["tracks"],
+            })
+        elif v_mbz_search:
+            mbz_candidates.append({
+                "mbid": v_mbz_search["mbid"],
+                "album": v_mbz_search["album_name"],
+                "artist": v_mbz_search["artist"],
+                "year": v_mbz_search["year"],
+                "label": v_mbz_search["label"],
+                "score": v_mbz_search["score"],
+                "evidence": v_mbz_search.get("evidence", ["MBZ_SEARCH_WINNER"]),
+                "tracks": v_mbz_search["tracks"],
+            })
+        return mbz_candidates
+
+    @staticmethod
+    def _build_fast_track_alignment_res(final_metadata: Dict[str, Any], v_local: Dict[str, Any]) -> Dict[str, Any]:
+        slots: Dict[str, Dict[str, Any]] = {}
+        local_tracks = v_local.get("tracks", []) if isinstance(v_local, dict) else []
+        file_ids_by_tid: Dict[str, List[str]] = {}
+        for track in local_tracks:
+            local_key = track.get("local_key")
+            if not local_key:
+                continue
+            file_ids_by_tid[f"{local_key[0]}_{local_key[1]}"] = [str(file_id) for file_id in track.get("file_ids", [])]
+
+        for tid, instr in final_metadata.items():
+            file_ids = file_ids_by_tid.get(tid)
+            if not file_ids:
+                continue
+            slot_key = str(instr.get("override_track") or int(instr.get("matched_v_idx", 0)) + 1)
+            slots.setdefault(slot_key, {"files": [], "confidence": 1.0, "reason": instr.get("reason")})
+            slots[slot_key]["files"].extend(file_ids)
+
+        assigned = {file_idx for slot in slots.values() for file_idx in slot.get("files", [])}
+        all_file_ids = [str(file_id) for track in local_tracks for file_id in track.get("file_ids", [])]
+        unassigned = [file_id for file_id in all_file_ids if file_id not in assigned]
+        return {
+            "slots": slots,
+            "unassigned_files": unassigned,
+            "unassigned_reason": None if not unassigned else "Fast-track left files unassigned",
+        }
 
     def process_album(
         self,
@@ -152,9 +257,9 @@ class LocalProcessor:
                 _diag("SKIP_NO_AUDIO")
                 return LocalProcessResult(app_id=app_id, status="skip", album_name=steam_meta.name, message="No audio", confidence_score=0)
             
-            track_groups = TrackManager.group_by_logical_track(all_files, album_name=steam_meta.name)
+            track_groups = TrackManager.build_file_records(all_files, album_name=steam_meta.name)
             
-            _diag("TRACK_GROUPS_BUILT", group_count=len(track_groups))
+            _diag("FILE_RECORDS_BUILT", file_count=len(track_groups))
             max_local_disc = max((d for d, _ in track_groups.keys()), default=1) if track_groups else 1
             max_store_disc = max((int(t.get("disc", 1)) for t in steam_meta.store_tracklist), default=1) if steam_meta.store_tracklist else 1
             total_discs = max(max_local_disc, max_store_disc)
@@ -163,9 +268,45 @@ class LocalProcessor:
             execution_profile = self._build_album_execution_profile(track_count)
             logger.info(f"[{app_id}] 実行プロファイル: {execution_profile.tier_name} (Tracks: {track_count}, num_ctx: {execution_profile.num_ctx_cap}, workers: {execution_profile.phase2_parallel_workers})")
 
-            final_metadata, llm_log, v_steam, v_local, v_fingerprint, v_mbz_search, mbz_log = build_and_consolidate_virtual_albums(
-                app_id, steam_meta, track_groups, self.virtual_album_builder, self.llm, execution_profile, _diag, on_track_complete, llm_progress_callback
+            v_steam, v_local, v_fingerprint, v_mbz_search, mbz_log = collect_alignment_inputs(
+                app_id, steam_meta, track_groups, self.alignment_input_builder, _diag, on_track_complete
             )
+            mbz_candidates = self._build_mbz_candidates_from_alignment_inputs(v_fingerprint, v_mbz_search)
+
+            fast_track_ok, fast_track_map, fast_track_identity = self._check_fast_track(app_id, steam_meta, track_groups, mbz_candidates, v_fingerprint)
+            if fast_track_ok:
+                final_metadata = fast_track_map or {}
+                fast_track_alignment_res = self._build_fast_track_alignment_res(final_metadata, v_local)
+                llm_log = {
+                    "fast_track": True,
+                    "phase1_res": {
+                        "album_confidence": 100,
+                        "mapping_confidence": 100,
+                        "data_quality": 100,
+                        "identity_confidence": 100,
+                        "integrity_quality": 100,
+                        "archive_vs_review_ratio": {"archive": 100, "review": 0},
+                        "confidence_reason": "SYSTEM: Deterministic fast-track",
+                        "strategy": "FAST_TRACK",
+                        "semantic_label": "Archive",
+                        "global_tags": fast_track_identity or {},
+                        "concerns": [],
+                    },
+                    "alignment_res": fast_track_alignment_res,
+                }
+                _diag("FAST_TRACK_SELECTED", mapped_track_count=len(final_metadata))
+            else:
+                final_metadata, llm_log = consolidate_alignment_inputs(
+                    app_id,
+                    self.llm,
+                    execution_profile,
+                    v_steam,
+                    v_local,
+                    v_fingerprint,
+                    v_mbz_search,
+                    _diag,
+                    llm_progress_callback=llm_progress_callback,
+                )
             
             # --- SMART DUPLICATE RESOLUTION (Post-LLM Cleanup) ---
             if final_metadata:
@@ -174,31 +315,7 @@ class LocalProcessor:
             # Compatibility layer for existing validator/tagger
             # We still need track_sources for build_tag_map
             track_sources = TrackManager.prepare_llm_track_context(track_groups)
-            
-            # Map v_fingerprint to mbz_candidates for compatibility with existing ReportGenerator/Validator
-            mbz_candidates = []
-            if v_fingerprint:
-                mbz_candidates.append({
-                    "mbid": v_fingerprint["mbid"],
-                    "album": v_fingerprint["album_name"],
-                    "artist": v_fingerprint["artist"],
-                    "year": v_fingerprint["year"],
-                    "label": v_fingerprint["label"],
-                    "score": 1000, # Max score for majority vote winner
-                    "evidence": v_fingerprint.get("evidence", ["MAJORITY_VOTE_WINNER"]),
-                    "tracks": v_fingerprint["tracks"]
-                })
-            elif v_mbz_search:
-                mbz_candidates.append({
-                    "mbid": v_mbz_search["mbid"],
-                    "album": v_mbz_search["album_name"],
-                    "artist": v_mbz_search["artist"],
-                    "year": v_mbz_search["year"],
-                    "label": v_mbz_search["label"],
-                    "score": v_mbz_search["score"],
-                    "evidence": v_mbz_search.get("evidence", ["MBZ_SEARCH_WINNER"]),
-                    "tracks": v_mbz_search["tracks"]
-                })
+            slot_variant_index, track_to_slot_index = build_slot_variant_index(final_metadata, track_groups, steam_meta)
             
             # Identity and strategy for builder
             p1_res = llm_log.get("phase1_res", {})
@@ -239,16 +356,21 @@ class LocalProcessor:
                     buffer_dir=buffer_dir,
                     tagger=tagger,
                     track_groups=track_groups,
+                    slot_variant_index=slot_variant_index,
+                    track_to_slot_index=track_to_slot_index,
                     album_artwork=album_artwork,
                     notifier=self.notifier,
                     on_track_complete=on_track_complete,
                 )
 
             from concurrent.futures import ThreadPoolExecutor
+            adopted_files = adopt_best_file_per_slot(track_groups, slot_variant_index, track_to_slot_index)
             with ThreadPoolExecutor(max_workers=self.config.max_encoding_tasks) as executor:
-                track_results = list(executor.map(_process_single_track, TrackManager.adopt_optimal_files(track_groups).items()))
+                track_results = list(executor.map(_process_single_track, adopted_files.items()))
 
-            processed_tracks_meta = [r["track_meta"] for r in track_results if r.get("track_meta")]
+            processed_tracks_meta = self._normalize_processed_tracks(
+                [r["track_meta"] for r in track_results if r.get("track_meta")]
+            )
             any_audio_warnings = any(r.get("had_warning") for r in track_results)
             any_audio_failures = any(r.get("failed") for r in track_results)
 
@@ -257,8 +379,9 @@ class LocalProcessor:
                 "VALIDATION_DONE",
                 status=status,
                 message=message,
-                confidence_score=score,
-                integrity_quality=quality,
+                album_confidence=score,
+                data_quality=quality,
+                mapping_confidence=p1_res.get("mapping_confidence"),
                 processed_track_count=len(processed_tracks_meta),
             )
             
@@ -271,6 +394,9 @@ class LocalProcessor:
                 "status": status, 
                 "message": message,
                 "confidence_score": score, 
+                "album_confidence": score,
+                "mapping_confidence": p1_res.get("mapping_confidence"),
+                "data_quality": quality,
                 "integrity_quality": quality,
                 "archive_vs_review_ratio": p1_res.get("archive_vs_review_ratio"),
                 "strategy": p1_res.get("strategy"),
@@ -282,11 +408,11 @@ class LocalProcessor:
             }
             discord_msg = self._send_notifications(app_id, steam_meta.name, status, message, score, reason, llm_log, any_audio_failures, len(processed_tracks_meta), mbz_candidates)
             
-            virtual_albums_bundle = {
+            alignment_inputs_bundle = {
                 "STEAM": v_steam if 'v_steam' in locals() else None,
-                "FINGERPRINT": v_fingerprint if 'v_fingerprint' in locals() else None,
+                "ACOUSTID_MBID": v_fingerprint if 'v_fingerprint' in locals() else None,
                 "MBZ_SEARCH": v_mbz_search if 'v_mbz_search' in locals() else None,
-                "LOCAL": v_local if 'v_local' in locals() else None
+                "LOCAL_SIGNALS": v_local if 'v_local' in locals() else None
             }
 
             localized_now_str = self._get_localized_now().strftime('%Y-%m-%d %H:%M:%S')
@@ -294,7 +420,7 @@ class LocalProcessor:
                 "mbz_log.json": mbz_log, 
                 "metadata.json": summary_meta,
                 "llm_log.json": llm_log,
-                "AUDIT_REPORT.html": ReportGenerator.generate_html_report(app_id, steam_meta, status, message, score, reason, processed_tracks_meta, llm_log, mbz_candidates, localized_now_str, self.config.metadata_source_priority, quality=quality, virtual_albums=virtual_albums_bundle)
+                "AUDIT_REPORT.html": ReportGenerator.generate_html_report(app_id, steam_meta, status, message, score, reason, processed_tracks_meta, llm_log, mbz_candidates, localized_now_str, self.config.resolved_metadata_source_priority, quality=quality, alignment_inputs=alignment_inputs_bundle)
             }
             if discord_msg:
                 log_bundle["DISCORD_MESSAGE.md"] = discord_msg
@@ -327,6 +453,25 @@ class LocalProcessor:
     def _fetch_album_artwork(self, steam_meta: SteamMetadata, mbz_candidates: List[Dict], track_groups: Dict = None) -> Optional[bytes]:
         return fetch_album_artwork(self.config, self.mbz, steam_meta, mbz_candidates, track_groups)
 
+    @staticmethod
+    def _normalize_processed_tracks(tracks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Keep one highest-quality physical file per aligned Steam slot before validation."""
+        selected: Dict[str, Dict[str, Any]] = {}
+        order: List[str] = []
+        for track in tracks:
+            key = str(track.get("slot_key") or "")
+            if not key:
+                tags = track.get("tags", {})
+                key = f"{tags.get('disc_number', '1')}_{tags.get('track_number', '0')}"
+            if key not in selected:
+                selected[key] = track
+                order.append(key)
+                continue
+            current = selected[key]
+            if int(track.get("tier_rank", 999)) < int(current.get("tier_rank", 999)):
+                selected[key] = track
+        return [selected[key] for key in order]
+
 
     def _send_notifications(self, app_id, name, status, message, score, reason, llm_log, any_audio_failures, track_count, mbz_candidates):
         return send_notifications(self.notifier, app_id, name, status, message, score, reason, llm_log, any_audio_failures, track_count, mbz_candidates)
@@ -344,7 +489,6 @@ class LocalProcessor:
                 track_count_max=getattr(cfg, 'llm_album_tier_small_max_tracks', 50),
                 num_ctx_cap=getattr(cfg, 'llm_ollama_num_ctx_small', 8192),
                 phase2_parallel_workers=getattr(cfg, 'llm_request_parallelism_max_workers_small', 3),
-                force_coherence=False,
                 prefer_one_shot=False
             )
         # Medium
@@ -355,7 +499,6 @@ class LocalProcessor:
                 track_count_max=getattr(cfg, 'llm_album_tier_medium_max_tracks', 100),
                 num_ctx_cap=getattr(cfg, 'llm_ollama_num_ctx_medium', 16384),
                 phase2_parallel_workers=getattr(cfg, 'llm_request_parallelism_max_workers_medium', 2),
-                force_coherence=False,
                 prefer_one_shot=True
             )
         # Large
@@ -366,6 +509,5 @@ class LocalProcessor:
                 track_count_max=99999,
                 num_ctx_cap=getattr(cfg, 'llm_ollama_num_ctx_large', 32768),
                 phase2_parallel_workers=getattr(cfg, 'llm_request_parallelism_max_workers_large', 1),
-                force_coherence=getattr(cfg, 'llm_force_coherence_large', True),
                 prefer_one_shot=True
             )

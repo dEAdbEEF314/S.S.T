@@ -77,7 +77,7 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
 """
 
     @staticmethod
-    def generate_html_report(app_id: int, steam_meta: SteamMetadata, status: str, message: str, score: int, reason: str, processed_tracks: List[Dict[str, Any]], llm_log: Dict[str, Any], mbz_candidates: List[Dict[str, Any]], localized_now_str: str, priority_str: str, quality: Optional[int] = None, virtual_albums: Optional[Dict[str, Any]] = None) -> str:
+    def generate_html_report(app_id: int, steam_meta: SteamMetadata, status: str, message: str, score: int, reason: str, processed_tracks: List[Dict[str, Any]], llm_log: Dict[str, Any], mbz_candidates: List[Dict[str, Any]], localized_now_str: str, priority_str: str, quality: Optional[int] = None, alignment_inputs: Optional[Dict[str, Any]] = None) -> str:
         is_fast = llm_log.get("fast_track", False)
         status_class = "status-archive" if status == "archive" else "status-review"
         status_label = "🛡️ ARCHIVE SUCCESS" if status == "archive" else "🔍 REVIEW REQUIRED"
@@ -89,7 +89,9 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
 
         p1_res = llm_log.get("phase1_res") or {}
         if quality is None:
-            quality = int(p1_res.get("integrity_quality", 0))
+            quality = int(p1_res.get("data_quality", p1_res.get("integrity_quality", 0)))
+        album_confidence = int(p1_res.get("album_confidence", p1_res.get("identity_confidence", 0)))
+        mapping_confidence = int(p1_res.get("mapping_confidence", album_confidence))
         global_tags = p1_res.get("global_tags", {})
         chosen_idx = global_tags.get("chosen_mbz_index")
         chosen_id = global_tags.get("chosen_mbz_id")
@@ -146,13 +148,13 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
                 <td style="font-size: 0.75rem; color: #8b949e;">{t.get('source', '')}</td>
             </tr>"""
 
-        virtual_albums_html = ""
-        if virtual_albums:
-            virtual_albums_html += '<div class="card" style="margin-top: 20px;"><h3>Virtual Albums Context (LLM Prompt Data)</h3>'
-            virtual_albums_html += '<div style="display: flex; flex-direction: column; gap: 20px;">'
-            for source_name, va in virtual_albums.items():
+        alignment_inputs_html = ""
+        if alignment_inputs:
+            alignment_inputs_html += '<div class="card" style="margin-top: 20px;"><h3>Alignment Inputs (LLM Prompt Data)</h3>'
+            alignment_inputs_html += '<div style="display: flex; flex-direction: column; gap: 20px;">'
+            for source_name, va in alignment_inputs.items():
                 if not va:
-                    virtual_albums_html += f'<div><h4 style="color: var(--accent-blue); margin-bottom: 5px;">{source_name}</h4><p style="color: #8b949e; font-size: 0.85rem; margin-top: 0;">Not available</p></div>'
+                    alignment_inputs_html += f'<div><h4 style="color: var(--accent-blue); margin-bottom: 5px;">{source_name}</h4><p style="color: #8b949e; font-size: 0.85rem; margin-top: 0;">Not available</p></div>'
                     continue
                 
                 album_name = str(va.get("album_name", "N/A")).replace("<", "&lt;").replace(">", "&gt;")
@@ -163,9 +165,9 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
                 html_table += '<table class="tag-table" style="font-size: 0.8rem;"><thead><tr>'
                 html_table += '<th>Disc</th><th>#</th><th>Title</th><th>Duration</th>'
                 
-                if source_name in ["FINGERPRINT", "MBZ_SEARCH", "VERIFIED_MBZ"]:
+                if source_name in ["ACOUSTID_MBID", "MBZ_SEARCH", "VERIFIED_MBZ"]:
                     html_table += '<th>MBID</th><th>Credits</th>'
-                elif source_name == "LOCAL":
+                elif source_name == "LOCAL_SIGNALS":
                     html_table += '<th>Local Key</th>'
                     
                 html_table += '</tr></thead><tbody>'
@@ -179,19 +181,19 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
                     
                     html_table += f'<tr><td>{disc}</td><td>{num}</td><td><strong>{title}</strong></td><td>{dur_str}</td>'
                     
-                    if source_name in ["FINGERPRINT", "MBZ_SEARCH", "VERIFIED_MBZ"]:
+                    if source_name in ["ACOUSTID_MBID", "MBZ_SEARCH", "VERIFIED_MBZ"]:
                         mbid = t.get("mbid", "-") if t.get("mbid") else "-"
                         credits = str(t.get("credits", "-")).replace("<", "&lt;").replace(">", "&gt;") if t.get("credits") else "-"
                         html_table += f'<td><code style="font-size:0.75rem;">{mbid}</code></td><td><span style="font-size:0.75rem;">{credits}</span></td>'
-                    elif source_name == "LOCAL":
+                    elif source_name == "LOCAL_SIGNALS":
                         l_key = t.get("local_key", "-") if t.get("local_key") else "-"
                         html_table += f'<td><code style="font-size:0.75rem;">{l_key}</code></td>'
                         
                     html_table += '</tr>'
                 
                 html_table += '</tbody></table></div>'
-                virtual_albums_html += html_table
-            virtual_albums_html += '</div></div>'
+                alignment_inputs_html += html_table
+            alignment_inputs_html += '</div></div>'
 
         return f"""<!DOCTYPE html>
 <html lang="ja">
@@ -220,8 +222,9 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
         </div>
         <div class="card">
             <h3>LLM Metrics</h3>
-            <p><strong>Identity Confidence:</strong> {p1_res.get('identity_confidence', 'N/A')}%<br>
-            <strong>Integrity Quality:</strong> {quality}%<br>
+            <p><strong>Album Confidence:</strong> {album_confidence}%<br>
+            <strong>Mapping Confidence:</strong> {mapping_confidence}%<br>
+            <strong>Data Quality:</strong> {quality}%<br>
             <strong>Decision Ratio:</strong> Arch {p1_res.get('archive_vs_review_ratio', {}).get('archive', 0)}% : Rev {p1_res.get('archive_vs_review_ratio', {}).get('review', 0)}%</p>
         </div>
     </div>
@@ -232,9 +235,9 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
         
         <div style="margin-top: 15px; border-top: 1px solid var(--border-color); padding-top: 15px; font-size: 0.85rem; color: #8b949e;">
             <strong style="color: var(--accent-yellow);">⚙️ System Merge Note:</strong><br>
-            本システムは、LLMが選択した MusicBrainz (MBZ) のリリースデータをベースに動作しますが、元のリリース曲順がローカルファイルと異なる場合は、**再生時間（Duration）に基づき物理的に自動整列（Duration Alignment）**した上でマッピングを行っています。</p>
+            本システムは、STEAM のスロット構造を正本としつつ、MusicBrainz や AcoustID の補助シグナルを用いて整列を行います。元のリリース曲順がローカルファイルと異なる場合は、**再生時間（Duration）に基づき物理的に自動整列（Duration Alignment）**した上でマッピングを行っています。</p>
             <p>
-            また、最終的なタグの値はシステムによる「仮想アルバム（Virtual Album）構想」に基づき、LLMが選定した主軸データ（Steam公式情報 または MusicBrainz）を中心として、不足している項目（トラック番号やカバーアートなど）を最適なソースから自動的にフォールバックして補完する決定論的ロジックによって構築されています。
+            また、最終的なタグの値はシステムによる STEAM 骨格 + signal ベースの決定論的ロジックに基づき、不足している項目（トラック番号やカバーアートなど）を最適なソースから自動的にフォールバックして補完する形で構築されています。
             </p>
         </div>
     </div>
@@ -273,7 +276,7 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
         </table>
     </div>
 
-    {virtual_albums_html}
+    {alignment_inputs_html}
 
     <footer>
         <p>Generated by S.S.T (Steam Soundtrack Tagger) at {localized_now_str}</p>
@@ -285,8 +288,9 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
     @staticmethod
     def generate_classification_basis(app_id: int, steam_meta: SteamMetadata, status: str, message: str, score: int, reason: str, count: int, llm_log: Dict[str, Any], mbz_candidates: List[Dict[str, Any]], localized_now_str: str) -> str:
         p1_res = llm_log.get("phase1_res") or {}
-        id_conf = p1_res.get("identity_confidence", 0)
-        quality = p1_res.get("integrity_quality", 0)
+        id_conf = p1_res.get("album_confidence", p1_res.get("identity_confidence", 0))
+        mapping_conf = p1_res.get("mapping_confidence", id_conf)
+        quality = p1_res.get("data_quality", p1_res.get("integrity_quality", 0))
         ratio = p1_res.get("archive_vs_review_ratio", {"archive": 0, "review": 0})
         is_fast = llm_log.get("fast_track", False)
         
@@ -313,7 +317,7 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
         if is_fast:
             display_reason = "🛡️ **DETERMINISTIC FAST-TRACK ENABLED**\n\nThis album was automatically verified by matching perfect evidence (e.g., Direct Steam links, exact track count, and title alignment) from MusicBrainz or PICS. \n\n**LLM inference was bypassed** to maintain 100% data integrity and save tokens."
 
-        return f"# {status_emoji} Archive Audit Report: {steam_meta.name}\n\n## 📊 Quick Summary\n- **AppID**: {app_id}\n- **Status**: **{status.upper()}**\n- **Confidence Gates**:\n  - Identity Confidence: `{id_conf}/100` (Req: 100 for Archive)\n  - Integrity Quality: `{quality}/100` (Req: 95 for Archive)\n- **Judgment Ratio**: Archive `{ratio.get('archive', 0)}%` / Review `{ratio.get('review', 0)}%`\n- **System Decision Reason**: {md_escape(message)}\n- **Tracks Processed**: {count}\n{action_required}\n## 🔍 LLM Reasoning & Strategy\n{md_blockquote(display_reason)}\n\n## 🔗 External References\n- **Steam Store**: https://store.steampowered.com/app/{app_id}\n- **Parent Game**: {md_escape(steam_meta.parent_name) or 'N/A'} (AppID: {steam_meta.parent_app_id or 'N/A'})\n\n## 🎼 MusicBrainz Candidates (Top 5)\n{candidate_md}\n\n---\n*Report generated by S.S.T (Steam Soundtrack Tagger) at {localized_now_str}*\n"
+        return f"# {status_emoji} Archive Audit Report: {steam_meta.name}\n\n## 📊 Quick Summary\n- **AppID**: {app_id}\n- **Status**: **{status.upper()}**\n- **Confidence Gates**:\n  - Album Confidence: `{id_conf}/100`\n  - Mapping Confidence: `{mapping_conf}/100`\n  - Data Quality: `{quality}/100`\n- **Judgment Ratio**: Archive `{ratio.get('archive', 0)}%` / Review `{ratio.get('review', 0)}%`\n- **System Decision Reason**: {md_escape(message)}\n- **Tracks Processed**: {count}\n{action_required}\n## 🔍 LLM Reasoning & Strategy\n{md_blockquote(display_reason)}\n\n## 🔗 External References\n- **Steam Store**: https://store.steampowered.com/app/{app_id}\n- **Parent Game**: {md_escape(steam_meta.parent_name) or 'N/A'} (AppID: {steam_meta.parent_app_id or 'N/A'})\n\n## 🎼 MusicBrainz Candidates (Top 5)\n{candidate_md}\n\n---\n*Report generated by S.S.T (Steam Soundtrack Tagger) at {localized_now_str}*\n"
 
     @staticmethod
     def generate_batch_report(results: List[Any], output_path: Path):

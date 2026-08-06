@@ -46,8 +46,6 @@ class LLMClient:
     def _estimate_expected_output_tokens(self, request_kind: str, request_units: int) -> int:
         if request_kind == "identity":
             return self.ollama_num_predict
-        if request_kind == "coherence":
-            return max(2048, request_units * 128)
         if request_kind == "track_mapping":
             return max(1024, request_units * max(512, self.chunk_output_tokens_per_track))
         return max(1024, request_units * max(512, self.chunk_output_tokens_per_track))

@@ -1,6 +1,5 @@
 import os
 import shutil
-import glob
 import argparse
 import sqlite3
 from pathlib import Path
@@ -41,23 +40,29 @@ def clean(keep_cache=True):
 
 
     # 3. ログのクリーンアップ
-    log_patterns = [
-        ("logs", "SST_DEBUG_*.log"),
-        ("logs", "*.log")
-    ]
-    for folder, pattern in log_patterns:
-        folder_path = Path(folder)
-        if folder_path.exists() and folder_path.is_dir():
-            for p in folder_path.glob(pattern):
-                try:
-                    if p.is_file():
-                        p.unlink()
-                        print(f"Removed log file: {p}")
-                        deleted_count += 1
-                except Exception as e:
-                    errors.append(f"Failed to remove log file {p}: {e}")
+    log_dir = Path("logs")
+    if log_dir.exists() and log_dir.is_dir():
+        for p in log_dir.glob("*.log"):
+            try:
+                p.unlink()
+                print(f"Removed log file: {p}")
+                deleted_count += 1
+            except Exception as e:
+                errors.append(f"Failed to remove log file {p}: {e}")
 
-    # 4. 出力先ディレクトリ (SST_OUTPUT_DIR) 配下のクリーンアップ
+    # 4. Scanner/skill cache cleanup. The CLI currently passes data/sst_cache.json
+    # as the ScannerCacheManager path, so this is a runtime cache, not disposable output.
+    if not keep_cache:
+        for cache_path in (Path("data/sst_cache.json"), Path("data/scout_cache.json")):
+            try:
+                if cache_path.is_file():
+                    cache_path.unlink()
+                    print(f"Removed scanner cache: {cache_path}")
+                    deleted_count += 1
+            except Exception as e:
+                errors.append(f"Failed to remove scanner cache {cache_path}: {e}")
+
+    # 5. 出力先ディレクトリ (SST_OUTPUT_DIR) 配下のクリーンアップ
     output_dir = ensure_path(config.sst_output_dir)
     output_dirs_to_clean = [output_dir]
     
@@ -85,7 +90,7 @@ def clean(keep_cache=True):
                 except Exception as e:
                     errors.append(f"Failed to remove output item {p}: {e}")
 
-    # 5. 一時作業ディレクトリ (SST_WORKING_DIR) 配下のクリーンアップ
+    # 6. 一時作業ディレクトリ (SST_WORKING_DIR) 配下のクリーンアップ
     working_dir = ensure_path(config.sst_working_dir)
     if working_dir.exists() and working_dir.is_dir():
         for p in working_dir.iterdir():
