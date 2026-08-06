@@ -243,10 +243,18 @@ def resolve_duplicate_mappings(
         # LLMが同一のSTEAMトラックにマッピングした異なるフォーマットのトラックを統合する。
         from .track_grouper import TrackManager
         priorities = TrackManager.get_audio_format_priority()
+
+        def get_group_key(tid):
+            try:
+                disc, clean_title = tid.split("_", 1)
+                return int(disc), clean_title
+            except (TypeError, ValueError):
+                return None
         
         def get_priority(tid):
-            if tid in track_groups and track_groups[tid]:
-                fmt = track_groups[tid][0]["format"].lower()
+            group_key = get_group_key(tid)
+            if group_key in track_groups and track_groups[group_key]:
+                fmt = track_groups[group_key][0]["format"].lower()
                 try:
                     return priorities.index(fmt)
                 except ValueError:
@@ -267,11 +275,13 @@ def resolve_duplicate_mappings(
                 this_stem = tid
 
             if best_stem == this_stem:
-                if tid in track_groups:
-                    for v in track_groups[tid]:
-                        if v not in track_groups[best_tid]:
-                            track_groups[best_tid].append(v)
-                    del track_groups[tid]
+                best_group_key = get_group_key(best_tid)
+                group_key = get_group_key(tid)
+                if group_key in track_groups and best_group_key in track_groups:
+                    for v in track_groups[group_key]:
+                        if v not in track_groups[best_group_key]:
+                            track_groups[best_group_key].append(v)
+                    del track_groups[group_key]
                 if tid in final_metadata:
                     del final_metadata[tid]
                 tids_to_remove.append(tid)
@@ -279,8 +289,9 @@ def resolve_duplicate_mappings(
                 logger.info(f"[{app_id}] フォーマット重複を解決: {tid} を最高品質の {best_tid} に統合しました。")
 
         if merged_any:
-            if best_tid in track_groups:
-                track_groups[best_tid].sort(key=lambda v: priorities.index(v["format"].lower()) if v["format"].lower() in priorities else 999)
+            best_group_key = get_group_key(best_tid)
+            if best_group_key in track_groups:
+                track_groups[best_group_key].sort(key=lambda v: priorities.index(v["format"].lower()) if v["format"].lower() in priorities else 999)
             tids = [t for t in tids if t not in tids_to_remove]
             if len(tids) <= 1:
                 continue
