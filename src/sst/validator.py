@@ -12,12 +12,16 @@ class ResultValidator:
         p1_res = llm_log.get("phase1_res", {})
         id_conf = int(p1_res.get("identity_confidence", 0))
         quality = int(p1_res.get("integrity_quality", 0))
+        album_confidence = int(p1_res.get("album_confidence", id_conf))
+        mapping_confidence = int(p1_res.get("mapping_confidence", album_confidence if album_confidence else id_conf))
+        data_quality = int(p1_res.get("data_quality", quality))
         reason = p1_res.get("confidence_reason")
         if reason is None:
             reason = "No LLM response"
         label = p1_res.get("semantic_label", "Review")
         strategy = p1_res.get("strategy", "UNKNOWN")
         ratio = p1_res.get("archive_vs_review_ratio", {"archive": 0, "review": 0})
+        is_fast_track = bool(llm_log.get("fast_track", False))
         
         # --- 1. Decision Strategy Badges ---
         strategy_badges = []
@@ -30,7 +34,7 @@ class ResultValidator:
             strategy_badges.append("Fallback (Single)")
         elif strategy == "LOCAL_BASED": 
             strategy_badges.append("Steam Fallback")
-        elif strategy == "MBZ_BASED" or strategy == "FINGERPRINT_BASED": 
+        elif strategy in {"MBZ_BASED", "ACOUSTID_BASED", "FINGERPRINT_BASED"}:
             strategy_badges.append("MBZ Match")
         elif strategy == "HYBRID": 
             strategy_badges.append("Hybrid (MBZ+Steam)")
@@ -90,21 +94,19 @@ class ResultValidator:
         elif audio_warn: issues.append("Audio quality warning")
 
         # --- 3. Confidence & Quality Thresholds ---
-        quality_threshold = 85
-        conf_threshold = 90
-        if is_steam_trust and id_conf >= 90:
-            quality_threshold = 75 # Relaxed for strong Steam matches without fingerprint
-            
-        # Decision Logic: Prioritize scores over LLM's explicit ratio if they are high enough
-        is_score_perfect = (id_conf >= conf_threshold and quality >= quality_threshold)
+        llm_archive_path = album_confidence >= 90 and mapping_confidence >= 80 and data_quality >= 70
+        steam_trust_path = is_steam_trust and album_confidence >= 90 and mapping_confidence >= 75 and data_quality >= 60
         llm_wants_review = (ratio.get("archive", 0) < 50 or strategy == "REVIEW_REQUIRED")
 
-        if not is_score_perfect and llm_wants_review:
-            issues.append("LLM's decision (Low Confidence/Ratio)")
-        elif quality < quality_threshold:
-            issues.append(f"Quality too low ({quality}%)")
-        elif id_conf < conf_threshold:
-            issues.append(f"Confidence too low ({id_conf}%)")
+        if not is_fast_track and not llm_archive_path and not steam_trust_path:
+            if llm_wants_review:
+                issues.append("LLM's decision (Low Confidence/Ratio)")
+            if album_confidence < 90:
+                issues.append(f"Album confidence too low ({album_confidence}%)")
+            if mapping_confidence < (75 if is_steam_trust else 80):
+                issues.append(f"Mapping confidence too low ({mapping_confidence}%)")
+            if data_quality < (60 if is_steam_trust else 70):
+                issues.append(f"Data quality too low ({data_quality}%)")
 
         # --- 4. Final Status Determination ---
         if issues:
@@ -112,6 +114,13 @@ class ResultValidator:
             message = f"[{', '.join(issues)}]"
         else:
             status = "archive"
-            message = f"Success {badge_str}".strip() or "Success (Validated)"
+            if is_fast_track:
+                message = "Success [Deterministic Fast-Track]"
+            elif steam_trust_path:
+                message = f"Success [STEAM-TRUST]{badge_str}".strip()
+            elif llm_archive_path:
+                message = f"Success [LLM-ARCHIVE]{badge_str}".strip()
+            else:
+                message = f"Success {badge_str}".strip() or "Success (Validated)"
 
-        return status, message, id_conf, quality, reason
+        return status, message, album_confidence, data_quality, reason

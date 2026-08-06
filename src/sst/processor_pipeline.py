@@ -30,18 +30,18 @@ def handle_early_review_return(
 ) -> LocalProcessResult:
     p1_log = llm_log.get("phase1_log", {})
     p1_res = llm_log.get("phase1_res", {})
-    score = p1_res.get("identity_confidence", 0) if isinstance(p1_res, dict) else 0
+    score = p1_res.get("album_confidence", p1_res.get("identity_confidence", 0)) if isinstance(p1_res, dict) else 0
     error_msg = p1_res.get("confidence_reason") if isinstance(p1_res, dict) else (p1_log.get("error") or "Manual Review Required")
     if error_msg is None:
         error_msg = "No reason provided by LLM."
         
     diagnostics["review_cause_code"] = "EARLY_REVIEW_RETURN"
-    diagnostics["upstream_cause_code"] = "LLM_RESPONSE_MISSING" if not p1_res else "LOW_CONFIDENCE_GATE"
+    diagnostics["upstream_cause_code"] = "LLM_RESPONSE_MISSING" if not p1_res else "PRE_ALIGNMENT_REVIEW_GATE"
     _diag(
         "EARLY_REVIEW_RETURN",
         review_cause_code=diagnostics["review_cause_code"],
         upstream_cause_code=diagnostics["upstream_cause_code"],
-        identity_confidence=score,
+        album_confidence=score,
         error=error_msg,
     )
     
@@ -52,6 +52,9 @@ def handle_early_review_return(
         "album_name": steam_meta.name,
         "status": "review",
         "confidence_score": score,
+        "album_confidence": score,
+        "mapping_confidence": p1_res.get("mapping_confidence") if isinstance(p1_res, dict) else None,
+        "data_quality": p1_res.get("data_quality") if isinstance(p1_res, dict) else None,
         "confidence_reason": error_msg,
         "processed_at": get_localized_now().isoformat(),
         "tracks": [],
@@ -62,11 +65,11 @@ def handle_early_review_return(
     mbz_candidates = []
     discord_msg = send_notifications(app_id, steam_meta.name, "review", final_msg, score, error_msg, llm_log, False, track_count, mbz_candidates)
     
-    virtual_albums_bundle = {
+    alignment_inputs_bundle = {
         "STEAM": v_steam,
-        "FINGERPRINT": v_fingerprint,
+        "ACOUSTID_MBID": v_fingerprint,
         "MBZ_SEARCH": v_mbz_search,
-        "LOCAL": v_local
+        "LOCAL_SIGNALS": v_local
     }
     
     localized_now_str = get_localized_now().strftime('%Y-%m-%d %H:%M:%S')
@@ -74,7 +77,7 @@ def handle_early_review_return(
         "metadata.json": summary_meta,
         "llm_log.json": llm_log,
         "AUDIT_REPORT.html": ReportGenerator.generate_html_report(
-            app_id, steam_meta, "review", final_msg, score, error_msg, [], llm_log, mbz_candidates, localized_now_str, config.metadata_source_priority, quality=0, virtual_albums=virtual_albums_bundle
+            app_id, steam_meta, "review", final_msg, score, error_msg, [], llm_log, mbz_candidates, localized_now_str, config.resolved_metadata_source_priority, quality=0, alignment_inputs=alignment_inputs_bundle
         )
     }
     if discord_msg:

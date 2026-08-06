@@ -59,7 +59,8 @@
 
 ## 4. メタデータ関連設定
 
-- USER_LANGUAGE: TLAN の正ソース
+- USER_LANGUAGE: TLANとSteamユーザータグ取得に使う言語。`ja`なら日本語、`en`なら英語の公式ストアページを参照
+- STEAM_TAG_CACHE_REFRESH_DAYS: Steam公式ページ上のタグIDと名称の紐づけを再検証する間隔（日）。既定値は30日
 - MBZ_APP_NAME / MBZ_APP_VERSION / MBZ_CONTACT: MusicBrainz 利用時の識別情報
 - ACOUSTID_API_KEY: ACOUSTID 参照用
 

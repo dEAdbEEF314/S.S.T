@@ -5,7 +5,7 @@ from typing import List, Dict, Any, Optional, Tuple, Callable
 
 from ..config import DEFAULT_METADATA_SOURCE_PRIORITY
 from .client import LLMClient
-from .prompts import build_mapping_prompt, build_coherence_prompt, build_identity_prompt
+from .prompts import build_mapping_prompt, build_identity_prompt
 
 logger = logging.getLogger('sst.llm.organizer')
 
@@ -25,7 +25,6 @@ class LLMOrganizer:
                  llm_request_parallelism_enabled: bool = True,
                  llm_request_parallelism_max_workers: int = 4,
                  request_timeout: int = 3600,
-                 coherence_threshold: int = 75,
                  chunk_size_virtual: int = 20,
                  chunk_size_metadata_ollama: int = 10,
                  chunk_size_metadata_cloud: int = 30,
@@ -37,7 +36,6 @@ class LLMOrganizer:
         self.llm_backend = llm_backend.upper()
         self.llm_request_parallelism_enabled = llm_request_parallelism_enabled
         self.llm_request_parallelism_max_workers = max(1, llm_request_parallelism_max_workers)
-        self.coherence_threshold = coherence_threshold
         self.chunk_size_virtual = chunk_size_virtual
         self.chunk_adaptive = chunk_adaptive
         self.ollama_num_predict = ollama_num_predict
@@ -60,6 +58,24 @@ class LLMOrganizer:
     def check_availability(self) -> bool:
         return self.client.check_availability()
 
+    def _call_llm(
+        self,
+        app_id: int,
+        prompt: str,
+        num_ctx: Optional[int] = None,
+        request_kind: str = "generic",
+        request_units: int = 0,
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+        return self.client.call_llm(
+            app_id,
+            prompt,
+            num_ctx=num_ctx,
+            request_kind=request_kind,
+            request_units=request_units,
+            progress_callback=progress_callback,
+        )
+
     def _resolve_mapping_references(
         self,
         start_idx: int,
@@ -71,7 +87,7 @@ class LLMOrganizer:
         ref_fingerprint = full_ref_fingerprint
 
         if coherence_mappings:
-            c_key = f"Coherence_{(start_idx // 30) + 1}"
+            c_key = f"Segment_{(start_idx // 30) + 1}"
             cmap = coherence_mappings.get(c_key, {})
             if cmap:
                 s_start = cmap.get("steam_start_v_idx")
@@ -102,17 +118,34 @@ class LLMOrganizer:
         full_ref_steam: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Dict[str, Any]]:
         merged: Dict[str, Dict[str, Any]] = {}
-        if not track_res or "track_instructions" not in track_res:
+        normalized_track_res = self._normalize_track_mapping_result(track_res, full_ref_steam)
+        if not normalized_track_res or "track_instructions" not in normalized_track_res:
             return merged
 
-        for c_idx_str, data in track_res["track_instructions"].items():
-            try:
-                c_idx = int(c_idx_str)
-                if c_idx < 0 or c_idx >= len(local_tracks):
+        assigned_file_ids: set[str] = set()
+        known_file_ids = {
+            str(file_id)
+            for track in local_tracks
+            for file_id in track.get("file_ids", [])
+        }
+        for c_idx_str, data in normalized_track_res["track_instructions"].items():
+            file_id = str(c_idx_str)
+            if known_file_ids:
+                if file_id not in known_file_ids or file_id in assigned_file_ids:
                     continue
-                matching_track = local_tracks[c_idx]
-            except ValueError:
-                matching_track = next((t for t in chunk if t["title"] == c_idx_str), None)
+                matching_track = next(
+                    (track for track in local_tracks if file_id in {str(value) for value in track.get("file_ids", [])}),
+                    None,
+                )
+                assigned_file_ids.add(file_id)
+            else:
+                try:
+                    c_idx = int(c_idx_str)
+                    if c_idx < 0 or c_idx >= len(local_tracks):
+                        continue
+                    matching_track = local_tracks[c_idx]
+                except ValueError:
+                    matching_track = next((t for t in chunk if t["title"] == c_idx_str), None)
 
             if not matching_track:
                 continue
@@ -159,6 +192,169 @@ class LLMOrganizer:
 
         return merged
 
+    @staticmethod
+    def _resolve_slot_key_to_v_idx(slot_key: str, full_ref_steam: Optional[List[Dict[str, Any]]]) -> Optional[int]:
+        if not full_ref_steam:
+            return None
+
+        normalized_slot_key = str(slot_key).strip()
+        direct_matches = [track.get("v_idx") for track in full_ref_steam if str(track.get("n")) == normalized_slot_key]
+        direct_matches = [match for match in direct_matches if match is not None]
+        if len(direct_matches) == 1:
+            return int(direct_matches[0])
+
+        try:
+            fallback_index = int(normalized_slot_key) - 1
+        except (TypeError, ValueError):
+            return None
+
+        if 0 <= fallback_index < len(full_ref_steam):
+            return int(full_ref_steam[fallback_index].get("v_idx", fallback_index))
+        return None
+
+    @classmethod
+    def _normalize_track_mapping_result(
+        cls,
+        track_res: Dict[str, Any],
+        full_ref_steam: Optional[List[Dict[str, Any]]],
+    ) -> Dict[str, Any]:
+        if not isinstance(track_res, dict):
+            return {}
+        if "track_instructions" in track_res:
+            return track_res
+        if not isinstance(track_res.get("slots"), dict):
+            return track_res
+
+        track_instructions: Dict[str, Dict[str, Any]] = {}
+        for slot_key, slot_data in track_res.get("slots", {}).items():
+            if not isinstance(slot_data, dict):
+                continue
+            matched_v_idx = cls._resolve_slot_key_to_v_idx(str(slot_key), full_ref_steam)
+            if matched_v_idx is None:
+                continue
+            for file_idx in slot_data.get("files", []):
+                file_key = str(file_idx)
+                track_instructions[file_key] = {
+                    "action": "use_steam",
+                    "matched_v_idx": matched_v_idx,
+                    "override_title": None,
+                    "override_track": str(slot_key) if str(slot_key).isdigit() else None,
+                    "override_disc": None,
+                    "composer": None,
+                    "lyricist": None,
+                    "arranger": None,
+                    "reason": slot_data.get("reason"),
+                }
+
+        normalized = dict(track_res)
+        normalized["track_instructions"] = track_instructions
+        return normalized
+
+    @staticmethod
+    def _normalize_identity_result(global_res: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(global_res, dict):
+            return {}
+
+        normalized = dict(global_res)
+        album_confidence = int(normalized.get("album_confidence", normalized.get("identity_confidence", 0) or 0))
+        data_quality = int(normalized.get("data_quality", normalized.get("integrity_quality", 0) or 0))
+        normalized["identity_confidence"] = int(normalized.get("identity_confidence", album_confidence) or album_confidence)
+        normalized["integrity_quality"] = int(normalized.get("integrity_quality", data_quality) or data_quality)
+        normalized["album_confidence"] = album_confidence
+        normalized["data_quality"] = data_quality
+        normalized.setdefault("mapping_confidence", 0)
+        normalized.setdefault("concerns", [])
+        return normalized
+
+    @staticmethod
+    def _build_slot_view(track_res: Dict[str, Any], local_tracks: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if not isinstance(track_res, dict):
+            return {"slots": {}, "unassigned_files": [], "unassigned_reason": None}
+
+        if isinstance(track_res.get("slots"), dict):
+            known_file_ids = {
+                str(file_id)
+                for track in local_tracks
+                for file_id in track.get("file_ids", [])
+            }
+            seen_file_ids: set[str] = set()
+            validated_slots: Dict[str, Dict[str, Any]] = {}
+            for slot_key, slot_data in track_res.get("slots", {}).items():
+                if not isinstance(slot_data, dict):
+                    continue
+                valid_files = []
+                for file_id in slot_data.get("files", []):
+                    normalized_file_id = str(file_id)
+                    if known_file_ids and (
+                        normalized_file_id not in known_file_ids
+                        or normalized_file_id in seen_file_ids
+                    ):
+                        continue
+                    valid_files.append(normalized_file_id)
+                    seen_file_ids.add(normalized_file_id)
+                validated_slots[str(slot_key)] = {**slot_data, "files": valid_files}
+            local_file_ids = [
+                str(file_id)
+                for track in local_tracks
+                for file_id in track.get("file_ids", [])
+            ]
+            return {
+                "slots": validated_slots,
+                "unassigned_files": [file_id for file_id in local_file_ids if file_id not in seen_file_ids],
+                "unassigned_reason": track_res.get("unassigned_reason"),
+            }
+
+        slots: Dict[str, Dict[str, Any]] = {}
+        assigned_files: set[str] = set()
+        for file_id, data in (track_res.get("track_instructions") or {}).items():
+            if not isinstance(data, dict):
+                continue
+            matched_v_idx = data.get("matched_v_idx")
+            if matched_v_idx is None:
+                continue
+            try:
+                slot_key = str(int(matched_v_idx) + 1)
+            except (TypeError, ValueError):
+                continue
+            slots.setdefault(slot_key, {"files": [], "confidence": 0.9, "reason": data.get("reason")})
+            slots[slot_key]["files"].append(str(file_id))
+            assigned_files.add(str(file_id))
+
+        local_file_ids = [file_id for track in local_tracks for file_id in track.get("file_ids", [])]
+        unassigned_files = [str(file_id) for file_id in local_file_ids if str(file_id) not in assigned_files]
+        return {
+            "slots": slots,
+            "unassigned_files": unassigned_files,
+            "unassigned_reason": "No slot assignment returned" if unassigned_files else None,
+        }
+
+    @staticmethod
+    def _build_slot_view_from_final_instructions(
+        final_instructions: Dict[str, Dict[str, Any]],
+        local_tracks: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        track_instruction_map: Dict[str, Dict[str, Any]] = {}
+        local_file_ids_by_tid: Dict[str, List[str]] = {}
+
+        for track in local_tracks:
+            local_key = track.get("local_key")
+            if not local_key:
+                continue
+            tid = f"{local_key[0]}_{local_key[1]}"
+            local_file_ids_by_tid[tid] = [str(file_id) for file_id in track.get("file_ids", [])]
+
+        for tid, data in final_instructions.items():
+            file_ids = local_file_ids_by_tid.get(tid)
+            if not file_ids:
+                continue
+            for file_id in file_ids:
+                track_instruction_map[file_id] = {
+                    "matched_v_idx": data.get("matched_v_idx"),
+                    "reason": data.get("reason"),
+                }
+
+        return LLMOrganizer._build_slot_view({"track_instructions": track_instruction_map}, local_tracks)
+
     def _process_track_mapping_segment(
         self,
         app_id: int,
@@ -188,7 +384,7 @@ class LLMOrganizer:
             s_chunk = []
             for idx, track in enumerate(chunk):
                 s_chunk.append({
-                    "chunk_idx": chunk_start + idx,
+                    "file_ids": track.get("file_ids", []),
                     "t": track.get("title"),
                     "d": track.get("disc"),
                     "dur": (track.get("duration_ms", 0) // 1000) if track.get("duration_ms") else None,
@@ -210,7 +406,7 @@ class LLMOrganizer:
                 chunk_start,
                 self.user_language,
             )
-            track_res, track_log = self.client.call_llm(
+            track_res, track_log = self._call_llm(
                 app_id,
                 mapping_prompt,
                 num_ctx=num_ctx,
@@ -292,7 +488,7 @@ class LLMOrganizer:
                 simplified_tracks.append(t)
                 continue
             st = {
-                "v_idx": idx, # Unique index in this virtual album
+                "v_idx": idx, # Unique index in this alignment input bundle
                 "d": t.get("disc"),
                 "n": t.get("track_num"),
                 "t": t.get("title")
@@ -314,56 +510,7 @@ class LLMOrganizer:
             
         return v_copy
 
-    def _build_skeleton(self, tracks: list, step: int = 10) -> list:
-        if not tracks: return []
-        skel = []
-        for i in range(0, len(tracks), step):
-            skel.append({"v_idx": tracks[i].get("v_idx", 0), "title": tracks[i].get("title", "")})
-        if tracks[-1].get("v_idx", 0) != skel[-1]["v_idx"]:
-            skel.append({"v_idx": tracks[-1].get("v_idx", 0), "title": tracks[-1].get("title", "")})
-        return skel
-
-    def _map_coherences(
-        self,
-        app_id: str,
-        v_local: dict,
-        v_steam: dict,
-        v_fingerprint: dict,
-        num_ctx: int,
-        progress_callback: Optional[ProgressCallback] = None,
-    ) -> dict:
-        local_tracks = v_local.get("tracks", [])
-        coherences = {}
-        for i in range(0, len(local_tracks), 30):
-            c_tracks = local_tracks[i:i+30]
-            c_key = f"Coherence_{(i//30)+1}"
-            skel = []
-            if c_tracks:
-                skel.append({"v_idx": c_tracks[0].get("v_idx", 0), "title": c_tracks[0].get("title", "")})
-                if len(c_tracks) > 2:
-                    mid = len(c_tracks)//2
-                    skel.append({"v_idx": c_tracks[mid].get("v_idx", 0), "title": c_tracks[mid].get("title", "")})
-                if len(c_tracks) > 1:
-                    skel.append({"v_idx": c_tracks[-1].get("v_idx", 0), "title": c_tracks[-1].get("title", "")})
-            coherences[c_key] = skel
-        
-        steam_skel = self._build_skeleton(v_steam.get("tracks", []), 10)
-        fp_skel = self._build_skeleton(v_fingerprint.get("tracks", []), 10) if v_fingerprint else []
-
-        prompt = build_coherence_prompt(coherences, steam_skel, fp_skel)
-        res, log = self.client.call_llm(
-            app_id,
-            prompt,
-            num_ctx=num_ctx,
-            request_kind="coherence",
-            request_units=len(v_local.get("tracks", [])),
-            progress_callback=progress_callback,
-        )
-        if not res or "coherence_mappings" not in res:
-            return {}
-        return res["coherence_mappings"]
-
-    def consolidate_virtual_albums(
+    def align_slots(
         self,
         app_id: int,
         v_steam: Dict,
@@ -375,7 +522,7 @@ class LLMOrganizer:
         progress_callback: Optional[ProgressCallback] = None,
     ) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
         """
-        Consolidates the four virtual albums into a final tag set using LLM.
+        Consolidates the STEAM structure and auxiliary signal bundles into final slot alignment instructions.
         """
         full_logs = []
         
@@ -389,10 +536,10 @@ class LLMOrganizer:
         if execution_profile:
             resolved_num_ctx = execution_profile.num_ctx_cap
 
-        # Phase 1: Identity & Global Tags
+        # Identity and album-level confidence
         identity_prompt = build_identity_prompt(s_steam, s_fingerprint, s_mbz_search, s_local, self.user_language)
         local_tracks = v_local.get("tracks", [])
-        global_res, global_log = self.client.call_llm(
+        global_res, global_log = self._call_llm(
             app_id,
             identity_prompt,
             num_ctx=resolved_num_ctx,
@@ -404,6 +551,8 @@ class LLMOrganizer:
 
         if not global_res:
              return None, {"phase1_res": None, "phase1_log": global_log}
+
+        global_res = self._normalize_identity_result(global_res)
 
         # --- SYSTEM-LEVEL HEURISTICS (PRE-NORMALIZE) ---
         # 1. STEAM-TRUST Path: If STEAM count matches LOCAL count exactly
@@ -430,29 +579,18 @@ class LLMOrganizer:
         ratio = global_res.get("archive_vs_review_ratio", {})
         if not isinstance(ratio, dict) or not ratio:
             global_res["archive_vs_review_ratio"] = {"archive": 0, "review": 100}
-        
         if conf < 85:
-             return {}, {"phase1_res": global_res, "phase1_log": global_log}
+            concerns = global_res.setdefault("concerns", [])
+            concerns.append("Low album confidence before slot alignment")
 
-        # Phase 2: Track-by-Track Mapping with Chunking
+        # Slot alignment with chunking
         final_instructions = {}
 
+        # The specification uses direct STEAM-slot alignment; legacy coherence
+        # routing is retained only as an unused compatibility method.
         coherence_mappings = None
-        needs_coherence = len(local_tracks) >= getattr(self, "coherence_threshold", 75)
-        if execution_profile and execution_profile.force_coherence:
-            needs_coherence = True
-            
-        if needs_coherence:
-            logger.info(f"[{app_id}] Track count ({len(local_tracks)}) or execution profile dictates Map-Reduce (Coherence Routing)...")
-            coherence_mappings = self._map_coherences(app_id, v_local, v_steam, v_fingerprint, resolved_num_ctx, progress_callback=progress_callback)
-            if not coherence_mappings:
-                logger.error(f"[{app_id}] Coherence Map-Reduce failed or timed out. Falling back to review.")
-                global_res["identity_confidence"] = 0
-                global_res["confidence_reason"] = "SYSTEM: 巨大アルバムのCoherence分割（Map-Reduce）に失敗したため、安全のために手動レビューへフォールバックしました。"
-                return {}, {"phase1_res": global_res, "phase1_log": global_log}
-            logger.info(f"[{app_id}] Coherence Map-Reduce successful. Mappings: {list(coherence_mappings.keys())}")
 
-        # Prepare full simplified reference tracks for Phase 2 (not sampled)
+        # Prepare full simplified reference tracks for slot alignment (not sampled)
         full_ref_steam = self._simplify_v_album(v_steam, sampled=False).get("tracks", [])
         full_ref_fingerprint = self._simplify_v_album(v_fingerprint, sampled=False).get("tracks", []) if v_fingerprint else []
         full_ref_mbz_search = self._simplify_v_album(v_mbz_search, sampled=False).get("tracks", []) if v_mbz_search else []
@@ -471,7 +609,7 @@ class LLMOrganizer:
             if execution_profile:
                 worker_count = min(execution_profile.phase2_parallel_workers, len(segments))
             worker_count = max(1, worker_count)
-            logger.info(f"[{app_id}] Phase 2 mapping chunk を並列実行します。segments={len(segments)} workers={worker_count}")
+            logger.info(f"[{app_id}] Slot alignment chunks を並列実行します。segments={len(segments)} workers={worker_count}")
             with ThreadPoolExecutor(max_workers=worker_count) as executor:
                 future_map = {
                     executor.submit(
@@ -521,4 +659,10 @@ class LLMOrganizer:
             final_instructions.update(instructions)
             full_logs.extend(segment_logs)
 
-        return final_instructions, {"phase1_res": global_res, "logs": full_logs}
+        alignment_res = self._build_slot_view_from_final_instructions(final_instructions, local_tracks)
+        if alignment_res.get("slots"):
+            slot_confidences = [slot.get("confidence", 0) for slot in alignment_res["slots"].values() if isinstance(slot, dict)]
+            if slot_confidences:
+                global_res["mapping_confidence"] = int(min(slot_confidences) * 100) if min(slot_confidences) <= 1 else int(min(slot_confidences))
+
+        return final_instructions, {"phase1_res": global_res, "alignment_res": alignment_res, "logs": full_logs}

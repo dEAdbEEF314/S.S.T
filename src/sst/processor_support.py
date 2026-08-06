@@ -11,6 +11,112 @@ from .track_grouper import TrackManager
 logger = logging.getLogger("sst.processor")
 
 
+def _normalize_slot_key(disc_number: Any, track_number: Any) -> Optional[tuple[int, str]]:
+    if track_number in (None, "", "0", 0):
+        return None
+    try:
+        disc_value = int(disc_number or 1)
+    except (TypeError, ValueError):
+        disc_value = 1
+    track_value = str(track_number).split("/")[0].strip()
+    if not track_value.isdigit():
+        return None
+    normalized_track = str(int(track_value))
+    if normalized_track == "0":
+        return None
+    return disc_value, normalized_track
+
+
+def build_slot_variant_index(
+    final_metadata: Dict[str, Any],
+    track_groups: Dict,
+    steam_meta: SteamMetadata,
+) -> tuple[Dict[tuple[int, str], List[Dict[str, Any]]], Dict[str, tuple[int, str]]]:
+    slot_variants: Dict[tuple[int, str], List[Dict[str, Any]]] = defaultdict(list)
+    track_to_slot: Dict[str, tuple[int, str]] = {}
+    priorities = TrackManager.get_audio_format_priority()
+
+    def sort_key(variant: Dict[str, Any]) -> int:
+        fmt = str(variant.get("format", "")).lower()
+        try:
+            return priorities.index(fmt)
+        except ValueError:
+            return 999
+
+    for (disc, clean_title), variants in track_groups.items():
+        track_id = f"{disc}_{clean_title}"
+        instr = final_metadata.get(track_id, {}) if isinstance(final_metadata, dict) else {}
+        slot_key = None
+
+        matched_v_idx = instr.get("matched_v_idx")
+        if matched_v_idx is not None and 0 <= int(matched_v_idx) < len(steam_meta.store_tracklist or []):
+            track = steam_meta.store_tracklist[int(matched_v_idx)]
+            slot_key = _normalize_slot_key(track.get("disc", 1), track.get("number"))
+
+        if slot_key is None:
+            slot_key = _normalize_slot_key(instr.get("override_disc", disc), instr.get("override_track"))
+
+        if slot_key is None:
+            track_numbers = [variant.get("t_num_val") for variant in variants if variant.get("t_num_val") not in (None, "", "0")]
+            inferred_track = track_numbers[0] if track_numbers else None
+            slot_key = _normalize_slot_key(disc, inferred_track)
+
+        if slot_key is None:
+            slot_key = (disc, clean_title)
+
+        slot_variants[slot_key].extend(variants)
+        track_to_slot[track_id] = slot_key
+
+    for slot_key, variants in slot_variants.items():
+        slot_variants[slot_key] = sorted(variants, key=sort_key)
+
+    return dict(slot_variants), track_to_slot
+
+
+def adopt_best_file_per_slot(
+    track_groups: Dict,
+    slot_variant_index: Dict[tuple[int, str], List[Dict[str, Any]]],
+    track_to_slot_index: Dict[str, tuple[int, str]],
+) -> Dict[tuple[int, str], Dict[str, Any]]:
+    """Select exactly one highest-Tier physical file for each aligned slot."""
+    priorities = TrackManager.get_audio_format_priority()
+    record_keys_by_file_id = {
+        variant.get("file_id"): key
+        for key, variants in track_groups.items()
+        for variant in variants
+    }
+    adopted: Dict[tuple[int, str], Dict[str, Any]] = {}
+    for slot_key, variants in slot_variant_index.items():
+        if not variants:
+            continue
+        chosen = min(
+            variants,
+            key=lambda variant: priorities.index(str(variant.get("format", "")).lower())
+            if str(variant.get("format", "")).lower() in priorities else len(priorities),
+        )
+        record_key = record_keys_by_file_id.get(chosen.get("file_id"))
+        if record_key is None:
+            continue
+        tier_rank = TrackManager.get_quality_tier(chosen.get("format", ""))
+        adopted[record_key] = {
+            "path": chosen["path"],
+            "tier": "lossless" if tier_rank in {0, 1} else ("lossy" if chosen.get("format") != "mp3" else "mp3"),
+            "tier_rank": tier_rank,
+            "filename_track": chosen.get("filename_track"),
+        }
+    return adopted
+
+
+def merge_embedded_tags_for_slot(slot_variants: List[Dict[str, Any]]) -> Dict[str, Any]:
+    merged_tags: Dict[str, Any] = {}
+    for variant in slot_variants:
+        meta = variant.get("meta") or {}
+        for key, value in meta.items():
+            if value and str(value).lower() not in {"", "none", "unknown", "0"} and key not in merged_tags:
+                merged_tags[key] = value
+    return merged_tags
+
+
 def fetch_album_artwork(
     config: Any,
     mbz_client: Any,
@@ -68,8 +174,9 @@ def send_notifications(
     mbz_candidates: List[Dict[str, Any]],
 ) -> None:
     p1_res = llm_log.get("phase1_res") or {}
-    id_conf = p1_res.get("identity_confidence", 0)
-    quality = p1_res.get("integrity_quality", 0)
+    id_conf = p1_res.get("album_confidence", p1_res.get("identity_confidence", 0))
+    mapping_conf = p1_res.get("mapping_confidence", id_conf)
+    quality = p1_res.get("data_quality", p1_res.get("integrity_quality", 0))
     ratio = p1_res.get("archive_vs_review_ratio", {"archive": 0, "review": 0})
     is_fast = llm_log.get("fast_track", False)
 
@@ -77,7 +184,7 @@ def send_notifications(
         {"name": "AppID", "value": f"[{app_id}](https://store.steampowered.com/app/{app_id})", "inline": True},
         {"name": "Status", "value": f"**{status.upper()}**", "inline": True},
         {"name": "Tracks", "value": str(track_count), "inline": True},
-        {"name": "Identity / Quality", "value": f"ID: {id_conf}% / Qual: {quality}%", "inline": True},
+        {"name": "Album / Mapping / Data", "value": f"Alb: {id_conf}% / Map: {mapping_conf}% / Data: {quality}%", "inline": True},
         {"name": "Decision Ratio", "value": f"Arch {ratio.get('archive', 0)}% : Rev {ratio.get('review', 0)}%", "inline": True},
     ]
 

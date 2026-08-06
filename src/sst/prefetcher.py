@@ -14,8 +14,8 @@ logger = logging.getLogger("sst.prefetcher")
 
 class DataGatherer:
     """
-    Phase 1: Pre-Fetch (事前フェッチ) を担当するクラス。
-    LLM推論(Phase 2)の前に、全対象アルバムの重い処理（fpcalcによる波形計算と外部API通信）を
+    signal gathering とキャッシュ生成を担当するクラス。
+    LLM 整列の前に、全対象アルバムの重い処理（fpcalcによる波形計算と外部API通信）を
     マルチスレッドで一気に実行し、SQLiteにキャッシュを生成します。
     """
     def __init__(self, config: Any, acoustid_client, mbz_client, console: Console):
@@ -47,8 +47,8 @@ class DataGatherer:
         if not soundtracks:
             return
 
-        logger.info(f"Phase 1: 事前フェッチ (Pre-Fetch) を開始します。対象アルバム: {len(soundtracks)} 件")
-        self.console.print(f"[bold cyan]🚀 Phase 1: Data Gathering & Pre-Fetch ({len(soundtracks)} albums)[/bold cyan]")
+        logger.info(f"Signal gathering とキャッシュ生成を開始します。対象アルバム: {len(soundtracks)} 件")
+        self.console.print(f"[bold cyan]🚀 Signal Gathering & Cache Warmup ({len(soundtracks)} albums)[/bold cyan]")
         
         all_audio_files = []
         mbz_tasks = []
@@ -100,5 +100,5 @@ class DataGatherer:
                     finally:
                         progress.advance(task_mbz)
 
-        logger.info("Phase 1: 事前フェッチが完了しました。すべてのデータがキャッシュされました。")
-        self.console.print("[bold green]✅ Phase 1: Pre-Fetch Completed![/bold green]")
+        logger.info("Signal gathering とキャッシュ生成が完了しました。")
+        self.console.print("[bold green]✅ Signal Gathering Completed![/bold green]")

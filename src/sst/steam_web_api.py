@@ -2,6 +2,9 @@ import json
 import logging
 import requests
 import time
+import html
+import re
+from html.parser import HTMLParser
 from typing import Dict, Any, Optional
 
 from .db import DatabaseManager
@@ -16,12 +19,57 @@ class SteamWebClient:
         self.api_key = api_key
         self.language = language
 
+    @staticmethod
+    def _parse_text_tracklist(description: str) -> list[Dict[str, Any]]:
+        class TextExtractor(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.lines = []
+
+            def handle_data(self, data):
+                self.lines.extend(line.strip() for line in data.splitlines() if line.strip())
+
+        parser = TextExtractor()
+        parser.feed(description or "")
+        candidates = []
+        for line in parser.lines:
+            match = re.match(r"^\s*(\d{1,3})\s*[.\-:)\u3001]?\s+(.+?)\s*$", line)
+            if match and len(match.group(2)) >= 2:
+                candidates.append({"disc": 1, "number": match.group(1), "title": html.unescape(match.group(2)), "duration_s": ""})
+        numbers = [int(track["number"]) for track in candidates]
+        if len(candidates) < 2 or numbers != list(range(numbers[0], numbers[0] + len(numbers))):
+            return []
+        return candidates
+
+    def fetch_store_tags(self, app_id: int) -> Dict[str, str]:
+        """Fetch the official tagid/name pairs embedded in the Steam store page."""
+        url = f"https://store.steampowered.com/app/{app_id}/?l={self.language}"
+        headers = {"User-Agent": "SST/0.1 (+local Steam metadata tool)"}
+        try:
+            response = requests.get(url, headers=headers, timeout=15)
+            response.raise_for_status()
+            tags = {}
+            pattern = re.compile(r'"tagid":(\d+),"name":"((?:\\.|[^"\\])*)"')
+            for tag_id, encoded_name in pattern.findall(response.text):
+                try:
+                    name = json.loads(f'"{encoded_name}"')
+                except json.JSONDecodeError:
+                    name = encoded_name
+                name = html.unescape(name).strip()
+                if name:
+                    tags[tag_id] = name
+            logger.debug(f"AppID {app_id} の公式Steamタグを {len(tags)} 件取得しました (language={self.language})")
+            return tags
+        except Exception as e:
+            logger.warning(f"AppID {app_id} の公式Steamタグ取得に失敗しました: {e}")
+            return {}
+
     def fetch_web_enrichment(self, app_id: int) -> Optional[Dict[str, Any]]:
         """Fetches metadata from 3 tiers of APIs (Official Store, PICS Bridge, Official Tags) with DB persistence."""
         # 1. Check Database first
         db_data = self.db.get_store_data(app_id)
         
-        result = {"genres": [], "tags": [], "name": None, "store_tracklist": [], "store_credits": "", "label": None, "release_date": None}
+        result = {"genres": [], "tags": [], "name": None, "store_tracklist": [], "store_tracklist_source": None, "store_credits": "", "label": None, "release_date": None}
         
         if db_data:
             result["store_tracklist"] = db_data.get("tracklist", [])
@@ -61,6 +109,9 @@ class SteamWebClient:
                     result["name"] = app_data.get("name")
                     result["genres"] = [g.get("description") for g in app_data.get("genres", []) if g.get("description")]
                     result["release_date"] = app_data.get("release_date", {}).get("date")
+                    description = app_data.get("detailed_description", "")
+                else:
+                    description = ""
 
                 # --- Tier 2: PICS Data via (Local/Remote) Bridge API ---
                 pics_url = f"{self.bridge_url}{app_id}"
@@ -102,10 +153,21 @@ class SteamWebClient:
                                 "disc": int(t.get("discnumber", 1)),
                                 "number": str(t.get("tracknumber", "")),
                                 "title": t.get("originalname", ""),
-                                "duration_s": t.get("s", "0")
+                                "duration_s": t.get("s", "0"),
+                                "source": "STEAM_PICS",
                             })
+                        if result["store_tracklist"]:
+                            result["store_tracklist_source"] = "STEAM_PICS"
                     except Exception as e:
                         logger.debug(f"PICS トラックのソート中にエラーが発生しました: {e}")
+
+                if not result["store_tracklist"]:
+                    text_tracks = self._parse_text_tracklist(description)
+                    if text_tracks:
+                        for track in text_tracks:
+                            track["source"] = "STEAM_TEXT_TRACKLIST"
+                        result["store_tracklist"] = text_tracks
+                        result["store_tracklist_source"] = "STEAM_TEXT_TRACKLIST"
                 
                 meta_section = album_meta.get("metadata", {})
                 credits_parts = []
