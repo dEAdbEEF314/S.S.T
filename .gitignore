@@ -100,8 +100,7 @@ run_production_test.py
 Handover_Document_*.md
 
 # ── Maintenance Scripts & Tests ─────────────────────────────
-Maintenance/
-tests/
+tests/archive
 
 # ── Work Directory ─────────────────────────────
 sst-work/

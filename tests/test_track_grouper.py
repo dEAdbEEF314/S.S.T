@@ -23,10 +23,10 @@ def test_group_by_logical_track_basic(mock_dependencies):
         Path("/mnt/c/Games/Soundtrack/02 - Battle.mp3")
     ]
     
-    # The normalization logic should group "01 - Main Theme.mp3" and "01. Main Theme.flac" together
+    # Physical formats remain separate until Steam-slot adoption selects one.
     groups = TrackManager.build_file_records(files)
     
-    # We expect 2 groups: "main theme" and "battle"
+    # There are three physical records: two main-theme formats and one battle file.
     assert len(groups) == 3
     
     # Find the keys (they should be tuples of (disc_num, normalized_stem))
