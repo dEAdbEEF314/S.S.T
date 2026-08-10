@@ -702,3 +702,4 @@ docs/LOGIC.md, docs/TAGGING_RULE.md: VGMdb連携およびバイリンガル仕�
 
 2026/08/06 01:30:00, tests/analyze_llm_slot_correlation_helper.py, tests/test_llm_slot_correlation.py, Maintenance/, scratch/: `Maintenance/` と `scratch/` の整理を実施。唯一テストから参照されていた `analyze_llm_slot_correlation.py` の機能を `tests/` 配下へ移し、両ディレクトリを削除した。
 
+2026/08/05 17:20:04, src/sst/{config.py,processor.py,llm/organizer.py}, tests/test_llm_execution_profiles.py, .env.example, README.md, docs/configuration.md: album-tier 実行プロファイルの実装を開始し、Tier別 `num_ctx` / Phase 2 worker / Large向け Coherence 強制を導入。tier専用設定未指定時は既存の `LLM_OLLAMA_NUM_CTX` と `LLM_REQUEST_PARALLELISM_MAX_WORKERS` にフォールバックする後方互換も追加。

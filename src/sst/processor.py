@@ -32,6 +32,7 @@ class AlbumExecutionProfile:
     num_ctx_cap: int
     phase2_parallel_workers: int
     prefer_one_shot: bool
+    force_coherence: bool = False
 
 logger = logging.getLogger("sst.processor")
 
@@ -629,33 +630,55 @@ class LocalProcessor:
 
     def _build_album_execution_profile(self, track_count: int) -> AlbumExecutionProfile:
         cfg = self.config
+        small_max = max(1, int(getattr(cfg, "llm_album_tier_small_max_tracks", 50)))
+        medium_max = max(small_max, int(getattr(cfg, "llm_album_tier_medium_max_tracks", 100)))
+
+        def resolve_num_ctx(tier_name: str) -> int:
+            if hasattr(cfg, "resolve_llm_num_ctx_cap"):
+                return max(1, int(cfg.resolve_llm_num_ctx_cap(tier_name)))
+            tier_value = getattr(cfg, f"llm_ollama_num_ctx_{tier_name.lower()}", None)
+            if tier_value is not None:
+                return max(1, int(tier_value))
+            return max(1, int(getattr(cfg, "llm_ollama_num_ctx", 32768)))
+
+        def resolve_workers(tier_name: str) -> int:
+            if hasattr(cfg, "resolve_llm_parallel_workers"):
+                return max(1, int(cfg.resolve_llm_parallel_workers(tier_name)))
+            tier_value = getattr(cfg, f"llm_request_parallelism_max_workers_{tier_name.lower()}", None)
+            if tier_value is not None:
+                return max(1, int(tier_value))
+            return max(1, int(getattr(cfg, "llm_request_parallelism_max_workers", 4)))
+
         # Small
-        if track_count <= getattr(cfg, 'llm_album_tier_small_max_tracks', 50):
+        if track_count <= small_max:
             return AlbumExecutionProfile(
                 tier_name="Small",
                 track_count_min=1,
-                track_count_max=getattr(cfg, 'llm_album_tier_small_max_tracks', 50),
-                num_ctx_cap=getattr(cfg, 'llm_ollama_num_ctx_small', 8192),
-                phase2_parallel_workers=getattr(cfg, 'llm_request_parallelism_max_workers_small', 3),
+                track_count_max=small_max,
+                num_ctx_cap=resolve_num_ctx("small"),
+                phase2_parallel_workers=resolve_workers("small"),
+                force_coherence=False,
                 prefer_one_shot=False
             )
         # Medium
-        elif track_count <= getattr(cfg, 'llm_album_tier_medium_max_tracks', 100):
+        elif track_count <= medium_max:
             return AlbumExecutionProfile(
                 tier_name="Medium",
-                track_count_min=getattr(cfg, 'llm_album_tier_small_max_tracks', 50) + 1,
-                track_count_max=getattr(cfg, 'llm_album_tier_medium_max_tracks', 100),
-                num_ctx_cap=getattr(cfg, 'llm_ollama_num_ctx_medium', 16384),
-                phase2_parallel_workers=getattr(cfg, 'llm_request_parallelism_max_workers_medium', 2),
+                track_count_min=small_max + 1,
+                track_count_max=medium_max,
+                num_ctx_cap=resolve_num_ctx("medium"),
+                phase2_parallel_workers=resolve_workers("medium"),
+                force_coherence=False,
                 prefer_one_shot=True
             )
         # Large
         else:
             return AlbumExecutionProfile(
                 tier_name="Large",
-                track_count_min=getattr(cfg, 'llm_album_tier_medium_max_tracks', 100) + 1,
+                track_count_min=medium_max + 1,
                 track_count_max=99999,
-                num_ctx_cap=getattr(cfg, 'llm_ollama_num_ctx_large', 32768),
-                phase2_parallel_workers=getattr(cfg, 'llm_request_parallelism_max_workers_large', 1),
+                num_ctx_cap=resolve_num_ctx("large"),
+                phase2_parallel_workers=resolve_workers("large"),
+                force_coherence=getattr(cfg, 'llm_force_coherence_large', True),
                 prefer_one_shot=True
             )
