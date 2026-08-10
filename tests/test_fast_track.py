@@ -1,11 +1,22 @@
+from typing import Any
+
 import sst.processor as processor_module
+from sst.db import DatabaseManager
+from sst.processor_support import select_best_unassigned_files
 from sst.config import Config
 from sst.models import SteamMetadata
 from sst.processor import LocalProcessor
 
 
-class MockDB:
-    def record_processed(self, *args, **kwargs):
+class MockDB(DatabaseManager):
+    """Minimal database double accepted by ``LocalProcessor``'s type contract."""
+
+    def __init__(self) -> None:
+        # The processor's constructor passes the database to collaborators, but
+        # these tests do not perform database I/O.
+        pass
+
+    def record_processed(self, *args: Any, **kwargs: Any) -> None:
         return None
 
 
@@ -45,6 +56,8 @@ def test_fast_track_succeeds_with_steam_slot_match():
     ok, final_map, global_id = processor._check_fast_track(1, make_steam_meta(), make_track_groups(), [])
 
     assert ok is True
+    assert final_map is not None
+    assert global_id is not None
     assert final_map["1_main theme"]["action"] == "use_steam"
     assert final_map["1_main theme"]["matched_v_idx"] == 0
     assert final_map["1_battle theme"]["matched_v_idx"] == 1
@@ -61,6 +74,47 @@ def test_fast_track_fails_without_steam_tracklist():
     assert final_map is None
     assert global_id is None
 
+def test_select_best_unassigned_files_keeps_only_highest_tier_variant(tmp_path):
+    lossless = tmp_path / "unassigned.aif"
+    lossy = tmp_path / "unassigned.mp3"
+    lossless.write_bytes(b"aif")
+    lossy.write_bytes(b"mp3")
+
+    track_groups = {
+        (1, "unassigned"): [
+            {"path": lossy, "format": "mp3", "file_id": "mp3-id", "meta": {}},
+            {"path": lossless, "format": "aif", "file_id": "aif-id", "meta": {}},
+        ],
+        (1, "assigned"): [
+            {"path": lossless, "format": "aif", "file_id": "assigned-id", "meta": {}},
+        ],
+    }
+
+    selected = select_best_unassigned_files(track_groups, {"1_assigned": {"action": "use_steam"}})
+
+    assert len(selected) == 1
+    assert selected[0]["file_id"] == "aif-id"
+    assert selected[0]["tier"] == "lossless"
+
+
+def test_select_best_unassigned_files_filters_by_llm_file_ids(tmp_path):
+    selected_path = tmp_path / "selected.aif"
+    ignored_path = tmp_path / "ignored.mp3"
+    selected_path.write_bytes(b"aif")
+    ignored_path.write_bytes(b"mp3")
+    track_groups = {
+        (1, "candidate"): [
+            {"path": ignored_path, "format": "mp3", "file_id": "ignored", "meta": {}},
+            {"path": selected_path, "format": "aif", "file_id": "selected", "meta": {}},
+        ],
+    }
+
+    selected = select_best_unassigned_files(track_groups, {}, {"selected"})
+
+    assert len(selected) == 1
+    assert selected[0]["file_id"] == "selected"
+    assert selected[0]["unassigned_file_ids"] == ["selected"]
+
 
 def test_fast_track_fails_when_any_group_lacks_track_number():
     processor = make_processor()
@@ -69,7 +123,31 @@ def test_fast_track_fails_when_any_group_lacks_track_number():
 
     ok, _, _ = processor._check_fast_track(1, make_steam_meta(), track_groups, [])
 
-    assert ok is False
+    assert ok is True
+
+
+def test_fast_track_uses_unique_title_when_track_number_is_missing():
+    processor = make_processor()
+    track_groups = make_track_groups()
+    track_groups[(1, "battle theme")][0]["t_num_val"] = None
+
+    ok, final_map, _ = processor._check_fast_track(1, make_steam_meta(), track_groups, [])
+
+    assert ok is True
+    assert final_map is not None
+    assert final_map["1_battle theme"]["matched_v_idx"] == 1
+
+
+def test_fast_track_replaces_wrong_number_with_unique_title_match():
+    processor = make_processor()
+    track_groups = make_track_groups()
+    track_groups[(1, "battle theme")][0]["t_num_val"] = "1"
+
+    ok, final_map, _ = processor._check_fast_track(1, make_steam_meta(), track_groups, [])
+
+    assert ok is True
+    assert final_map is not None
+    assert final_map["1_battle theme"]["matched_v_idx"] == 1
 
 
 def test_fast_track_fails_when_duplicate_formats_have_large_duration_gap():
@@ -138,6 +216,7 @@ def test_process_album_skips_llm_when_fast_track_matches(monkeypatch, tmp_path):
 
     monkeypatch.setattr(processor_module, "process_single_track", fake_process_single_track)
     monkeypatch.setattr(processor_module.PackageManager, "save_local_package", lambda *args, **kwargs: None)
+    monkeypatch.setattr(processor, "_validate_archive_artifacts", lambda *args, **kwargs: [])
     monkeypatch.setattr(processor, "_fetch_album_artwork", lambda *args, **kwargs: None)
     monkeypatch.setattr(processor, "_send_notifications", lambda *args, **kwargs: None)
 

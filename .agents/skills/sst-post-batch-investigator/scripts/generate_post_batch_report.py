@@ -108,23 +108,16 @@ def analyze_and_generate_report(db_path='data/sst_local_state.db', output_dir='r
             # Scan for unnatural archive issues
             issues = []
             html_entities = []
-            dirty_artist = False
 
             for t in tracks:
                 tags = t.get('tags', {})
                 title = str(tags.get('title', ''))
-                a_art = str(tags.get('artist', ''))
-                alb_art = str(tags.get('album_artist', ''))
 
                 if any(e in title for e in ['&amp;', '&quot;', '&#39;', '&lt;', '&gt;']):
                     html_entities.append(title)
-                if ',' in alb_art and alb_art.split(',')[0].strip() == alb_art.split(',')[1].strip():
-                    dirty_artist = True
 
             if html_entities:
                 issues.append(f"HTMLエンティティ未デコード ({len(html_entities)}トラック): 例 \"{html_entities[0]}\"")
-            if dirty_artist:
-                issues.append("AlbumArtist名に社名の二重重複が発生")
             if integrity['duplicate_key_count']:
                 issues.append(f"最終Disc/Track重複 ({integrity['duplicate_key_count']})")
             if integrity['duplicate_slot_key_count']:
@@ -304,7 +297,7 @@ def analyze_and_generate_report(db_path='data/sst_local_state.db', output_dir='r
     html_content += f"""
             </ul>
         </div>
-        <p><strong>判断理由:</strong> <code>&amp;amp;</code> などのHTML特殊文字の残留や、Developer/Publisher名の安易な重複結合（例: <code>CAPCOM CO., LTD., CAPCOM CO., LTD.</code>）が含まれており、メタデータの正しさ・視認性を低下させています。</p>
+        <p><strong>判断理由:</strong> <code>&amp;amp;</code> などのHTML特殊文字の残留や、Steam slotと最終トラックの不一致、最終キーの重複など、出力の整合性を低下させる事象を対象にしています。DeveloperとPublisherが同一社名の場合の <code>AlbumArtist</code> 重複は、両方のクレジットを保持する仕様のため異常扱いしません。</p>
     </section>
 
     <!-- Section 2 -->

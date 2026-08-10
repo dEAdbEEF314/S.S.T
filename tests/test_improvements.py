@@ -1,4 +1,3 @@
-import pytest
 from pathlib import Path
 from unittest.mock import MagicMock
 from sst.validator import ResultValidator
@@ -7,8 +6,7 @@ from sst.processor_tracks import copy_with_retry
 from sst.processor_support import build_slot_variant_index, merge_embedded_tags_for_slot
 from sst.models import SteamMetadata
 
-def test_validator_three_axis_archive_path():
-    # The three-axis LLM archive path should pass validation.
+def test_validator_rejects_archive_path_without_steam_structure():
     tracks = [{"tags": {"title": "Test Title", "track_number": "1", "disc_number": "1"}}]
     llm_log = {
         "phase1_res": {
@@ -34,8 +32,8 @@ def test_validator_three_axis_archive_path():
         audio_fail=False,
         audio_warn=False
     )
-    assert status == "archive"
-    assert "Success" in message
+    assert status == "review"
+    assert "Steam Tracklist Missing" in message
 
 
 def test_validator_accepts_deterministic_fast_track_path():
@@ -52,7 +50,7 @@ def test_validator_accepts_deterministic_fast_track_path():
         },
     }
     steam_meta = MagicMock(spec=SteamMetadata)
-    steam_meta.store_tracklist = [{"title": "01. Official Title"}]
+    steam_meta.store_tracklist = [{"disc": 1, "number": "1", "title": "01. Official Title"}]
 
     status, message, score, quality, reason = ResultValidator.validate(
         app_id=123,
@@ -83,7 +81,7 @@ def test_validator_accepts_steam_trust_thresholds():
         }
     }
     steam_meta = MagicMock(spec=SteamMetadata)
-    steam_meta.store_tracklist = []
+    steam_meta.store_tracklist = [{"disc": 1, "number": "1", "title": "Title"}]
 
     status, message, score, quality, reason = ResultValidator.validate(
         app_id=123,

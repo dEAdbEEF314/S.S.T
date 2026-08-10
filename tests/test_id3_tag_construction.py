@@ -151,3 +151,43 @@ def test_write_tags_adds_front_cover_apic(monkeypatch, tmp_path):
     assert apic_frame.type == 3
     assert apic_frame.mime == "image/jpeg"
     assert apic_frame.data == b"jpeg-data"
+
+
+def test_write_tags_marks_unconfirmed_fields_without_numeric_placeholders(monkeypatch, tmp_path):
+    import mutagen.aiff as aiff
+
+    fake_audio = FakeAudio()
+    monkeypatch.setattr(aiff, "AIFF", lambda file_path: fake_audio)
+    _patch_id3_frames(monkeypatch)
+
+    tagger = AudioTagger(tmp_path)
+    file_path = tmp_path / "unconfirmed.aif"
+    file_path.write_bytes(b"dummy")
+
+    tagger.write_tags(
+        file_path,
+        {
+            "title": "Original title",
+            "artist": "Artist",
+            "album": "Album",
+            "album_artist": "Dev, Pub",
+            "genre": "STEAM VGM",
+            "grouping": "Game, Steam",
+            "comment": "Review output",
+            "composer": "Composer",
+            "year": "2024",
+            "track_number": "7",
+            "disc_number": "1/1",
+            "language": "jpn",
+            "unconfirmed_fields": ["title", "track_number", "year"],
+        },
+    )
+
+    frames = {frame.frame_id: frame for frame in fake_audio.tags.frames}
+    assert frames["TIT2"].text == "S.S.T Unconfirmed"
+    assert "TRCK" not in frames
+    assert "TYER" not in frames
+    assert frames["TPOS"].text == "1/1"
+    assert "S.S.T Unconfirmed" in str(frames["COMM"].text)
+    assert "title" in str(frames["COMM"].text)
+    assert "track_number" in str(frames["COMM"].text)

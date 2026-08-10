@@ -108,17 +108,17 @@
 <body>
     <header>
         <h1 class="header-title">S.S.T 処理後総合調査・改善報告書</h1>
-        <div class="header-subtitle">対象件数: 10件 | 自動分析・調査モジュール出力</div>
+        <div class="header-subtitle">対象件数: 1件 | 自動分析・調査モジュール出力</div>
     </header>
 
     <div class="kpi-grid">
         <div class="kpi-card">
             <div class="kpi-label">総処理アルバム数</div>
-            <div class="kpi-value">10</div>
+            <div class="kpi-value">1</div>
         </div>
         <div class="kpi-card">
             <div class="kpi-label">Archive 判定</div>
-            <div class="kpi-value archive">10 <span style="font-size: 1rem; color: var(--text-secondary);">(100.0%)</span></div>
+            <div class="kpi-value archive">1 <span style="font-size: 1rem; color: var(--text-secondary);">(100.0%)</span></div>
         </div>
         <div class="kpi-card">
             <div class="kpi-label">Review 判定</div>
@@ -135,17 +135,13 @@
         <h2 class="section-title archive-title">1. 総合的に不自然な Archive 送りのケースと判断理由</h2>
         <p>自動判定で <code>Archive</code> とされたものの、メタデータ品質・美観の観点からクリーンアップ不足や不自然さが残るケースを自動検出しました。</p>
 
-        <h3 class="card-subhead">検出された不自然な Archive 事例 (4件)</h3>
+        <h3 class="card-subhead">検出された不自然な Archive 事例 (0件)</h3>
         <div class="highlight-box warning">
             <ul>
-<li><code>AppID 1027880</code> (A Dance of Fire and Ice OST): AlbumArtist名に社名の二重重複が発生</li>
-<li><code>AppID 1113040</code> (HARDCORE MECHA - OST): AlbumArtist名に社名の二重重複が発生</li>
-<li><code>AppID 1142840</code> (Lichtspeer Soundtrack): AlbumArtist名に社名の二重重複が発生</li>
-<li><code>AppID 1156340</code> (Nova Drift OST): AlbumArtist名に社名の二重重複が発生</li>
 
             </ul>
         </div>
-        <p><strong>判断理由:</strong> <code>&amp;amp;</code> などのHTML特殊文字の残留や、Developer/Publisher名の安易な重複結合（例: <code>CAPCOM CO., LTD., CAPCOM CO., LTD.</code>）が含まれており、メタデータの正しさ・視認性を低下させています。</p>
+        <p><strong>判断理由:</strong> <code>&amp;amp;</code> などのHTML特殊文字の残留や、Steam slotと最終トラックの不一致、最終キーの重複など、出力の整合性を低下させる事象を対象にしています。DeveloperとPublisherが同一社名の場合の <code>AlbumArtist</code> 重複は、両方のクレジットを保持する仕様のため異常扱いしません。</p>
     </section>
 
     <!-- Section 2 -->
@@ -187,8 +183,8 @@
         <h2 class="section-title">全件処理結果一覧</h2>
         <div class="filter-bar">
             <input type="text" id="searchInput" class="search-input" placeholder="検索...">
-            <button class="filter-btn active" onclick="filterTable('all')">すべて (10)</button>
-            <button class="filter-btn" onclick="filterTable('archive')">Archive (10)</button>
+            <button class="filter-btn active" onclick="filterTable('all')">すべて (1)</button>
+            <button class="filter-btn" onclick="filterTable('archive')">Archive (1)</button>
             <button class="filter-btn" onclick="filterTable('review')">Review (0)</button>
         </div>
 
@@ -211,129 +207,12 @@
                         <td><code>1027880</code></td>
                         <td>A Dance of Fire and Ice OST</td>
                         <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>FAST_TRACK</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Deterministic Fast-Track]</strong><br>
-                            <span>SYSTEM: Deterministic fast-track</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1029810</code></td>
-                        <td>The Textorcist - Soundtrack</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>95%</td>
-                        <td>90%</td>
-                        <td><code>STEAM_BASED</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [STEAM-TRUST][Steam Trust]</strong><br>
-                            <span>SteamとMBZの一致により特定。ローカルに一部欠落あり。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1040700</code></td>
-                        <td>Devil Engine Original Soundtrack</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>FAST_TRACK</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Deterministic Fast-Track]</strong><br>
-                            <span>SYSTEM: Deterministic fast-track</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1075710</code></td>
-                        <td>Katana ZERO Soundtrack</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
                         <td>95%</td>
                         <td>90%</td>
                         <td><code>HYBRID</code></td>
                         <td style="font-size: 0.82rem; color: var(--text-secondary);">
                             <strong>Success [STEAM-TRUST][Steam Trust]</strong><br>
-                            <span>SteamとMBZのデータが一致し、高い信頼性。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1108260</code></td>
-                        <td>The Messenger Soundtrack - Disc III: Picnic Panic</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>95%</td>
-                        <td>80%</td>
-                        <td><code>HYBRID</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [STEAM-TRUST][Steam Trust]</strong><br>
-                            <span>SteamとMBZのデータが一致。</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1113040</code></td>
-                        <td>HARDCORE MECHA - OST</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>FAST_TRACK</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Deterministic Fast-Track]</strong><br>
-                            <span>SYSTEM: Deterministic fast-track</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1142840</code></td>
-                        <td>Lichtspeer Soundtrack</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>FAST_TRACK</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Deterministic Fast-Track]</strong><br>
-                            <span>SYSTEM: Deterministic fast-track</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1156340</code></td>
-                        <td>Nova Drift OST</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>FAST_TRACK</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Deterministic Fast-Track]</strong><br>
-                            <span>SYSTEM: Deterministic fast-track</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1167720</code></td>
-                        <td>Artifact Adventure Gaiden DX Soundtrack</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>FAST_TRACK</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Deterministic Fast-Track]</strong><br>
-                            <span>SYSTEM: Deterministic fast-track</span>
-                        </td>
-                    </tr>
-
-                    <tr class="item-row" data-status="archive">
-                        <td><code>1195480</code></td>
-                        <td>DOOM Soundtrack</td>
-                        <td><span class="badge archive">ARCHIVE</span></td>
-                        <td>100%</td>
-                        <td>100%</td>
-                        <td><code>FAST_TRACK</code></td>
-                        <td style="font-size: 0.82rem; color: var(--text-secondary);">
-                            <strong>Success [Deterministic Fast-Track]</strong><br>
-                            <span>SYSTEM: Deterministic fast-track</span>
+                            <span>SteamとMBZの整合性が高く、同一作品と判断</span>
                         </td>
                     </tr>
 

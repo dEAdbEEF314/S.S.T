@@ -66,10 +66,10 @@ class SteamWebClient:
             logger.warning(f"AppID {app_id} の公式Steamタグ取得に失敗しました: {e}")
             return {}
 
-    def fetch_web_enrichment(self, app_id: int) -> Optional[Dict[str, Any]]:
+    def fetch_web_enrichment(self, app_id: int, force: bool = False) -> Optional[Dict[str, Any]]:
         """Fetches metadata from 3 tiers of APIs (Official Store, PICS Bridge, Official Tags) with DB persistence."""
         # 1. Check Database first
-        db_data = self.db.get_store_data(app_id)
+        db_data = None if force else self.db.get_store_data(app_id)
         
         result = {"genres": [], "tags": [], "name": None, "store_tracklist": [], "store_tracklist_source": None, "store_tracklist_language": None, "store_credits": "", "label": None, "release_date": None}
         
@@ -83,7 +83,7 @@ class SteamWebClient:
 
         try:
             # Only fetch if missing or incomplete
-            if not result["store_tracklist"]:
+            if force or not result["store_tracklist"]:
                 # Mandatory Throttle (2s + jitter)
                 import random
                 time.sleep(2.0 + random.random())

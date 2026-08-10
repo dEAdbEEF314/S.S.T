@@ -45,7 +45,7 @@ For every AppID, record:
 
 ### Archive integrity concerns
 
-An Archive is suspicious when it has a final track count different from the Steam slot count, duplicate `(disc, track)` or `slot_key` values, missing/extra slots, `Fallback`, `LOCAL` titles, track `0`, `Unknown` titles, an output-count mismatch, or a final format below the highest available candidate tier. HTML entities and malformed artist/album fields are additional metadata concerns.
+An Archive is suspicious when it has a final track count different from the Steam slot count, duplicate `(disc, track)` or `slot_key` values, missing/extra slots, `Fallback`, `LOCAL` titles, track `0`, `Unknown` titles, an output-count mismatch, or a final format below the highest available candidate tier. HTML entities and malformed artist/album fields are additional metadata concerns. A repeated company name in `AlbumArtist` is not a concern when it comes from the same Developer and Publisher value: both credits are intentionally preserved by the tagging contract.
 
 Distinguish a real duplicate song from uncollapsed format variants. Multiple input formats are expected; two final records for one Steam slot are not.
 

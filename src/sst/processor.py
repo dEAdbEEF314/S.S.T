@@ -1,10 +1,7 @@
 import logging
 import shutil
-import time
-import json
-import re
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import Callable, List, Dict, Any, Optional, Tuple
 from datetime import datetime
 
 from .models import SteamMetadata, LocalProcessResult
@@ -20,7 +17,7 @@ from .alignment_inputs import AlignmentInputBuilder
 from .track_grouper import TrackManager
 from .validator import ResultValidator
 from .report_generator import ReportGenerator
-from .processor_support import adopt_best_file_per_slot, build_slot_variant_index, fetch_album_artwork, send_notifications, resolve_duplicate_mappings
+from .processor_support import adopt_best_file_per_slot, build_slot_variant_index, fetch_album_artwork, send_notifications, resolve_duplicate_mappings, select_best_unassigned_files
 from .processor_tracks import process_single_track
 from .alignment_flow import collect_alignment_inputs, consolidate_alignment_inputs
 from .processor_pipeline import handle_early_review_return
@@ -60,6 +57,26 @@ class LocalProcessor:
     def set_vram_manager(self, vram_manager: Any):
         self.llm.set_vram_manager(vram_manager)
 
+    def cleanup_force_working_dirs(self, app_ids: List[int]) -> int:
+        """Remove only prior intermediate attempts for the requested AppIDs."""
+        removed_count = 0
+        if not self.working_dir.is_dir():
+            return removed_count
+        for app_id in sorted(set(app_ids)):
+            for pattern in (f"final_{app_id}_*", f"buffer_{app_id}_*"):
+                for path in self.working_dir.glob(pattern):
+                    if path.is_dir():
+                        shutil.rmtree(path)
+                    elif path.is_file() or path.is_symlink():
+                        path.unlink()
+                    removed_count += 1
+        logger.info(
+            "Force cleanup removed %d intermediate directories for AppIDs=%s",
+            removed_count,
+            sorted(set(app_ids)),
+        )
+        return removed_count
+
     def _get_localized_now(self):
         from datetime import timezone, timedelta
         import os
@@ -90,15 +107,37 @@ class LocalProcessor:
             slot_map[slot_key] = idx
         return slot_map
 
-    def _build_fast_track_group_map(self, track_groups: Dict) -> Optional[Dict[str, tuple[tuple[int, str], str]]]:
+    def _build_fast_track_group_map(self, track_groups: Dict, steam_meta: Optional[SteamMetadata] = None) -> Optional[Dict[str, tuple[tuple[int, str], str]]]:
         group_map: Dict[str, tuple[tuple[int, str], str]] = {}
         slot_durations: Dict[tuple[int, str], List[float]] = {}
+        steam_title_map: Dict[str, List[tuple[int, str]]] = {}
+        steam_tracks_by_slot: Dict[tuple[int, str], Dict[str, Any]] = {}
+        for track in (steam_meta.store_tracklist if steam_meta else []):
+            title = TrackManager.normalize_title(str(track.get("title") or track.get("name") or ""))
+            slot_key = self._normalize_slot_key(track.get("disc", 1), track.get("number"))
+            if slot_key is None:
+                # Ignore malformed Steam entries rather than storing an invalid
+                # key that cannot be used by the fast-track matcher.
+                continue
+            if title:
+                steam_title_map.setdefault(title, []).append(slot_key)
+            steam_tracks_by_slot[slot_key] = track
         for (disc_num, clean_title), variants in track_groups.items():
             track_numbers = {variant.get("t_num_val") for variant in variants if variant.get("t_num_val") not in (None, "", "0")}
-            if len(track_numbers) != 1:
-                return None
-
-            slot_key = self._normalize_slot_key(disc_num, next(iter(track_numbers)))
+            slot_key: Optional[tuple[int, str]] = None
+            if len(track_numbers) == 1:
+                candidate_slot_key = self._normalize_slot_key(disc_num, next(iter(track_numbers)))
+                if candidate_slot_key is not None:
+                    steam_track = steam_tracks_by_slot.get(candidate_slot_key)
+                    local_title = TrackManager.normalize_title(clean_title)
+                    steam_title = TrackManager.normalize_title(str((steam_track or {}).get("title") or (steam_track or {}).get("name") or ""))
+                    slot_key = candidate_slot_key
+                    if steam_track and steam_title != local_title:
+                        slot_key = None
+            if slot_key is None and steam_meta:
+                title_matches = steam_title_map.get(TrackManager.normalize_title(clean_title), [])
+                if len(title_matches) == 1:
+                    slot_key = title_matches[0]
             if slot_key is None:
                 return None
             slot_durations.setdefault(slot_key, []).extend(
@@ -118,7 +157,7 @@ class LocalProcessor:
         if slot_map is None:
             return False, None, None
 
-        group_map = self._build_fast_track_group_map(track_groups)
+        group_map = self._build_fast_track_group_map(track_groups, steam_meta)
         if group_map is None:
             return False, None, None
 
@@ -231,8 +270,8 @@ class LocalProcessor:
         app_id: int,
         install_dir: Path,
         steam_meta: SteamMetadata,
-        on_track_complete: Optional[callable] = None,
-        llm_progress_callback: Optional[callable] = None,
+        on_track_complete: Optional[Callable[[], None]] = None,
+        llm_progress_callback: Optional[Callable[[], None]] = None,
     ) -> LocalProcessResult:
         logger.info(f"[{app_id}] --- 処理中: {steam_meta.name} ---")
         diagnostics = {
@@ -249,6 +288,8 @@ class LocalProcessor:
                 "at": self._get_localized_now().isoformat()
             })
 
+        temp_output: Optional[Path] = None
+        buffer_dir: Optional[Path] = None
         try:
             _diag("PROCESS_START", install_dir=str(install_dir))
             all_files = TrackManager.list_audio_files(install_dir)
@@ -307,7 +348,11 @@ class LocalProcessor:
                     _diag,
                     llm_progress_callback=llm_progress_callback,
                 )
-            
+
+            # The LLM may return None when alignment cannot be consolidated.
+            # Keep downstream helpers on their declared dictionary contract.
+            final_metadata = final_metadata or {}
+             
             # --- SMART DUPLICATE RESOLUTION (Post-LLM Cleanup) ---
             if final_metadata:
                 self._resolve_duplicate_mappings(app_id, final_metadata, steam_meta, track_groups)
@@ -336,9 +381,10 @@ class LocalProcessor:
             temp_output.mkdir(parents=True, exist_ok=True)
             buffer_dir = self.working_dir / f"buffer_{app_id}_{run_id}"
             buffer_dir.mkdir(parents=True, exist_ok=True)
+            assert temp_output is not None and buffer_dir is not None
             tagger = AudioTagger(temp_output)
-            album_artwork = self._fetch_album_artwork(steam_meta, mbz_candidates, track_groups)
-            if album_artwork: album_artwork = tagger.process_artwork(album_artwork)
+            raw_album_artwork = self._fetch_album_artwork(steam_meta, mbz_candidates, track_groups)
+            album_artwork_path = tagger.process_artwork(raw_album_artwork) if raw_album_artwork else None
             any_audio_warnings, any_audio_failures = False, False
 
             def _process_single_track(track_data):
@@ -358,7 +404,7 @@ class LocalProcessor:
                     track_groups=track_groups,
                     slot_variant_index=slot_variant_index,
                     track_to_slot_index=track_to_slot_index,
-                    album_artwork=album_artwork,
+                    album_artwork=album_artwork_path,
                     notifier=self.notifier,
                     on_track_complete=on_track_complete,
                 )
@@ -371,10 +417,53 @@ class LocalProcessor:
             processed_tracks_meta = self._normalize_processed_tracks(
                 [r["track_meta"] for r in track_results if r.get("track_meta")]
             )
+            alignment_unassigned_ids = {
+                str(file_id)
+                for file_id in (llm_log.get("alignment_res", {}) or {}).get("unassigned_files", [])
+            }
+            unassigned_manifest = []
+            for unassigned in select_best_unassigned_files(
+                track_groups,
+                final_metadata,
+                alignment_unassigned_ids or None,
+            ):
+                manifest = {
+                    "track_id": unassigned["track_id"],
+                    "original_filename": unassigned["path"].name,
+                    "file_id": unassigned.get("file_id"),
+                    "unassigned_file_ids": unassigned.get("unassigned_file_ids", []),
+                    "tier_rank": unassigned["tier_rank"],
+                    "original_tags": unassigned.get("original_tags", {}),
+                    "reason": "No matching Steam slot",
+                }
+                try:
+                    converted_path, conversion_warning = tagger.convert_and_limit(
+                        unassigned["path"], unassigned["tier"], subdir="unassigned"
+                    )
+                    tagger.mark_unassigned(converted_path, manifest["reason"])
+                    manifest["file_path"] = f"unassigned/{converted_path.name}"
+                    manifest["converted"] = True
+                    manifest["conversion_warning"] = bool(conversion_warning)
+                except Exception as error:
+                    manifest["converted"] = False
+                    manifest["conversion_error"] = str(error)
+                unassigned_manifest.append(manifest)
             any_audio_warnings = any(r.get("had_warning") for r in track_results)
             any_audio_failures = any(r.get("failed") for r in track_results)
 
             status, message, score, quality, reason = ResultValidator.validate(app_id, processed_tracks_meta, llm_log, mbz_candidates, steam_meta, any_audio_failures, any_audio_warnings)
+            artifact_issues = self._validate_archive_artifacts(
+                app_id,
+                temp_output,
+                processed_tracks_meta,
+                steam_meta,
+            )
+            if status == "archive" and artifact_issues:
+                status = "review"
+                existing_message = message.strip("[]") if message else ""
+                all_issues = [part for part in [existing_message, *artifact_issues] if part]
+                message = f"[{', '.join(all_issues)}]"
+                reason = f"{reason}; archive artifact preflight failed"
             _diag(
                 "VALIDATION_DONE",
                 status=status,
@@ -403,6 +492,7 @@ class LocalProcessor:
                 "confidence_reason": reason, 
                 "processed_at": self._get_localized_now().isoformat(), 
                 "tracks": processed_tracks_meta, 
+                "unassigned_files": unassigned_manifest,
                 "steam_info": steam_meta.model_dump(),
                 "diagnostics": diagnostics,
             }
@@ -422,12 +512,21 @@ class LocalProcessor:
                 "llm_log.json": llm_log,
                 "AUDIT_REPORT.html": ReportGenerator.generate_html_report(app_id, steam_meta, status, message, score, reason, processed_tracks_meta, llm_log, mbz_candidates, localized_now_str, self.config.resolved_metadata_source_priority, quality=quality, alignment_inputs=alignment_inputs_bundle)
             }
+            if unassigned_manifest:
+                log_bundle["review_manifest.json"] = {
+                    "app_id": app_id,
+                    "album_name": steam_meta.name,
+                    "status": status,
+                    "unassigned_files": unassigned_manifest,
+                }
             if discord_msg:
                 log_bundle["DISCORD_MESSAGE.md"] = discord_msg
 
             p1_log = llm_log.get("phase1_log", {})
-            if p1_log.get("human_prompt"): log_bundle["LLM_PROMPT.md"] = p1_log["human_prompt"]
-            elif p1_log.get("prompt"): log_bundle["LLM_PROMPT.md"] = p1_log["prompt"]
+            if p1_log.get("human_prompt"):
+                log_bundle["LLM_PROMPT.md"] = p1_log["human_prompt"]
+            elif p1_log.get("prompt"):
+                log_bundle["LLM_PROMPT.md"] = p1_log["prompt"]
 
             diagnostics["packager_invoked"] = True
             _diag("PACKAGE_SAVE_START", status=status, output_root=self.config.sst_output_dir)
@@ -445,13 +544,62 @@ class LocalProcessor:
             if is_debug:
                 logger.info(f"[{app_id}] DEBUG モード: 一時ディレクトリを保持しています: {getattr(locals().get('temp_output'), 'name', 'N/A')}, {getattr(locals().get('buffer_dir'), 'name', 'N/A')}")
             
-            if 'temp_output' in locals() and temp_output.exists() and not is_debug:
+            if isinstance(temp_output, Path) and temp_output.exists() and not is_debug:
                 shutil.rmtree(temp_output, ignore_errors=True)
-            if 'buffer_dir' in locals() and buffer_dir.exists() and not is_debug:
+            if isinstance(buffer_dir, Path) and buffer_dir.exists() and not is_debug:
                 shutil.rmtree(buffer_dir, ignore_errors=True)
 
-    def _fetch_album_artwork(self, steam_meta: SteamMetadata, mbz_candidates: List[Dict], track_groups: Dict = None) -> Optional[bytes]:
+    def _fetch_album_artwork(
+        self,
+        steam_meta: SteamMetadata,
+        mbz_candidates: List[Dict[str, Any]],
+        track_groups: Optional[Dict] = None,
+    ) -> Optional[bytes]:
         return fetch_album_artwork(self.config, self.mbz, steam_meta, mbz_candidates, track_groups)
+
+    @staticmethod
+    def _validate_archive_artifacts(
+        app_id: int,
+        artifact_dir: Path,
+        tracks: List[Dict[str, Any]],
+        steam_meta: SteamMetadata,
+    ) -> List[str]:
+        """Re-scan physical outputs immediately before packaging an archive."""
+        issues: List[str] = []
+        expected_keys = {
+            (
+                str(item.get("disc", 1)).split("/")[0],
+                str(item.get("number", "0")).split("/")[0],
+            )
+            for item in (steam_meta.store_tracklist or [])
+        }
+        actual_keys = set()
+        for track in tracks:
+            tags = track.get("tags") or {}
+            key = (
+                str(tags.get("disc_number", "1")).split("/")[0],
+                str(tags.get("track_number", "0")).split("/")[0],
+            )
+            actual_keys.add(key)
+            relative_path = track.get("file_path")
+            if not relative_path:
+                issues.append("Archive Artifact Path Missing")
+                continue
+            output_path = artifact_dir / str(relative_path)
+            if not output_path.is_file() or output_path.stat().st_size == 0:
+                issues.append(f"Archive Artifact Missing ({relative_path})")
+                continue
+            if not all(str(tags.get(field) or "").strip() for field in ("title", "track_number", "artist", "album_artist")):
+                issues.append(f"Archive Artifact Tags Missing ({relative_path})")
+        if expected_keys != actual_keys:
+            issues.append("Archive Artifact Steam Slot Mismatch")
+        logger.info(
+            "[%s] Archive artifact preflight: files=%s issues=%s",
+            app_id,
+            len(tracks),
+            len(issues),
+        )
+        return issues
 
     @staticmethod
     def _normalize_processed_tracks(tracks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

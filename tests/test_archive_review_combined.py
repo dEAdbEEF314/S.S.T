@@ -10,7 +10,7 @@ def _make_track(title: str, track_number: str, disc_number: str = "1"):
 
 def _make_steam_meta():
     steam_meta = MagicMock(spec=SteamMetadata)
-    steam_meta.store_tracklist = [{"title": "Official Title"}]
+    steam_meta.store_tracklist = [{"disc": 1, "number": "1", "title": "Official Title"}]
     return steam_meta
 
 
@@ -62,6 +62,31 @@ def test_validator_returns_review_when_mapping_confidence_fails():
 
     assert status == "review"
     assert "Mapping confidence too low" in message
+
+
+def test_validator_rejects_steam_trust_without_a_tracklist():
+    steam_meta = MagicMock(spec=SteamMetadata)
+    steam_meta.store_tracklist = []
+    status, message, *_ = ResultValidator.validate(
+        1,
+        [_make_track("Local title", "1")],
+        {
+            "phase1_res": {
+                "album_confidence": 100,
+                "mapping_confidence": 100,
+                "data_quality": 100,
+                "strategy": "STEAM_BASED",
+            },
+            "logs": ["STEAM-TRUST"],
+        },
+        [],
+        steam_meta,
+        False,
+        False,
+    )
+
+    assert status == "review"
+    assert "Steam Tracklist Missing" in message
 
 
 def test_validator_returns_review_when_data_quality_fails():

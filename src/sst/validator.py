@@ -18,10 +18,10 @@ class ResultValidator:
         reason = p1_res.get("confidence_reason")
         if reason is None:
             reason = "No LLM response"
-        label = p1_res.get("semantic_label", "Review")
         strategy = p1_res.get("strategy", "UNKNOWN")
         ratio = p1_res.get("archive_vs_review_ratio", {"archive": 0, "review": 0})
         is_fast_track = bool(llm_log.get("fast_track", False))
+        alignment_res = llm_log.get("alignment_res", {}) or {}
         
         # --- 1. Decision Strategy Badges ---
         strategy_badges = []
@@ -39,18 +39,46 @@ class ResultValidator:
         elif strategy == "HYBRID": 
             strategy_badges.append("Hybrid (MBZ+Steam)")
         
-        if "AcoustID" in str(llm_log): strategy_badges.append("AcoustID")
+        if "AcoustID" in str(llm_log):
+            strategy_badges.append("AcoustID")
         badge_str = f"[{'+'.join(strategy_badges)}]" if strategy_badges else ""
 
         # --- 2. Physical Integrity Checks (Pre-gate) ---
         status = "archive"
         issues = []
+
+        if not steam_meta.store_tracklist:
+            issues.append("Steam Tracklist Missing")
+        else:
+            expected_keys = {
+                (str(track.get("disc", 1)), str(track.get("number", "0")).split("/")[0])
+                for track in steam_meta.store_tracklist
+            }
+            final_keys = {
+                (
+                    str(track.get("tags", {}).get("disc_number", "1")).split("/")[0],
+                    str(track.get("tags", {}).get("track_number", "0")).split("/")[0],
+                )
+                for track in tracks
+            }
+            missing_count = len(expected_keys - final_keys)
+            unexpected_count = len(final_keys - expected_keys)
+            if missing_count:
+                issues.append(f"Steam Slots Missing ({missing_count})")
+            if unexpected_count:
+                issues.append(f"Steam Slots Unexpected ({unexpected_count})")
+
+        unassigned_files = alignment_res.get("unassigned_files") or []
+        if unassigned_files:
+            issues.append(f"Unassigned Files ({len(unassigned_files)})")
         
         # Track #0 / Unknown Title
         z_count = sum(1 for t in tracks if str(t["tags"].get("track_number")) == "0")
         u_count = sum(1 for t in tracks if (t["tags"].get("title") or "Unknown") == "Unknown")
-        if z_count > 0: issues.append(f"Track#0 x{z_count}")
-        if u_count > 0: issues.append(f"Unknown Title x{u_count}")
+        if z_count > 0:
+            issues.append(f"Track#0 x{z_count}")
+        if u_count > 0:
+            issues.append(f"Unknown Title x{u_count}")
 
         # Dirty Tags (Pre-existing track numbers in titles)
         dirty_pattern = re.compile(r'^(\d+)([\s.-]+)')
@@ -63,24 +91,31 @@ class ResultValidator:
             track_num = str(t["tags"].get("track_number", "0"))
             match = dirty_pattern.match(title)
             if match:
-                if match.group(2) == '.' and match.end() < len(title) and title[match.end()].isdigit(): continue
+                if match.group(2) == '.' and match.end() < len(title) and title[match.end()].isdigit():
+                    continue
                 mbz_titles = [str(tr.get("title", "")).lower() for tr in mbz_release.get("tracks", [])] if mbz_release else []
                 steam_titles = [str(tr.get("title", "")).lower() for tr in steam_meta.store_tracklist] if steam_meta and steam_meta.store_tracklist else []
-                if title.lower() in mbz_titles or title.lower() in steam_titles: continue
+                if title.lower() in mbz_titles or title.lower() in steam_titles:
+                    continue
                 prefixed_num = match.group(1).lstrip('0') or '0'
                 clean_track_num = track_num.lstrip('0') or '0'
                 if prefixed_num == clean_track_num or any(s in match.group(2) for s in ['.', '-', '_']):
                     d_count += 1
-        if d_count >= 1: issues.append(f"Dirty Tags x{int(d_count)}")
+        if d_count >= 1:
+            issues.append(f"Dirty Tags x{int(d_count)}")
 
         # Duplicate Tracks
         track_keys = []
         duplicate_pairs = []
         for t in tracks:
             key = (str(t["tags"].get("disc_number", "1")).split('/')[0], str(t["tags"].get("track_number", "0")).split('/')[0])
-            if key in track_keys: duplicate_pairs.append(f"{key}")
+            if key in track_keys:
+                duplicate_pairs.append(f"{key}")
             track_keys.append(key)
-        if duplicate_pairs: issues.append(f"Duplicates ({len(duplicate_pairs)})")
+        if steam_meta.store_tracklist and len(tracks) != len(steam_meta.store_tracklist):
+            issues.append(f"Output Track Count Mismatch ({len(tracks)}/{len(steam_meta.store_tracklist)})")
+        if duplicate_pairs:
+            issues.append(f"Duplicates ({len(duplicate_pairs)})")
 
         # Duplicate Titles (Heavy Hallucination Guard)
         titles = [str(t["tags"].get("title", "")).strip() for t in tracks if t["tags"].get("title")]
@@ -90,8 +125,10 @@ class ResultValidator:
             issues.append(f"Duplicate Titles ({count}/{len(tracks)})")
 
         # Audio Failures
-        if audio_fail: issues.append("CRITICAL: Audio Source Error")
-        elif audio_warn: issues.append("Audio quality warning")
+        if audio_fail:
+            issues.append("CRITICAL: Audio Source Error")
+        elif audio_warn:
+            issues.append("Audio quality warning")
 
         # --- 3. Confidence & Quality Thresholds ---
         llm_archive_path = album_confidence >= 90 and mapping_confidence >= 80 and data_quality >= 70

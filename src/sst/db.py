@@ -41,11 +41,15 @@ class DatabaseManager:
                 CREATE TABLE IF NOT EXISTS api_cache (
                     service TEXT,
                     query_key TEXT,
+                    app_id INTEGER,
                     response_data TEXT,
                     fetched_at TEXT,
                     PRIMARY KEY (service, query_key)
                 )
             """)
+            api_cache_columns = {row[1] for row in conn.execute("PRAGMA table_info(api_cache)")}
+            if "app_id" not in api_cache_columns:
+                conn.execute("ALTER TABLE api_cache ADD COLUMN app_id INTEGER")
 
     def get_store_data(self, app_id: int) -> Optional[Dict[str, Any]]:
         """Retrieves cached Steam store data including PICS fields."""
@@ -103,23 +107,38 @@ class DatabaseManager:
             )
         logger.debug(f"Recorded AppID {app_id} in DB with status: {status}")
 
-    def get_api_cache(self, service: str, query_key: str, ttl_days: int = 30) -> Optional[Any]:
+    def get_api_cache(self, service: str, query_key: str, ttl_days: int = 30, app_id: Optional[int] = None) -> Optional[Any]:
         """Retrieves cached API response if it is within the TTL."""
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, timezone
         with sqlite3.connect(self.db_path) as conn:
-            cur = conn.execute("SELECT response_data, fetched_at FROM api_cache WHERE service = ? AND query_key = ?", (service, query_key))
+            if app_id is None:
+                cur = conn.execute(
+                    "SELECT response_data, fetched_at FROM api_cache WHERE service = ? AND query_key = ? AND app_id IS NULL",
+                    (service, query_key),
+                )
+            else:
+                cur = conn.execute(
+                    "SELECT response_data, fetched_at FROM api_cache WHERE service = ? AND query_key = ? AND app_id = ?",
+                    (service, query_key, app_id),
+                )
             row = cur.fetchone()
             if row:
                 fetched_at = datetime.fromisoformat(row[1])
-                if datetime.utcnow() - fetched_at <= timedelta(days=ttl_days):
+                if datetime.now(timezone.utc).replace(tzinfo=None) - fetched_at <= timedelta(days=ttl_days):
                     return json.loads(row[0])
         return None
 
-    def set_api_cache(self, service: str, query_key: str, data: Any):
+    def set_api_cache(self, service: str, query_key: str, data: Any, app_id: Optional[int] = None):
         """Saves an API response to the cache."""
-        from datetime import datetime
+        from datetime import datetime, timezone
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO api_cache (service, query_key, response_data, fetched_at) VALUES (?, ?, ?, ?)",
-                (service, query_key, json.dumps(data, ensure_ascii=False), datetime.utcnow().isoformat())
+                "INSERT OR REPLACE INTO api_cache (service, query_key, app_id, response_data, fetched_at) VALUES (?, ?, ?, ?, ?)",
+                (service, query_key, app_id, json.dumps(data, ensure_ascii=False), datetime.now(timezone.utc).replace(tzinfo=None).isoformat()),
             )
+
+    def delete_api_cache_for_app(self, app_id: int) -> int:
+        """Delete only AppID-owned API cache rows; shared NULL rows are preserved."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("DELETE FROM api_cache WHERE app_id = ?", (app_id,))
+            return cursor.rowcount

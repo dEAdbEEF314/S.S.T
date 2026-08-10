@@ -1,5 +1,11 @@
 import re
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+import unicodedata
+from typing import Any, Dict, List, Optional, Tuple
+
+
+_MAX_TRACKS = 1000
+_MAX_TITLE_LENGTH = 500
+_MAX_DURATION_SECONDS = 24 * 60 * 60
 
 
 def validate_llm_tracklist(
@@ -16,6 +22,13 @@ def validate_llm_tracklist(
         return [], ["too_few_tracks"]
     if local_track_count is not None and len(tracks) != local_track_count:
         return [], ["track_count_mismatch"]
+
+    if not isinstance(response.get("confidence", 0), (int, float)) or isinstance(response.get("confidence", 0), bool):
+        return [], ["invalid_confidence"]
+    if not 0 <= float(response.get("confidence", 0)) <= 1:
+        return [], ["confidence_out_of_range"]
+    if len(tracks) > _MAX_TRACKS:
+        return [], ["too_many_tracks"]
 
     normalized: List[Dict[str, Any]] = []
     errors: List[str] = []
@@ -38,6 +51,8 @@ def validate_llm_tracklist(
             errors.append(f"track_{index}_invalid_number")
         if not isinstance(title, str) or not title.strip():
             errors.append(f"track_{index}_empty_title")
+        elif len(title.strip()) > _MAX_TITLE_LENGTH or any(unicodedata.category(ch) == "Cc" for ch in title):
+            errors.append(f"track_{index}_invalid_title")
         if disc is None or number is None or not isinstance(title, str) or not title.strip():
             continue
 
@@ -79,10 +94,13 @@ def _positive_integer(value: Any) -> Optional[int]:
 def _optional_duration(value: Any) -> Optional[int]:
     if value in (None, ""):
         return None
-    if isinstance(value, (int, float)) and value >= 0:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)) and 0 <= value <= _MAX_DURATION_SECONDS:
         return int(value)
     if isinstance(value, str):
         match = re.fullmatch(r"\s*(\d+):([0-5]\d)\s*", value)
         if match:
-            return int(match.group(1)) * 60 + int(match.group(2))
+            seconds = int(match.group(1)) * 60 + int(match.group(2))
+            return seconds if seconds <= _MAX_DURATION_SECONDS else None
     return None

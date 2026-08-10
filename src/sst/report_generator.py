@@ -1,5 +1,5 @@
+import html
 import logging
-import json
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 from .models import SteamMetadata
@@ -78,12 +78,15 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
 
     @staticmethod
     def generate_html_report(app_id: int, steam_meta: SteamMetadata, status: str, message: str, score: int, reason: str, processed_tracks: List[Dict[str, Any]], llm_log: Dict[str, Any], mbz_candidates: List[Dict[str, Any]], localized_now_str: str, priority_str: str, quality: Optional[int] = None, alignment_inputs: Optional[Dict[str, Any]] = None) -> str:
+        def esc(value: Any) -> str:
+            return html.escape(str(value if value is not None else ""), quote=True)
+
         is_fast = llm_log.get("fast_track", False)
         status_class = "status-archive" if status == "archive" else "status-review"
         status_label = "🛡️ ARCHIVE SUCCESS" if status == "archive" else "🔍 REVIEW REQUIRED"
         count = len(processed_tracks)
         
-        display_reason = reason
+        display_reason = esc(reason)
         if is_fast:
             display_reason = "<strong>🛡️ DETERMINISTIC FAST-TRACK ENABLED</strong><br><br>This album was automatically verified by matching perfect evidence from MusicBrainz or PICS. LLM inference was bypassed to maintain 100% data integrity."
 
@@ -103,24 +106,25 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
                 is_chosen = (i == chosen_idx) or (c.get('mbid') == chosen_id)
                 chosen_badge = ' <span class="badge" style="background:#238636;">⭐ CHOSEN</span>' if is_chosen else ''
                 card_style = ' style="border: 2px solid var(--accent-green); background: #1a2332; padding: 10px; border-radius: 6px; margin-bottom: 5px;"' if is_chosen else ''
-                mbz_html += f"""<div class="mbz-card"{card_style}><strong>{c.get('album')}</strong> <span class="badge">Score: {c.get('score')}</span>{chosen_badge}<br><code style="font-size: 0.85rem; color: var(--accent-yellow);">{c.get('mbid')}</code><br><a href="https://musicbrainz.org/release/{c.get('mbid')}" target="_blank">View on MusicBrainz ↗</a></div>"""
-            if mbz_choice_reason: mbz_html += f'<div class="reason-box" style="margin-top:10px;"><strong>LLM MBZ Choice Reason:</strong><br>{mbz_choice_reason}</div>'
+                mbid = esc(c.get('mbid'))
+                mbz_html += f"""<div class="mbz-card"{card_style}><strong>{esc(c.get('album'))}</strong> <span class="badge">Score: {esc(c.get('score'))}</span>{chosen_badge}<br><code style="font-size: 0.85rem; color: var(--accent-yellow);">{mbid}</code><br><a href="https://musicbrainz.org/release/{mbid}" target="_blank" rel="noopener noreferrer">View on MusicBrainz ↗</a></div>"""
+            if mbz_choice_reason: mbz_html += f'<div class="reason-box" style="margin-top:10px;"><strong>LLM MBZ Choice Reason:</strong><br>{esc(mbz_choice_reason)}</div>'
         else: mbz_html = "<p>No matching MusicBrainz candidates found.</p>"
 
         matrix_rows = ""
         priority_list = [p.strip().upper() for p in priority_str.split(',')]
         for source in priority_list:
-            if source == "STEAM_PICS": matrix_rows += f"<tr><td>{source}</td><td>{steam_meta.name}</td><td>{steam_meta.developer or 'N/A'}</td><td>N/A</td><td>N/A</td></tr>"
+            if source == "STEAM_PICS": matrix_rows += f"<tr><td>{esc(source)}</td><td>{esc(steam_meta.name)}</td><td>{esc(steam_meta.developer or 'N/A')}</td><td>N/A</td><td>N/A</td></tr>"
             elif source == "STEAM_STORE":
                 store_track_count = len(steam_meta.store_tracklist) if steam_meta.store_tracklist else 0
-                matrix_rows += f"<tr><td>{source}</td><td>{steam_meta.name}</td><td>{steam_meta.developer or 'N/A'}</td><td>{store_track_count}</td><td>{steam_meta.release_date or 'N/A'}</td></tr>"
+                matrix_rows += f"<tr><td>{esc(source)}</td><td>{esc(steam_meta.name)}</td><td>{esc(steam_meta.developer or 'N/A')}</td><td>{store_track_count}</td><td>{esc(steam_meta.release_date or 'N/A')}</td></tr>"
             elif source == "MBZ":
                 if not mbz_candidates: matrix_rows += f"<tr><td>{source}</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td></tr>"
                 else:
                     for i, c in enumerate(mbz_candidates[:5]):
                         is_chosen = (i == chosen_idx) or (c.get('mbid') == chosen_id)
                         row_style = ' style="background-color: #1a2332; font-weight: bold; border-left: 4px solid var(--accent-green);"' if is_chosen else ''
-                        matrix_rows += f"<tr{row_style}><td>{source} (Candidate {i} - Score: {c.get('score')})</td><td>{c.get('album')}</td><td>{c.get('artist')}</td><td>{c.get('track_count')}</td><td>{c.get('year')}</td></tr>"
+                        matrix_rows += f"<tr{row_style}><td>{esc(source)} (Candidate {i} - Score: {esc(c.get('score'))})</td><td>{esc(c.get('album'))}</td><td>{esc(c.get('artist'))}</td><td>{esc(c.get('track_count'))}</td><td>{esc(c.get('year'))}</td></tr>"
             elif source in ["STEAM_TAGS", "EMBEDDED"]: matrix_rows += f"<tr><td>{source}</td><td>(Per-track data)</td><td>N/A</td><td>N/A</td><td>N/A</td></tr>"
             
         # --- Detailed Tag Table ---
@@ -137,15 +141,15 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
         for t in sorted_tracks:
             tg = t.get("tags", {})
             tag_rows += f"""<tr>
-                <td>{tg.get('disc_number', '1')}</td>
-                <td>{tg.get('track_number', '')}</td>
-                <td><strong>{tg.get('title', 'Unknown')}</strong></td>
-                <td>{tg.get('artist', '')}</td>
-                <td>{tg.get('album_artist', '')}</td>
-                <td>{tg.get('genre', '')}</td>
-                <td>{tg.get('year', '')}</td>
-                <td style="font-weight: 500; color: var(--accent-blue);">{t.get('title_source', 'UNKNOWN')}</td>
-                <td style="font-size: 0.75rem; color: #8b949e;">{t.get('source', '')}</td>
+                <td>{esc(tg.get('disc_number', '1'))}</td>
+                <td>{esc(tg.get('track_number', ''))}</td>
+                <td><strong>{esc(tg.get('title', 'Unknown'))}</strong></td>
+                <td>{esc(tg.get('artist', ''))}</td>
+                <td>{esc(tg.get('album_artist', ''))}</td>
+                <td>{esc(tg.get('genre', ''))}</td>
+                <td>{esc(tg.get('year', ''))}</td>
+                <td style="font-weight: 500; color: var(--accent-blue);">{esc(t.get('title_source', 'UNKNOWN'))}</td>
+                <td style="font-size: 0.75rem; color: #8b949e;">{esc(t.get('source', ''))}</td>
             </tr>"""
 
         alignment_inputs_html = ""
@@ -200,14 +204,14 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SST Audit Report - {steam_meta.name}</title>
+    <title>SST Audit Report - {esc(steam_meta.name)}</title>
     <style>{ReportGenerator._get_common_css()}</style>
 </head>
 <body>
 <div class="container">
     <div class="header">
         <h1>SST Audit Report</h1>
-        <p>AppID: <a href="https://store.steampowered.com/app/{app_id}" target="_blank">{app_id}</a> | Album: <strong>{steam_meta.name}</strong></p>
+        <p>AppID: <a href="https://store.steampowered.com/app/{app_id}" target="_blank" rel="noopener noreferrer">{app_id}</a> | Album: <strong>{esc(steam_meta.name)}</strong></p>
     </div>
 
     <div class="status-badge {status_class}">{status_label}</div>
@@ -217,7 +221,7 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
             <h3>Decision Summary</h3>
             <p><strong>Status:</strong> {status.upper()}<br>
             <strong>Score:</strong> {score}/100<br>
-            <strong>Message:</strong> {message}<br>
+            <strong>Message:</strong> {esc(message)}<br>
             <strong>Tracks:</strong> {count}</p>
         </div>
         <div class="card">

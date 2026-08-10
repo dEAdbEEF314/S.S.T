@@ -121,6 +121,22 @@ def main():
     args = parser.parse_args()
     console = Console()
 
+    if args.appid and (args.all or args.limit is not None):
+        parser.error("--appid cannot be combined with --all or --limit")
+
+    target_appids = None
+    if args.appid:
+        raw_appids = [value.strip() for value in args.appid.split(",")]
+        if any(not value for value in raw_appids):
+            parser.error("--appid must contain comma-separated positive integers")
+        try:
+            parsed_appids = [int(value) for value in raw_appids]
+        except ValueError:
+            parser.error("--appid must contain comma-separated positive integers")
+        if any(app_id <= 0 for app_id in parsed_appids):
+            parser.error("--appid must contain comma-separated positive integers")
+        target_appids = list(dict.fromkeys(parsed_appids))
+
     # If no specific action is provided, show help and exit (safety gate)
     if not any([args.all, args.limit, args.appid, args.reset_db]):
         parser.print_help()
@@ -169,16 +185,12 @@ def main():
         )
         runner = JobRunner(config, processor, console)
 
-        # Handle batch AppIDs
-        target_appids = None
-        if args.appid:
-            try:
-                target_appids = [int(aid.strip()) for aid in args.appid.split(',')]
-            except ValueError:
-                return console.print(f"[bold red]❌ エラー: 無効なAppIDリストです: {args.appid}[/bold red]")
-
         soundtracks = scanner.find_soundtracks(force=args.force, limit=args.limit, is_processed_callback=db.is_already_processed, target_appids=target_appids)
         if not soundtracks: return logger.info("サウンドトラックが見つかりませんでした。")
+
+        if args.force:
+            force_app_ids = target_appids or [int(item["app_id"]) for item in soundtracks]
+            processor.cleanup_force_working_dirs(force_app_ids)
 
         if not args.prefetch_only:
             console.print("[dim]LLMサービスの可用性を確認しています...[/dim]")
