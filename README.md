@@ -44,6 +44,8 @@ LLM はあいまいな整列ケースにだけ使います。主な調整項目�
 - **`LLM_LIMIT_RPM` / `LLM_LIMIT_TPM` / `LLM_LIMIT_RPD`**: クラウド API 利用時の上限制御。
 - **`LLM_CLOUD_MAX_TOKENS`**: クラウドモデルの最大出力トークン。
 - **`MAX_PARALLEL_ALBUMS`**: アルバム単位の基本並列数。
+- **`LLM_ALBUM_TIER_*` / `LLM_OLLAMA_NUM_CTX_SMALL|MEDIUM|LARGE` / `LLM_REQUEST_PARALLELISM_MAX_WORKERS_SMALL|MEDIUM|LARGE`**: 曲数帯ごとに `num_ctx` 上限と Phase 2 並列度を切り替える tier プロファイルです。未設定 tier は従来の `LLM_OLLAMA_NUM_CTX` / `LLM_REQUEST_PARALLELISM_MAX_WORKERS` を継承します。
+- **`LLM_FORCE_COHERENCE_LARGE`**: 大型アルバムで Coherence routing を強制する安全弁です。
 
 これらは実行性能を調整するための設定であり、メタデータの採用優先順位そのものは変更しません。詳細は `docs/configuration.md` を参照してください。
 
@@ -143,6 +145,8 @@ The LLM is only used for ambiguous alignment cases. The main knobs are:
 - **`LLM_LIMIT_RPM` / `LLM_LIMIT_TPM` / `LLM_LIMIT_RPD`**: Rate controls for cloud APIs.
 - **`LLM_CLOUD_MAX_TOKENS`**: Maximum output tokens for cloud models.
 - **`MAX_PARALLEL_ALBUMS`**: Base album-level concurrency.
+- **`LLM_ALBUM_TIER_*` / `LLM_OLLAMA_NUM_CTX_SMALL|MEDIUM|LARGE` / `LLM_REQUEST_PARALLELISM_MAX_WORKERS_SMALL|MEDIUM|LARGE`**: Per-album tier overrides for `num_ctx` caps and Phase 2 parallelism by track count. Any unset tier falls back to the legacy global `LLM_OLLAMA_NUM_CTX` and `LLM_REQUEST_PARALLELISM_MAX_WORKERS`.
+- **`LLM_FORCE_COHERENCE_LARGE`**: Forces Coherence routing for large albums when consistency matters more than throughput.
 
 These values tune performance and stability only. They do not change source precedence or tagging rules. See `docs/configuration.md` for the authoritative settings guide.
 
