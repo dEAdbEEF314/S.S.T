@@ -442,7 +442,7 @@ class LLMOrganizer:
             )
             mapping_prompt = build_mapping_prompt(
                 global_res,
-                s_mbz_search,
+                s_mbz_search or {},
                 v_mbz_search,
                 ref_steam,
                 ref_fingerprint,
@@ -469,6 +469,14 @@ class LLMOrganizer:
                 continue
 
             segment_logs.append(track_log)
+            if track_res is None:
+                logger.warning(
+                    "[%s] Track mapping returned no result for virtual chunk at index=%s; "
+                    "continuing with an empty instruction set.",
+                    app_id,
+                    chunk_start,
+                )
+                track_res = {}
             segment_instructions.update(
                 self._merge_track_instructions(
                     track_res,
@@ -571,10 +579,10 @@ class LLMOrganizer:
         full_logs = []
         
         # Simplify albums to save context
-        s_steam = self._simplify_v_album(v_steam, sampled=True)
-        s_fingerprint = self._simplify_v_album(v_fingerprint, sampled=True)
-        s_mbz_search = self._simplify_v_album(v_mbz_search, sampled=True)
-        s_local = self._simplify_v_album(v_local, sampled=True)
+        s_steam = self._simplify_v_album(v_steam, sampled=True) or {}
+        s_fingerprint = self._simplify_v_album(v_fingerprint, sampled=True) or {}
+        s_mbz_search = self._simplify_v_album(v_mbz_search, sampled=True) or {}
+        s_local = self._simplify_v_album(v_local, sampled=True) or {}
         
         resolved_num_ctx = self._resolve_execution_num_ctx(execution_profile, num_ctx)
 
@@ -633,9 +641,9 @@ class LLMOrganizer:
         coherence_mappings = None
 
         # Prepare full simplified reference tracks for slot alignment (not sampled)
-        full_ref_steam = self._simplify_v_album(v_steam, sampled=False).get("tracks", [])
-        full_ref_fingerprint = self._simplify_v_album(v_fingerprint, sampled=False).get("tracks", []) if v_fingerprint else []
-        full_ref_mbz_search = self._simplify_v_album(v_mbz_search, sampled=False).get("tracks", []) if v_mbz_search else []
+        full_ref_steam = (self._simplify_v_album(v_steam, sampled=False) or {}).get("tracks", [])
+        full_ref_fingerprint = (self._simplify_v_album(v_fingerprint, sampled=False) or {}).get("tracks", []) if v_fingerprint else []
+        full_ref_mbz_search = (self._simplify_v_album(v_mbz_search, sampled=False) or {}).get("tracks", []) if v_mbz_search else []
 
         dynamic_chunk_size = max(1, self._adaptive_chunk_size(self.chunk_size_virtual))
         segments = [
