@@ -8,6 +8,9 @@
 - 文字エンコーディング: UTF-16 with BOM (encoding=1)、ただし TLAN を除く
 - 年フレーム: TYER を使用し、TDRC は使わない
 - APIC: Front Cover (Type 3) 固定
+- Review成果物では、確定できない文字列フィールドに `S.S.T Unconfirmed` を設定する。
+- Review成果物で未確定の `TRCK` / `TPOS` / `TYER` は推測値を設定せず、該当フレームを省略する。
+- 未確定フィールド名と理由は COMM または監査用JSONに記録する。
 
 ## 2. アルバムレベルの構築
 
@@ -34,15 +37,18 @@
 
 - 正ソース: STEAM
 - 異常検知: 全曲同一番号、50%以上が 0、またはトラックリスト不在
-- フォールバック: ACOUSTID -> MBZ_RELEASE -> EMBED -> LOCAL
+- 通常時の補助候補: ACOUSTID -> MBZ_RELEASE -> EMBED -> LOCAL
+- Review時にSteam構造を確定できない場合は、補助候補を公式TRCKとして扱わない。
 - LLM 介入: STEAM 曲数とローカル曲数が不一致な場合
 - 出力形式: 単一整数文字列
+- Reviewで確定できない場合: 空欄またはフレーム省略。`0`は未確定値の代替に使わない。
 
 ### 4.2 TIT2
 
 - 正ソース: STEAM
 - 異常検知: トラックリスト不在、または 50%以上が同一タイトル
-- フォールバック: ACOUSTID -> MBZ_RELEASE -> EMBED -> LOCAL
+- 通常時の補助候補: ACOUSTID -> MBZ_RELEASE -> EMBED -> LOCAL
+- Review時にSteamタイトルを確定できない場合は `S.S.T Unconfirmed` を付与する。
 - LLM 介入: フォールバック候補間でタイトル競合がある場合
 - タイトルクリーニング: しない
 - 60 文字超の Local / English 形式のみ、Local 側を採用して短縮可
@@ -65,15 +71,19 @@
 
 - 正ソース: STEAM disc
 - 異常検知: ディスク情報なし
-- フォールバック: EMBED -> LOCAL フォルダ構造 -> 1
+- 通常時の補助候補: EMBED -> LOCAL フォルダ構造
+- Review時にDiscを確定できない場合は `TPOS` を出力しない。
 - LLM 介入: ローカル構造が複数ディスクを示すのに STEAM が単一ディスクの場合
 - 出力形式: n/N
+- Reviewで確定できない場合: 空欄またはフレーム省略。`1/1`は未確定値の代替に使わない。
 
 ### 4.6 TYER
 
 - 正ソース: STEAM release_date
 - 異常検知: 年抽出不能
-- フォールバック: MBZ_RELEASE -> MBZ_SEARCH -> EMBED -> 0000
+- 通常時の補助候補: MBZ_RELEASE -> MBZ_SEARCH -> EMBED
+- Review時に年を確定できない場合は `TYER` を出力しない。
+- Reviewで確定できない場合: 空欄またはフレーム省略。`0000`は未確定値の代替に使わない。
 
 ### 4.7 TCON
 

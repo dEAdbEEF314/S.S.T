@@ -11,13 +11,15 @@ class AudioTagger:
         self.output_dir = output_dir
 
     def process_artwork(self, raw_data: bytes) -> Optional[Path]:
-        if not raw_data: return None
+        if not raw_data:
+            return None
         try:
             art_path = self.output_dir / "cover_temp.jpg"
             with open(art_path, "wb") as f:
                 f.write(raw_data)
             return art_path
-        except Exception: return None
+        except Exception:
+            return None
 
     def _get_audio_properties(self, path: Path) -> Tuple[int, int]:
         """
@@ -105,6 +107,19 @@ class AudioTagger:
             logger.error(f"FFmpeg process timed out after 600 seconds for {source_path.name}")
             raise RuntimeError(f"FFmpeg conversion timed out for {source_path.name}")
             
+        if process.returncode != 0:
+            stderr_str = process.stderr.decode('utf-8', errors='ignore') if process.stderr else ''
+            logger.error(
+                "FFmpeg failed for %s with exit code %s: %s",
+                source_path.name,
+                process.returncode,
+                stderr_str[-2000:],
+            )
+            raise RuntimeError(f"FFmpeg conversion failed for {source_path.name}")
+        if not target_path.is_file() or target_path.stat().st_size == 0:
+            logger.error("FFmpeg produced no usable output for %s", source_path.name)
+            raise RuntimeError(f"FFmpeg produced no output for {source_path.name}")
+
         has_warnings = False
         if process.stderr:
             # Decode safely by ignoring characters that cannot be decoded as UTF-8
@@ -117,44 +132,84 @@ class AudioTagger:
         return target_path, has_warnings
 
     def write_tags(self, file_path: Path, tag_map: Dict[str, Any], artwork_path: Optional[Path] = None):
-        from mutagen.id3 import TIT2, TPE1, TALB, TCON, TRCK, TPOS, COMM, TPE2, TCOM, APIC, TIT1, TYER, TLAN
+        from mutagen import id3
+
+        # Mutagen exposes these frame classes at runtime, but its stubs do
+        # not export them from mutagen.id3. getattr keeps runtime compatibility
+        # with the public module and gives Pylance an Any-valued class object.
+        APIC = getattr(id3, "APIC")
+        COMM = getattr(id3, "COMM")
+        TCON = getattr(id3, "TCON")
+        TALB = getattr(id3, "TALB")
+        TCOM = getattr(id3, "TCOM")
+        TIT1 = getattr(id3, "TIT1")
+        TIT2 = getattr(id3, "TIT2")
+        TLAN = getattr(id3, "TLAN")
+        TPE1 = getattr(id3, "TPE1")
+        TPE2 = getattr(id3, "TPE2")
+        TPOS = getattr(id3, "TPOS")
+        TRCK = getattr(id3, "TRCK")
+        TYER = getattr(id3, "TYER")
         from mutagen.aiff import AIFF
         from mutagen.mp3 import MP3
 
         try:
-            audio = AIFF(file_path) if file_path.suffix == ".aif" else MP3(file_path)
-            
-            # Ensure we have an ID3 tag object to work with
+            audio = AIFF(file_path) if file_path.suffix.lower() == ".aif" else MP3(file_path)
+
+            # Ensure we have an ID3 tag object to work with. add_tags() returns
+            # None, so re-check audio.tags before using it.
             if audio.tags is None:
                 audio.add_tags()
-            else:
-                # Clear all existing frames to ensure a clean slate
-                audio.tags.clear()
-            
+            if audio.tags is None:
+                raise RuntimeError(f"Could not initialize ID3 tags for {file_path.name}")
+
+            # Clear all existing frames to ensure a clean slate
+            audio.tags.clear()
             tags = audio.tags
+            language = str(tag_map.get("language") or "eng").strip().lower()
+            if len(language) != 3 or not language.isascii() or not language.isalpha():
+                language = "eng"
+
+            unconfirmed_fields = {
+                str(field).strip()
+                for field in tag_map.get("unconfirmed_fields", [])
+                if str(field).strip()
+            }
+            unconfirmed_marker = "S.S.T Unconfirmed"
+
+            def text_value(field_name: str) -> str:
+                if field_name in unconfirmed_fields:
+                    return unconfirmed_marker
+                return str(tag_map.get(field_name) or "")
 
             # Standard Tags (Encoding 1 = UTF-16 with BOM for ID3v2.3 compliance)
-            tags.add(TIT2(encoding=1, text=tag_map["title"]))
-            tags.add(TPE1(encoding=1, text=tag_map["artist"]))
-            tags.add(TALB(encoding=1, text=tag_map["album"]))
-            tags.add(TPE2(encoding=1, text=tag_map["album_artist"]))
-            tags.add(TCON(encoding=1, text=tag_map["genre"]))
+            tags.add(TIT2(encoding=1, text=text_value("title")))
+            tags.add(TPE1(encoding=1, text=text_value("artist")))
+            tags.add(TALB(encoding=1, text=text_value("album")))
+            tags.add(TPE2(encoding=1, text=text_value("album_artist")))
+            tags.add(TCON(encoding=1, text=text_value("genre")))
 
             # Handle Year (Strictly TYER for ID3v2.3)
-            year_val = tag_map["year"][:4] if tag_map.get("year") else "0000"
-            tags.add(TYER(encoding=1, text=year_val))
+            if "year" not in unconfirmed_fields and tag_map.get("year"):
+                tags.add(TYER(encoding=1, text=str(tag_map["year"])[:4]))
 
-            tags.add(TRCK(encoding=1, text=tag_map["track_number"] or "0"))
-            tags.add(TPOS(encoding=1, text=tag_map["disc_number"] or "1/1"))
-            if tag_map.get("composer"):
-                tags.add(TCOM(encoding=1, text=tag_map["composer"]))
-            tags.add(TIT1(encoding=1, text=tag_map["grouping"] or ""))
-            tags.add(TLAN(encoding=0, text=[tag_map["language"]]))
+            if "track_number" not in unconfirmed_fields and tag_map.get("track_number"):
+                tags.add(TRCK(encoding=1, text=str(tag_map["track_number"])))
+            if "disc_number" not in unconfirmed_fields and tag_map.get("disc_number"):
+                tags.add(TPOS(encoding=1, text=str(tag_map["disc_number"])))
+            if tag_map.get("composer") or "composer" in unconfirmed_fields:
+                tags.add(TCOM(encoding=1, text=text_value("composer")))
+            tags.add(TIT1(encoding=1, text=text_value("grouping")))
+            tags.add(TLAN(encoding=0, text=[language]))
 
             # Comment logic
             # TAGGING_RULE.md format: "{既存コメント}, {親ゲーム名}, {親ゲームストアURL}, [タグ1/ タグ2/ ...]"
             # Truncation removes tag elements from the tail first to stay under the ID3v2.3 limit.
-            comment_text = tag_map["comment"]
+            comment_text = str(tag_map.get("comment") or "")
+            if unconfirmed_fields:
+                fields_text = ", ".join(sorted(unconfirmed_fields))
+                marker = f"{unconfirmed_marker}: {fields_text}"
+                comment_text = f"{comment_text}, {marker}" if comment_text else marker
             if len(comment_text.encode('utf-16')) > 2000:
                 match = re.search(r', \[(.*)\]$', comment_text)
                 if match:
@@ -167,7 +222,7 @@ class AudioTagger:
                     comment_text = f"{prefix}{'/ '.join(tags_list)}{suffix}"
 
             # Add the single consolidated comment in the specified user language (encoding=1 for UTF-16)
-            tags.add(COMM(encoding=1, lang=tag_map["language"], desc="", text=comment_text))
+            tags.add(COMM(encoding=1, lang=language, desc="", text=comment_text))
 
             # Artwork (APIC frame uses encoding=1 for description if present, though Front Cover desc is standard ASCII)
             if artwork_path and artwork_path.exists():
@@ -180,6 +235,28 @@ class AudioTagger:
         except Exception as e:
             logger.error(f"Failed to write tags to {file_path.name}: {e}")
 
+    def mark_unassigned(self, file_path: Path, reason: str):
+        from mutagen import id3
+
+        COMM = getattr(id3, "COMM")
+        TXXX = getattr(id3, "TXXX")
+        from mutagen.aiff import AIFF
+        from mutagen.mp3 import MP3
+
+        try:
+            audio = AIFF(file_path) if file_path.suffix.lower() == ".aif" else MP3(file_path)
+            if audio.tags is None:
+                audio.add_tags()
+            if audio.tags is None:
+                raise RuntimeError(f"Could not initialize ID3 tags for {file_path.name}")
+            marker = f"S.S.T Unconfirmed: {reason}"
+            audio.tags.add(COMM(encoding=1, lang="eng", desc="", text=marker))
+            audio.tags.add(TXXX(encoding=1, desc="SST_UNCONFIRMED", text=[marker]))
+            audio.save(v2_version=3)
+        except Exception as e:
+            logger.error(f"Failed to mark unassigned file {file_path.name}: {e}")
+            raise
+
     @staticmethod
     def read_tags(file_path: Path) -> Dict[str, Any]:
         """Reads tags from an audio file and returns a standard tag map."""
@@ -187,10 +264,11 @@ class AudioTagger:
         from mutagen.mp3 import MP3
         
         try:
-            audio = AIFF(file_path) if file_path.suffix == ".aif" else MP3(file_path)
+            audio = AIFF(file_path) if file_path.suffix.lower() == ".aif" else MP3(file_path)
             tags = audio.tags
-            if tags is None: return {}
-            
+            if tags is None:
+                return {}
+
             def get_text(frame_id):
                 frame = tags.get(frame_id)
                 return str(frame.text[0]) if frame and frame.text else None

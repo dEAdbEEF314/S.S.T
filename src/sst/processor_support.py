@@ -107,6 +107,41 @@ def adopt_best_file_per_slot(
     return adopted
 
 
+def select_best_unassigned_files(
+    track_groups: Dict,
+    final_metadata: Dict[str, Any],
+    unassigned_file_ids: Optional[set[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Select one highest-tier source file for each unassigned logical group."""
+    priorities = TrackManager.get_audio_format_priority()
+    selected = []
+    for (disc, clean_title), variants in track_groups.items():
+        track_id = f"{disc}_{clean_title}"
+        if track_id in final_metadata or not variants:
+            continue
+        if unassigned_file_ids is not None:
+            variants = [variant for variant in variants if variant.get("file_id") in unassigned_file_ids]
+            if not variants:
+                continue
+        chosen = min(
+            variants,
+            key=lambda variant: priorities.index(str(variant.get("format", "")).lower())
+            if str(variant.get("format", "")).lower() in priorities else len(priorities),
+        )
+        tier_rank = TrackManager.get_quality_tier(chosen.get("format", ""))
+        selected.append({
+            "track_id": track_id,
+            "path": chosen["path"],
+            "format": chosen.get("format", ""),
+            "tier": "lossless" if tier_rank in {0, 1} else "mp3",
+            "tier_rank": tier_rank,
+            "file_id": chosen.get("file_id"),
+            "unassigned_file_ids": [variant.get("file_id") for variant in variants],
+            "original_tags": chosen.get("meta", {}),
+        })
+    return selected
+
+
 def merge_embedded_tags_for_slot(slot_variants: List[Dict[str, Any]]) -> Dict[str, Any]:
     merged_tags: Dict[str, Any] = {}
     for variant in slot_variants:

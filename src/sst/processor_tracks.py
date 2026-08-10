@@ -1,5 +1,6 @@
 import logging
 import shutil
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -10,8 +11,6 @@ from .track_grouper import TrackManager
 
 logger = logging.getLogger("sst.processor")
 
-
-import time
 
 def copy_with_retry(src: Path, dst: Path, retries: int = 3, initial_delay: float = 1.0):
     for attempt in range(retries):
@@ -42,7 +41,7 @@ def process_single_track(
     track_groups: Dict,
     slot_variant_index: Dict[tuple[int, str], list],
     track_to_slot_index: Dict[str, tuple[int, str]],
-    album_artwork: Optional[bytes],
+    album_artwork: Optional[Path],
     notifier: Any,
     on_track_complete: Optional[Callable[[], None]] = None,
 ) -> Dict[str, Any]:
@@ -55,7 +54,9 @@ def process_single_track(
         instr = final_metadata.get(f"{disc}_{clean_title}") or {"action": "use_local_tag"}
         track_id = f"{disc}_{clean_title}"
         slot_key = track_to_slot_index.get(track_id, (disc, clean_title))
-        slot_variants = slot_variant_index.get(slot_key, track_groups[(disc, clean_title)])
+        slot_variants = slot_variant_index.get(slot_key)
+        if slot_variants is None:
+            slot_variants = track_groups[(disc, clean_title)]
         merged_slot_tags = merge_embedded_tags_for_slot(slot_variants)
         tag_map = MetadataBuilder.build_tag_map(
             app_id,

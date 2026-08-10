@@ -99,7 +99,7 @@ class SteamScanner:
                     try: potential_ids.append(int(d_id))
                     except Exception: pass
                 
-                enriched = self._get_local_metadata(current_id)
+                enriched = self._get_local_metadata(current_id, force=force)
                 if not enriched and not target_appids:
                     # If we can't find metadata locally and it wasn't a targeted scan, skip
                     continue
@@ -136,7 +136,7 @@ class SteamScanner:
         logger.info(f"スキャンが完了しました。処理対象のサウンドトラックが {len(soundtracks)} 個見つかりました。")
         return soundtracks
 
-    def _get_local_metadata(self, app_id: int) -> dict:
+    def _get_local_metadata(self, app_id: int, force: bool = False) -> dict:
         """Extracts metadata from local appinfo and enriches with web data if missing."""
         data = self.appinfo_dict.get(app_id, {})
         
@@ -164,15 +164,16 @@ class SteamScanner:
         # 1. Try to get basic enriched data from cache
         cache_key = str(app_id)
         enriched = self.cache_manager.cache.get("enriched", {}).get(cache_key, {})
-        metadata.update(enriched)
+        if not force:
+            metadata.update(enriched)
 
         # 2. Extract tags from local appinfo (Topic: Local Tags)
         if not metadata.get("tags") and "store_tags" in common:
             metadata["tags"] = self._resolve_tags(app_id, common["store_tags"])
 
         # 3. Ensure Tracklist/Credits/PICS data are fetched during signal gathering
-        if not metadata.get("store_tracklist"):
-            web_data = self.web_client.fetch_web_enrichment(app_id)
+        if force or not metadata.get("store_tracklist"):
+            web_data = self.web_client.fetch_web_enrichment(app_id, force=force)
             if web_data:
                 metadata.update(web_data)
                 # Update cache too for basic fields
@@ -205,7 +206,7 @@ class SteamScanner:
             if "store_tags" in p_appinfo:
                 metadata["parent_tags"] = self._resolve_tags(pid, p_appinfo["store_tags"])
 
-            if p_cache_key in self.cache_manager.cache.get("enriched", {}):
+            if not force and p_cache_key in self.cache_manager.cache.get("enriched", {}):
                 p_enriched = self.cache_manager.cache["enriched"][p_cache_key]
                 metadata["parent_name"] = p_enriched.get("name")
                 if not metadata.get("parent_tags"):
@@ -213,7 +214,7 @@ class SteamScanner:
                 metadata["parent_genres"] = p_enriched.get("genres", [])
                 metadata["parent_genre"] = metadata["parent_genres"][0] if metadata["parent_genres"] else None
             else:
-                p_web = self.web_client.fetch_web_enrichment(pid)
+                p_web = self.web_client.fetch_web_enrichment(pid, force=force)
                 if p_web:
                     metadata["parent_name"] = p_web.get("name")
                     if not metadata.get("parent_tags"):
