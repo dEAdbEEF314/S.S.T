@@ -55,6 +55,7 @@
 - LLM_CLOUD_MAX_TOKENS
 - LLM_OLLAMA_NUM_CTX
 - LLM_OLLAMA_NUM_PREDICT
+- LLM_OLLAMA_PARALLEL_SLOTS
 - LLM_VRAM_SCHEDULING_ENABLED
 - LLM_REQUEST_PARALLELISM_ENABLED
 - LLM_REQUEST_PARALLELISM_MAX_WORKERS
@@ -65,6 +66,14 @@
 - LLM_FORCE_COHERENCE_LARGE
 
 これらは実行性能やタイムアウト耐性に影響しますが、メタデータの正誤判定規則を変えてはいけません。
+
+Ollama 並列制御の契約:
+
+- `LLM_OLLAMA_PARALLEL_SLOTS` は Ollama/llama.cpp の実効 sequence slot 数（例: `-np 4`）を指定する。既定値は4。
+- Ollama のアルバム単位 worker 数は、対象アルバム数、VRAM 算出値、`LLM_OLLAMA_PARALLEL_SLOTS` の最小値になる。
+- `MAX_PARALLEL_ALBUMS` やVRAM容量だけを増やしても、サーバーslot数を超えて同時にリクエストしない。
+- `LLM_OLLAMA_NUM_PREDICT` は設定上の出力予算であり、Ollamaへはリクエスト種別・単位数に応じた有限の `num_predict` が送られる。無制限値は使用しない。
+- `LLM_REQUEST_DONE` の構造化ログには `prompt_eval_count`、`eval_count`、`total_tokens`、`output_budget`、`duration_seconds` を記録する。`wait_seconds` は現時点では実測待ち時間ではなく予約フィールドである。
 
 Tier 制御の原則:
 

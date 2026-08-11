@@ -1,5 +1,7 @@
 注記: この履歴は時系列の記録です。過去の項目には旧仕様の概念や廃止済み文書名が含まれますが、現行仕様の正本は [docs/METADATA_SOURCE_SPEC.md](docs/METADATA_SOURCE_SPEC.md) です。
 
+2026/08/11: Ollama運用・監査契約を現行実装へ同期。`LLM_OLLAMA_PARALLEL_SLOTS` による実効slot数とアルバムworker数の上限制約、有限 `num_predict` 出力予算、`LLM_REQUEST_DONE` のtoken観測項目、Steam slot identityとLLM重複割当防止の回帰fixtureを仕様・設定例・監査文書へ反映。全体pytest 105件通過、変更対象Ruff通過。
+
 2026/08/06: src/sst/{alignment_inputs.py,alignment_flow.py,processor.py,llm/organizer.py,llm/prompts.py,track_grouper.py,report_generator.py,processor_pipeline.py}: 旧Virtual Albumモジュール/APIを整列入力・STEAMスロット整列へ改称して退役。物理音声ファイルごとの安定`file_id`をLOCAL signalとLLMスロットマッピングへ導入し、チャンク番号依存を除去。全テスト69件通過。
 
 2026/07/10 13:35:00 token_stingy_plan.md: Tier / アルバム曲数に応じて `num_ctx` と Phase 2 並列度を切り替える実装計画、および `.env.example` への tier 別設定追加計画をルート文書として作成。
