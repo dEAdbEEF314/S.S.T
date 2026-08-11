@@ -72,13 +72,36 @@ class ResultValidator:
         if unassigned_files:
             issues.append(f"Unassigned Files ({len(unassigned_files)})")
         
-        # Track #0 / Unknown Title
+        # Track #0 / Unknown Title. Steam is authoritative: an official
+        # Unknown (Unused) slot is legitimate and must not be treated as an
+        # anomaly merely because the rendered title contains "Unknown".
         z_count = sum(1 for t in tracks if str(t["tags"].get("track_number")) == "0")
-        u_count = sum(1 for t in tracks if (t["tags"].get("title") or "Unknown") == "Unknown")
+        steam_titles_by_key = {
+            (
+                str(item.get("disc", 1)).split("/")[0],
+                str(item.get("number", "0")).split("/")[0],
+            ): str(item.get("title") or item.get("name") or "")
+            for item in (steam_meta.store_tracklist or [])
+        }
+        legitimate_unknown_count = 0
+        anomalous_unknown_count = 0
+        for track in tracks:
+            tags = track.get("tags", {})
+            key = (
+                str(tags.get("disc_number", "1")).split("/")[0],
+                str(tags.get("track_number", "0")).split("/")[0],
+            )
+            title = str(tags.get("title") or "Unknown").strip()
+            if title.casefold().startswith("unknown"):
+                steam_title = steam_titles_by_key.get(key, "").strip()
+                if steam_title.casefold().startswith("unknown"):
+                    legitimate_unknown_count += 1
+                else:
+                    anomalous_unknown_count += 1
         if z_count > 0:
             issues.append(f"Track#0 x{z_count}")
-        if u_count > 0:
-            issues.append(f"Unknown Title x{u_count}")
+        if anomalous_unknown_count > 0:
+            issues.append(f"Unknown Title x{anomalous_unknown_count}")
 
         # Dirty Tags (Pre-existing track numbers in titles)
         dirty_pattern = re.compile(r'^(\d+)([\s.-]+)')
@@ -146,6 +169,12 @@ class ResultValidator:
                 issues.append(f"Data quality too low ({data_quality}%)")
 
         # --- 4. Final Status Determination ---
+        diagnostics = llm_log.setdefault("diagnostics", {})
+        diagnostics["steam_unknown_count"] = legitimate_unknown_count
+        diagnostics["anomalous_unknown_count"] = anomalous_unknown_count
+        diagnostics["review_causes"] = list(issues)
+        diagnostics["primary_review_cause"] = issues[0] if issues else None
+        diagnostics["secondary_review_causes"] = issues[1:]
         if issues:
             status = "review"
             message = f"[{', '.join(issues)}]"

@@ -37,9 +37,15 @@ class AlbumExecutionProfile:
 logger = logging.getLogger("sst.processor")
 
 class LocalProcessor:
-    def __init__(self, config: Any, db: DatabaseManager):
+    def __init__(self, config: Any, db: DatabaseManager, preserve_working_files: bool = False):
         self.config = config
         self.db = db
+        # --dev is an execution-mode concern, while DEBUG is a logging concern.
+        # Keep both explicit so cleanup never depends on logging configuration
+        # being mutated after Config has been loaded.
+        self.preserve_working_files = bool(
+            preserve_working_files or str(getattr(config, "log_level", "INFO")).upper() == "DEBUG"
+        )
         self.notifier = NotificationManager(config)
         
         self.mbz = MusicBrainzIdentifier(
@@ -59,7 +65,13 @@ class LocalProcessor:
         self.llm.set_vram_manager(vram_manager)
 
     def cleanup_force_working_dirs(self, app_ids: List[int]) -> int:
-        """Remove only prior intermediate attempts for the requested AppIDs."""
+        """Remove prior attempts unless diagnostic preservation is enabled."""
+        if getattr(self, "preserve_working_files", False):
+            logger.info(
+                "Force cleanup skipped because preserve_working_files=true for AppIDs=%s",
+                sorted(set(app_ids)),
+            )
+            return 0
         removed_count = 0
         if not self.working_dir.is_dir():
             return removed_count
@@ -272,7 +284,7 @@ class LocalProcessor:
         install_dir: Path,
         steam_meta: SteamMetadata,
         on_track_complete: Optional[Callable[[], None]] = None,
-        llm_progress_callback: Optional[Callable[[], None]] = None,
+        llm_progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> LocalProcessResult:
         logger.info(f"[{app_id}] --- 処理中: {steam_meta.name} ---")
         diagnostics = {
@@ -374,7 +386,8 @@ class LocalProcessor:
                 return handle_early_review_return(
                     app_id, steam_meta, track_count, llm_log, v_steam, v_local, v_fingerprint, v_mbz_search,
                     diagnostics, _diag, self._get_localized_now, self._send_notifications,
-                    self.working_dir, self.config.sst_output_dir, self.db, self.config
+                    self.working_dir, self.config.sst_output_dir, self.db, self.config,
+                    preserve_working_files=self.preserve_working_files,
                 )
 
             run_id = datetime.now().strftime('%H%M%S')
@@ -489,6 +502,17 @@ class LocalProcessor:
                 "data_quality": quality,
                 "integrity_quality": quality,
                 "archive_vs_review_ratio": p1_res.get("archive_vs_review_ratio"),
+                "audit": {
+                    "steam_expected_slots": len(steam_meta.store_tracklist or []),
+                    "final_adopted_slots": len(processed_tracks_meta),
+                    "final_duplicate_slots": max(0, len(track_results) - len(processed_tracks_meta)),
+                    "steam_legitimate_unknown": (llm_log.get("diagnostics") or {}).get("steam_unknown_count", 0),
+                    "anomalous_unknown": (llm_log.get("diagnostics") or {}).get("anomalous_unknown_count", 0),
+                    "input_file_count": len(all_files),
+                    "adopted_file_count": len(adopted_files),
+                    "unassigned_file_count": len(unassigned_manifest),
+                    "archive_artifact_issues": artifact_issues,
+                },
                 "strategy": p1_res.get("strategy"),
                 "confidence_reason": reason, 
                 "processed_at": self._get_localized_now().isoformat(), 
@@ -534,21 +558,25 @@ class LocalProcessor:
             PackageManager.save_local_package(app_id, status, steam_meta.name, temp_output, log_bundle, self.config.sst_output_dir)
             _diag("PACKAGE_SAVE_DONE", status=status)
             self.db.record_processed(app_id, status, steam_meta.name, self._get_localized_now().isoformat(), summary_meta)
-            return LocalProcessResult(app_id=app_id, status=status, album_name=steam_meta.name, confidence_score=score, confidence_reason=reason, message=message)
+            return LocalProcessResult(app_id=app_id, status=status, album_name=steam_meta.name, confidence_score=score, confidence_reason=reason, message=message, metadata=summary_meta)
         except Exception as e:
             _diag("EXCEPTION_FALLBACK", error=str(e), error_type=type(e).__name__)
             logger.error(f"[{app_id}] 致命的な失敗: {e}", exc_info=True)
             self.notifier.notify_critical(f"処理失敗: {app_id}", str(e))
-            return LocalProcessResult(app_id=app_id, status="error", album_name=steam_meta.name, message=str(e))
+            return LocalProcessResult(app_id=app_id, status="error", album_name=steam_meta.name, message=str(e), metadata={"diagnostics": diagnostics})
         finally:
-            is_debug = self.config.log_level.upper() == "DEBUG"
-            if is_debug:
-                logger.info(f"[{app_id}] DEBUG モード: 一時ディレクトリを保持しています: {getattr(locals().get('temp_output'), 'name', 'N/A')}, {getattr(locals().get('buffer_dir'), 'name', 'N/A')}")
-            
-            if isinstance(temp_output, Path) and temp_output.exists() and not is_debug:
-                shutil.rmtree(temp_output, ignore_errors=True)
-            if isinstance(buffer_dir, Path) and buffer_dir.exists() and not is_debug:
-                shutil.rmtree(buffer_dir, ignore_errors=True)
+            paths = [path for path in (temp_output, buffer_dir) if isinstance(path, Path)]
+            if self.preserve_working_files:
+                logger.info(
+                    "[%s] 中間ファイルを保持します (preserve_working_files=true): %s",
+                    app_id,
+                    ", ".join(str(path) for path in paths) or "なし",
+                )
+            else:
+                for path in paths:
+                    if path.exists():
+                        shutil.rmtree(path, ignore_errors=True)
+                        logger.info("[%s] 中間ディレクトリを削除しました: %s", app_id, path)
 
     def _fetch_album_artwork(
         self,

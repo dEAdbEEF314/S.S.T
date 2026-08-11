@@ -140,3 +140,41 @@ def test_normalize_track_mapping_result_accepts_explicit_slots_output():
     assert normalized["track_instructions"]["0"]["action"] == "use_steam"
     assert normalized["track_instructions"]["0"]["matched_v_idx"] == 6
     assert normalized["track_instructions"]["2"]["override_track"] == "7"
+
+
+def test_slot_identity_prefers_explicit_track_number_over_list_position():
+    organizer = make_organizer()
+
+    normalized = organizer._normalize_track_mapping_result(
+        {
+            "slots": {
+                "7": {"files": ["file-seven"], "reason": "disc two slot"},
+                "5": {"files": ["file-five"], "reason": "disc one slot"},
+            }
+        },
+        [
+            {"v_idx": 10, "n": 5},
+            {"v_idx": 11, "n": 7},
+        ],
+    )
+
+    assert normalized["track_instructions"]["file-seven"]["matched_v_idx"] == 11
+    assert normalized["track_instructions"]["file-five"]["matched_v_idx"] == 10
+
+
+def test_slot_assignment_rejects_duplicate_file_ids_in_explicit_slots():
+    organizer = make_organizer()
+
+    slot_view = organizer._build_slot_view(
+        {
+            "slots": {
+                "1": {"files": ["file-a"], "reason": "first"},
+                "2": {"files": ["file-a", "file-b"], "reason": "duplicate"},
+            }
+        },
+        [{"file_ids": ["file-a", "file-b"]}],
+    )
+
+    assert slot_view["slots"]["1"]["files"] == ["file-a"]
+    assert slot_view["slots"]["2"]["files"] == ["file-b"]
+    assert slot_view["unassigned_files"] == []

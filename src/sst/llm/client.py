@@ -3,7 +3,7 @@ import json
 import logging
 import requests
 import time
-from typing import List, Dict, Any, Optional, Tuple, Callable
+from typing import cast, Dict, Any, Optional, Tuple, Callable
 from datetime import UTC, datetime
 
 from ..rate_limit import DistributedRateLimiter
@@ -123,6 +123,7 @@ class LLMClient:
             "response": None,
             "error": None,
             "request_kind": request_kind,
+            "attempts": [],
         }
 
         logger.debug(f"[{app_id}] --- [LLM PROMPT START] ---\n{prompt}\n--- [LLM PROMPT END] ---")
@@ -144,10 +145,14 @@ class LLMClient:
             request_units=request_units,
         )
 
+        output_budget = max(1, self._estimate_expected_output_tokens(request_kind, request_units))
         try:
             if self.llm_backend == "OLLAMA":
                 url = f"{self.base_url}/api/chat"
-                options = {"temperature": 0.0, "num_predict": -1}
+                # Keep the backend output budget aligned with the adaptive
+                # chunk planner. Unlimited generation caused repeated backend
+                # truncation at the server's context boundary.
+                options = {"temperature": 0.0, "num_predict": output_budget}
                 if effective_num_ctx:
                     options["num_ctx"] = effective_num_ctx
                 payload = {
@@ -196,7 +201,27 @@ class LLMClient:
                         if done_reason in {"length", "max_tokens"}:
                             log_entry["error"] = f"response truncated by backend (done_reason={done_reason})"
                             log_entry["error_code"] = "response_truncated"
+                            log_entry["truncated"] = True
+                            log_entry["truncation_attempt"] = attempt + 1
+                            log_entry["attempts"].append({
+                                "attempt": attempt + 1,
+                                "done_reason": done_reason,
+                                "duration_seconds": round(time.monotonic() - request_started, 3),
+                            })
                             logger.warning(f"[{app_id}] LLM output truncated by backend: done_reason={done_reason}")
+                            if attempt < max_retries:
+                                self._notify_progress(
+                                    progress_callback,
+                                    phase="llm_request_retry",
+                                    app_id=app_id,
+                                    request_kind=request_kind,
+                                    request_units=request_units,
+                                    attempt=attempt + 1,
+                                    reason="response_truncated",
+                                )
+                                time.sleep(retry_delay)
+                                retry_delay *= 1.5
+                                continue
                             return None, log_entry
 
                         if self.llm_backend != "OLLAMA":
@@ -223,13 +248,27 @@ class LLMClient:
                                 json_str = clean_content[start_idx:end_idx + 1]
                                 json_str = re.sub(r',\s*([\]}])', r'\1', json_str)
                                 parsed = json.loads(json_str)
+                                if not isinstance(parsed, dict):
+                                    raise ValueError("LLM response JSON must be an object")
                                 if request_kind == "identity" and isinstance(parsed, dict):
                                     def lower_keys(d):
-                                        if isinstance(d, dict): return {k.lower(): lower_keys(v) for k, v in d.items()}
-                                        if isinstance(d, list): return [lower_keys(v) for v in d]
+                                        if isinstance(d, dict):
+                                            return {k.lower(): lower_keys(v) for k, v in d.items()}
+                                        if isinstance(d, list):
+                                            return [lower_keys(v) for v in d]
                                         return d
+
                                     parsed = lower_keys(parsed)
                                 total_duration = round(time.monotonic() - request_started, 3)
+                                prompt_eval_count = log_entry.get("meta", {}).get("prompt_eval_count")
+                                eval_count = log_entry.get("meta", {}).get("eval_count")
+                                log_entry["attempts"].append({
+                                    "attempt": attempt + 1,
+                                    "done_reason": done_reason,
+                                    "duration_seconds": total_duration,
+                                    "prompt_eval_count": log_entry.get("meta", {}).get("prompt_eval_count"),
+                                    "eval_count": log_entry.get("meta", {}).get("eval_count"),
+                                })
                                 logger.info(
                                     "LLM_REQUEST_DONE %s",
                                     json.dumps({
@@ -239,8 +278,10 @@ class LLMClient:
                                         "attempt": attempt + 1,
                                         "duration_seconds": total_duration,
                                         "num_ctx": effective_num_ctx,
-                                        "prompt_eval_count": log_entry.get("meta", {}).get("prompt_eval_count"),
-                                        "total_tokens": 0,
+                                        "prompt_eval_count": prompt_eval_count,
+                                        "eval_count": eval_count,
+                                        "total_tokens": (prompt_eval_count or 0) + (eval_count or 0),
+                                        "output_budget": output_budget,
                                         "wait_seconds": 0,
                                     }, ensure_ascii=False),
                                 )
@@ -252,7 +293,7 @@ class LLMClient:
                                     request_units=request_units,
                                     duration_seconds=total_duration,
                                 )
-                                return parsed, log_entry
+                                return cast(Dict[str, Any], parsed), log_entry
                             raise ValueError("No valid JSON object found in response")
                         except Exception as e:
                             logger.warning(f"[{app_id}] JSON strict parsing failed: {e}")

@@ -2,7 +2,6 @@ import logging
 import multiprocessing
 from typing import List, Any
 from pathlib import Path
-from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
@@ -31,7 +30,6 @@ class JobRunner:
     def run(self, soundtracks: List[dict]) -> List[LocalProcessResult]:
         """Orchestrates the parallel processing of soundtracks with adaptive routing."""
         results: List[LocalProcessResult] = []
-        start_time = datetime.now()
 
         # Determine track counts for VRAM estimation and sorting
         logger.info("動的スケジューリングのためにトラック数をスキャンしています...")
@@ -48,13 +46,19 @@ class JobRunner:
         soundtracks.sort(key=lambda x: x["_track_count"])
 
         if self.config.llm_backend == "OLLAMA" and self.vram_manager:
-            logger.info("Ollamaバックエンドを検出しました。VRAMに基づく安全な固定並列スロット数を計算します。")
-            max_workers = self.vram_manager.calculate_max_workers(
+            logger.info("Ollamaバックエンドを検出しました。VRAMとサーバー実効スロット数に基づく並列数を計算します。")
+            vram_workers = self.vram_manager.calculate_max_workers(
                 fixed_num_ctx=self.config.llm_ollama_num_ctx,
-                default_workers=self.config.max_parallel_albums
+                default_workers=self.config.max_parallel_albums,
             )
-            max_workers = min(len(soundtracks), max_workers)
-            logger.info(f"Ollama環境: 計算された最大並列アルバム数 ({max_workers} ワーカー) を使用します。")
+            server_slots = max(1, int(getattr(self.config, "llm_ollama_parallel_slots", 4)))
+            max_workers = min(len(soundtracks), vram_workers, server_slots)
+            logger.info(
+                "Ollama環境: 並列アルバム数=%s (VRAM計算=%s, サーバー実効slot=%s)。",
+                max_workers,
+                vram_workers,
+                server_slots,
+            )
         else:
             cpu_count = multiprocessing.cpu_count()
             cloud_workers = min(int(self.config.llm_limit_rpm * 0.5), cpu_count, 5)
@@ -116,8 +120,9 @@ class JobRunner:
                     message=str(e), confidence_score=0
                 )
             finally:
-                if self.vram_manager and not getattr(self.config, "llm_vram_scheduling_enabled", True):
-                    self.vram_manager.release(vram_cost)
+                # VRAM scheduling is currently disabled; do not call the removed
+                # per-album reservation API or reference an undefined vram_cost.
+                pass
 
             results.append(result)
             progress.remove_task(album_task)

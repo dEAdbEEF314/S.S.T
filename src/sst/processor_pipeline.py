@@ -2,7 +2,7 @@ import logging
 import shutil
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Any, List, Optional
+from typing import Callable, Dict, Any, Optional
 
 from .models import SteamMetadata, LocalProcessResult
 from .report_generator import ReportGenerator
@@ -20,13 +20,14 @@ def handle_early_review_return(
     v_fingerprint: Optional[Dict[str, Any]],
     v_mbz_search: Optional[Dict[str, Any]],
     diagnostics: Dict[str, Any],
-    _diag: callable,
-    get_localized_now: callable,
-    send_notifications: callable,
+    _diag: Callable[..., Any],
+    get_localized_now: Callable[[], Any],
+    send_notifications: Callable[..., Any],
     working_dir: Path,
     output_dir: str,
     db: Any,
     config: Any,
+    preserve_working_files: bool = False,
 ) -> LocalProcessResult:
     p1_log = llm_log.get("phase1_log", {})
     p1_res = llm_log.get("phase1_res", {})
@@ -82,8 +83,10 @@ def handle_early_review_return(
     }
     if discord_msg:
         log_bundle["DISCORD_MESSAGE.md"] = discord_msg
-    if p1_log.get("human_prompt"): log_bundle["LLM_PROMPT.md"] = p1_log["human_prompt"]
-    elif p1_log.get("prompt"): log_bundle["LLM_PROMPT.md"] = p1_log["prompt"]
+    if p1_log.get("human_prompt"):
+        log_bundle["LLM_PROMPT.md"] = p1_log["human_prompt"]
+    elif p1_log.get("prompt"):
+        log_bundle["LLM_PROMPT.md"] = p1_log["prompt"]
     
     run_id = datetime.now().strftime('%H%M%S')
     temp_output = working_dir / f"early_review_{app_id}_{run_id}"
@@ -94,7 +97,16 @@ def handle_early_review_return(
     PackageManager.save_local_package(app_id, "review", steam_meta.name, temp_output, log_bundle, output_dir)
     _diag("PACKAGE_SAVE_DONE", status="review")
     
-    shutil.rmtree(temp_output, ignore_errors=True)
+    if preserve_working_files:
+        logger.info(
+            "[%s] 早期Reviewの中間ファイルを保持します "
+            "(preserve_working_files=true): %s",
+            app_id,
+            temp_output,
+        )
+    else:
+        shutil.rmtree(temp_output, ignore_errors=True)
+        logger.info("[%s] 早期Reviewの中間ディレクトリを削除しました: %s", app_id, temp_output)
     
     db.record_processed(app_id, "review", steam_meta.name, get_localized_now().isoformat(), summary_meta)
-    return LocalProcessResult(app_id=app_id, status="review", album_name=steam_meta.name, confidence_score=score, confidence_reason=error_msg, message=final_msg)
+    return LocalProcessResult(app_id=app_id, status="review", album_name=steam_meta.name, confidence_score=score, confidence_reason=error_msg, message=final_msg, metadata=summary_meta)
