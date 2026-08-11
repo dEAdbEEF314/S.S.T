@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Any, Optional
 import os
@@ -33,6 +32,10 @@ class Config(BaseSettings):
     llm_num_ctx: int = 32768
     llm_ollama_num_ctx: int = 32768
     llm_ollama_num_predict: int = 4096
+    # Ollama's llama-server defaults to four concurrent sequence slots in the
+    # production service. Keep the client-side album pool no larger than that
+    # unless the service is explicitly configured with a different -np value.
+    llm_ollama_parallel_slots: int = 4
     llm_vram_scheduling_enabled: bool = True
     llm_request_parallelism_enabled: bool = True
     llm_request_parallelism_max_workers: int = 4

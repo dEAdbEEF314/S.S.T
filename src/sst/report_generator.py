@@ -108,24 +108,29 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
                 card_style = ' style="border: 2px solid var(--accent-green); background: #1a2332; padding: 10px; border-radius: 6px; margin-bottom: 5px;"' if is_chosen else ''
                 mbid = esc(c.get('mbid'))
                 mbz_html += f"""<div class="mbz-card"{card_style}><strong>{esc(c.get('album'))}</strong> <span class="badge">Score: {esc(c.get('score'))}</span>{chosen_badge}<br><code style="font-size: 0.85rem; color: var(--accent-yellow);">{mbid}</code><br><a href="https://musicbrainz.org/release/{mbid}" target="_blank" rel="noopener noreferrer">View on MusicBrainz ↗</a></div>"""
-            if mbz_choice_reason: mbz_html += f'<div class="reason-box" style="margin-top:10px;"><strong>LLM MBZ Choice Reason:</strong><br>{esc(mbz_choice_reason)}</div>'
-        else: mbz_html = "<p>No matching MusicBrainz candidates found.</p>"
+            if mbz_choice_reason:
+                mbz_html += f'<div class="reason-box" style="margin-top:10px;"><strong>LLM MBZ Choice Reason:</strong><br>{esc(mbz_choice_reason)}</div>'
+        else:
+            mbz_html = "<p>No matching MusicBrainz candidates found.</p>"
 
         matrix_rows = ""
         priority_list = [p.strip().upper() for p in priority_str.split(',')]
         for source in priority_list:
-            if source == "STEAM_PICS": matrix_rows += f"<tr><td>{esc(source)}</td><td>{esc(steam_meta.name)}</td><td>{esc(steam_meta.developer or 'N/A')}</td><td>N/A</td><td>N/A</td></tr>"
+            if source == "STEAM_PICS":
+                matrix_rows += f"<tr><td>{esc(source)}</td><td>{esc(steam_meta.name)}</td><td>{esc(steam_meta.developer or 'N/A')}</td><td>N/A</td><td>N/A</td></tr>"
             elif source == "STEAM_STORE":
                 store_track_count = len(steam_meta.store_tracklist) if steam_meta.store_tracklist else 0
                 matrix_rows += f"<tr><td>{esc(source)}</td><td>{esc(steam_meta.name)}</td><td>{esc(steam_meta.developer or 'N/A')}</td><td>{store_track_count}</td><td>{esc(steam_meta.release_date or 'N/A')}</td></tr>"
             elif source == "MBZ":
-                if not mbz_candidates: matrix_rows += f"<tr><td>{source}</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td></tr>"
+                if not mbz_candidates:
+                    matrix_rows += f"<tr><td>{esc(source)}</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td></tr>"
                 else:
                     for i, c in enumerate(mbz_candidates[:5]):
                         is_chosen = (i == chosen_idx) or (c.get('mbid') == chosen_id)
                         row_style = ' style="background-color: #1a2332; font-weight: bold; border-left: 4px solid var(--accent-green);"' if is_chosen else ''
                         matrix_rows += f"<tr{row_style}><td>{esc(source)} (Candidate {i} - Score: {esc(c.get('score'))})</td><td>{esc(c.get('album'))}</td><td>{esc(c.get('artist'))}</td><td>{esc(c.get('track_count'))}</td><td>{esc(c.get('year'))}</td></tr>"
-            elif source in ["STEAM_TAGS", "EMBEDDED"]: matrix_rows += f"<tr><td>{source}</td><td>(Per-track data)</td><td>N/A</td><td>N/A</td><td>N/A</td></tr>"
+            elif source in ["STEAM_TAGS", "EMBEDDED"]:
+                matrix_rows += f"<tr><td>{esc(source)}</td><td>(Per-track data)</td><td>N/A</td><td>N/A</td><td>N/A</td></tr>"
             
         # --- Detailed Tag Table ---
         def safe_sort_key(t):
@@ -134,7 +139,8 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
                 d = int(tags.get("disc_number") or 1)
                 n = int(tags.get("track_number") or 0)
                 return (d, n)
-            except: return (99, 99)
+            except (TypeError, ValueError):
+                return (99, 99)
 
         sorted_tracks = sorted(processed_tracks, key=safe_sort_key)
         tag_rows = ""
@@ -299,19 +305,23 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
         is_fast = llm_log.get("fast_track", False)
         
         def md_escape(text):
-            if text is None: return "-"
+            if text is None:
+                return "-"
             return str(text).replace("|", "\\|").replace("\n", "<br>")
 
         def md_blockquote(text):
-            if not text: return "> -"
+            if not text:
+                return "> -"
             lines = str(text).strip().split("\n")
             return "\n".join([f"> {line}" for line in lines])
 
         status_emoji = "🛡️ ARCHIVE" if status == "archive" else "🔍 REVIEW REQUIRED"
         candidate_md = ""
         if mbz_candidates:
-            for c in mbz_candidates[:5]: candidate_md += f"- **{md_escape(c.get('album'))}** (Score: {c.get('score')})\n  - {c.get('mbid_url')}\n"
-        else: candidate_md = "- No matching MusicBrainz candidates found."
+            for c in mbz_candidates[:5]:
+                candidate_md += f"- **{md_escape(c.get('album'))}** (Score: {c.get('score')})\n  - {c.get('mbid_url')}\n"
+        else:
+            candidate_md = "- No matching MusicBrainz candidates found."
 
         action_required = ""
         if status == "review":
@@ -378,6 +388,8 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
                         <th style="width: 80px;">Status</th>
                         <th style="width: 50px;">Score</th>
                         <th style="width: 350px;">System Reason</th>
+                        <th>Primary / Secondary Cause</th>
+                        <th>Audit Counters</th>
                         <th>LLM Confidence Reason</th>
                     </tr>
                 </thead>
@@ -387,15 +399,25 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
         for r in results:
             status_class = f"status-{r.status}"
             score = r.confidence_score if r.confidence_score is not None else "-"
+            metadata = getattr(r, "metadata", {}) or {}
+            diagnostics = metadata.get("diagnostics", {}) if isinstance(metadata, dict) else {}
+            audit = metadata.get("audit", {}) if isinstance(metadata, dict) else {}
+            primary_cause = diagnostics.get("primary_review_cause") or "-"
+            secondary_causes = ", ".join(diagnostics.get("secondary_review_causes", [])) or "-"
             
             # Badge generation from message keywords
             badges = []
             m_lower = r.message.lower()
-            if "acoustid" in m_lower: badges.append('<span class="badge badge-acoustid">AcoustID</span>')
-            if "fallback" in m_lower: badges.append('<span class="badge badge-fallback">Fallback</span>')
-            if "mbz" in m_lower: badges.append('<span class="badge badge-mbz">MBZ Match</span>')
-            if "trust" in m_lower: badges.append('<span class="badge badge-trust">Trust Tier</span>')
-            if "duplicate titles" in m_lower: badges.append('<span class="badge badge-duplicate">Duplicate Titles</span>')
+            if "acoustid" in m_lower:
+                badges.append('<span class="badge badge-acoustid">AcoustID</span>')
+            if "fallback" in m_lower:
+                badges.append('<span class="badge badge-fallback">Fallback</span>')
+            if "mbz" in m_lower:
+                badges.append('<span class="badge badge-mbz">MBZ Match</span>')
+            if "trust" in m_lower:
+                badges.append('<span class="badge badge-trust">Trust Tier</span>')
+            if "duplicate titles" in m_lower:
+                badges.append('<span class="badge badge-duplicate">Duplicate Titles</span>')
             
             badge_str = "".join(badges)
             
@@ -406,6 +428,8 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
                         <td class="{status_class}">{r.status.upper()}</td>
                         <td>{score}</td>
                         <td class="reason-box">{badge_str}<br>{r.message}</td>
+                        <td class="reason-box"><strong>{primary_cause}</strong><br>{secondary_causes}</td>
+                        <td class="reason-box">Steam: {audit.get("steam_expected_slots", "-")} → {audit.get("final_adopted_slots", "-")}<br>Unknown: {audit.get("steam_legitimate_unknown", "-")} legitimate / {audit.get("anomalous_unknown", "-")} anomalous<br>Input: {audit.get("input_file_count", "-")} / Adopted: {audit.get("adopted_file_count", "-")} / Unassigned: {audit.get("unassigned_file_count", "-")}</td>
                         <td class="reason-box">{r.confidence_reason}</td>
                     </tr>
             """

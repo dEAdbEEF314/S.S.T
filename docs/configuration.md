@@ -33,6 +33,10 @@
 - SST_DB_PATH
 - MAX_ENCODING_TASKS
 
+`SST_WORKING_DIR` の中間成果物は、通常の INFO 実行では処理終了時に削除されます。人間による後追い確認が必要な場合は `--dev` を付けるか `LOG_LEVEL=DEBUG` を指定してください。この場合、`final_<AppID>_*`、`buffer_<AppID>_*`、`early_review_<AppID>_*` が保持されます。`--force` でも保持モード中は既存成果物を事前削除しません。
+
+保持された成果物には音声・タグ・LLM入力が含まれる可能性があるため、確認後に専用 cleaner を実行してください。
+
 ## 3. LLM 設定
 
 ### 3.1 必須項目

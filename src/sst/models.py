@@ -54,4 +54,5 @@ class LocalProcessResult(BaseModel):
     confidence_score: int = 0
     confidence_reason: str = "N/A"
     message: str
+    metadata: Dict[str, Any] = Field(default_factory=dict)
     processed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

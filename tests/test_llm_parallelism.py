@@ -1,3 +1,4 @@
+import json
 import time
 from unittest.mock import patch
 
@@ -155,6 +156,7 @@ def test_align_slots_parallel_merges_deterministically(monkeypatch):
 
     instructions, logs = organizer.align_slots(1, album, None, None, album)
 
+    assert instructions is not None
     assert list(instructions.keys()) == ["1_1", "1_2", "1_3", "1_4"]
     assert [entry["segment"] for entry in logs["logs"] if "segment" in entry] == [0, 2]
 
@@ -193,3 +195,9 @@ def test_call_llm_emits_progress_and_structured_logs(monkeypatch):
     assert "llm_request_done" in phases
     logged_messages = [call.args[0] for call in mock_info.call_args_list]
     assert "LLM_REQUEST_DONE %s" in logged_messages
+    done_payload = json.loads(next(
+        call.args[1] for call in mock_info.call_args_list
+        if call.args[0] == "LLM_REQUEST_DONE %s"
+    ))
+    assert done_payload["total_tokens"] == 15
+    assert done_payload["eval_count"] == 5
