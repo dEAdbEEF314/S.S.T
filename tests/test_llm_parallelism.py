@@ -1,5 +1,7 @@
+import importlib.util
 import json
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 from sst.llm import LLMOrganizer
@@ -159,6 +161,70 @@ def test_align_slots_parallel_merges_deterministically(monkeypatch):
     assert instructions is not None
     assert list(instructions.keys()) == ["1_1", "1_2", "1_3", "1_4"]
     assert [entry["segment"] for entry in logs["logs"] if "segment" in entry] == [0, 2]
+
+
+def test_parse_ollama_timestamp_accepts_journalctl_prefix():
+    helper_path = Path(__file__).with_name("analyze_llm_slot_correlation_helper.py")
+    spec = importlib.util.spec_from_file_location("llm_slot_correlation_helper", helper_path)
+    if spec is None or spec.loader is None:
+        raise AssertionError("Unable to load correlation helper")
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+
+    parsed = helper.parse_ollama_timestamp(
+        "2026-08-12T01:10:04+0900 host service: slot(idle): id 1 | task -1"
+    )
+
+    assert parsed is not None
+    assert parsed.isoformat() == "2026-08-12T01:10:04+09:00"
+
+
+def test_align_slots_reports_merge_completeness(monkeypatch):
+    organizer = _build_organizer()
+    monkeypatch.setattr(organizer, "_simplify_v_album", lambda album, sampled=True: album or {})
+
+    def fake_call_llm(app_id, prompt, num_ctx=None, request_kind="generic", request_units=0, progress_callback=None):
+        if request_kind == "identity":
+            return {
+                "identity_confidence": 100,
+                "integrity_quality": 100,
+                "archive_vs_review_ratio": {"archive": 100, "review": 0},
+                "strategy": "STEAM_BASED",
+                "global_tags": {},
+            }, {"ok": True}
+        raise AssertionError("track mapping should be stubbed by helper")
+
+    def fake_process_segment(*args, **kwargs):
+        start_idx = args[1]
+        segment_tracks = args[2]
+        instructions = {}
+        for track in segment_tracks:
+            # Deliberately omit one assignment from the second chunk to model a partial merge.
+            if track["local_key"] == [1, 3]:
+                continue
+            instructions[f"{track['local_key'][0]}_{track['local_key'][1]}"] = {
+                "matched_v_idx": track["local_key"][1] - 1,
+                "reason": "synthetic",
+            }
+        return start_idx, instructions, []
+
+    monkeypatch.setattr(organizer, "_call_llm", fake_call_llm)
+    monkeypatch.setattr(organizer, "_process_track_mapping_segment", fake_process_segment)
+    tracks = [
+        {"local_key": [1, 1], "file_ids": ["file-1"], "title": "One"},
+        {"local_key": [1, 2], "file_ids": ["file-2"], "title": "Two"},
+        {"local_key": [1, 3], "file_ids": ["file-3"], "title": "Three"},
+        {"local_key": [1, 4], "file_ids": ["file-4"], "title": "Four"},
+    ]
+
+    instructions, log = organizer.align_slots(1, {"tracks": tracks}, None, None, {"tracks": tracks})
+
+    assert instructions is not None
+    diagnostics = log["alignment_res"]["diagnostics"]
+    assert diagnostics["input_file_count"] == 4
+    assert diagnostics["final_assigned_file_count"] == 3
+    assert diagnostics["final_unassigned_file_ids"] == ["file-3"]
+    assert diagnostics["chunk_count"] == 2
 
 
 def test_call_llm_emits_progress_and_structured_logs(monkeypatch):
