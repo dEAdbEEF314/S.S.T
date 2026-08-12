@@ -10,7 +10,10 @@ from typing import Iterable, Optional
 
 SST_EVENT_RE = re.compile(r"LLM_REQUEST_(VRAM|DONE|FAIL|RELEASE)\s+(\{.*\})")
 SST_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3})")
-OLLAMA_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2}|Z)?)")
+# Supports native ISO timestamps and journalctl short-iso prefixes.
+OLLAMA_TS_RE = re.compile(
+    r"(?:^|\s)(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[\.,]\d+)?(?:[+-]\d{2}:?\d{2}|Z)?)"
+)
 OLLAMA_SLOT_RE = re.compile(r"slot\s+([a-zA-Z_()]+):\s+id\s+(\d+)\s+\|\s+task\s+(-?\d+)")
 OLLAMA_HTTP_RE = re.compile(r'\|\s+(\d{3})\s+\|.*POST\s+"(/api/chat|/api/tokenize)"')
 
@@ -32,13 +35,18 @@ def parse_sst_timestamp(line: str) -> Optional[datetime]:
 
 
 def parse_ollama_timestamp(line: str) -> Optional[datetime]:
-    match = OLLAMA_TS_RE.match(line)
+    match = OLLAMA_TS_RE.search(line)
     if not match:
         return None
-    raw = match.group(1)
+    raw = match.group(1).replace(",", ".")
+    if " " in raw:
+        raw = raw.replace(" ", "T", 1)
     if raw.endswith("Z"):
         raw = raw[:-1] + "+00:00"
-    return datetime.fromisoformat(raw)
+    elif re.search(r"[+-]\d{4}$", raw):
+        raw = f"{raw[:-5]}{raw[-5:-2]}:{raw[-2:]}"
+    parsed = datetime.fromisoformat(raw)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def parse_sst_events(lines: Iterable[str], app_id: Optional[int] = None) -> list[CorrelationEvent]:
@@ -160,15 +168,28 @@ def summarize_ollama(events: list[CorrelationEvent]) -> dict:
     }
 
 
+def _sst_wait_values(events: list[CorrelationEvent]) -> list[float]:
+    return [
+        float(event.details["wait_seconds"])
+        for event in events
+        if event.label == "LLM_REQUEST_VRAM"
+        and isinstance(event.details.get("wait_seconds"), (int, float))
+        and event.details.get("wait_seconds") != 0
+    ]
+
+
 def render_summary(sst_events: list[CorrelationEvent], ollama_events: list[CorrelationEvent], timeline_limit: int) -> str:
     sst_summary = summarize_sst(sst_events)
     ollama_summary = summarize_ollama(ollama_events)
 
     lines: list[str] = []
+    observed_waits = _sst_wait_values(sst_events)
+    avg_observed_wait = round(sum(observed_waits) / len(observed_waits), 3) if observed_waits else None
     lines.append("== SST Summary ==")
     lines.append(f"events: {len(sst_events)}")
     lines.append(f"peak_inflight_requests: {sst_summary['peak_inflight']}")
-    lines.append(f"avg_wait_seconds: {sst_summary['avg_wait_seconds']}")
+    lines.append(f"avg_wait_seconds_observed: {avg_observed_wait}")
+    lines.append("wait_seconds_note: zero is treated as an unmeasured/reserved value")
     lines.append(f"avg_done_seconds: {sst_summary['avg_done_seconds']}")
     for (label, request_kind), count in sorted(sst_summary["counts"].items()):
         lines.append(f"- {label} / {request_kind}: {count}")

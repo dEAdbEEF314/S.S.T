@@ -1,4 +1,3 @@
-import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Optional, Tuple, Callable
@@ -216,7 +215,8 @@ class LLMOrganizer:
                         data["override_track"] = str(ref_track.get("n"))
 
             tags = global_res.get("global_tags", {})
-            if not isinstance(tags, dict): tags = {}
+            if not isinstance(tags, dict):
+                tags = {}
             data.update({
                 "TPE2": tags.get("canonical_album_artist") or global_res.get("canonical_album_artist"),
                 "TCON": tags.get("canonical_genre") or global_res.get("canonical_genre"),
@@ -370,6 +370,59 @@ class LLMOrganizer:
             "slots": slots,
             "unassigned_files": unassigned_files,
             "unassigned_reason": "No slot assignment returned" if unassigned_files else None,
+        }
+
+    @staticmethod
+    def _build_alignment_diagnostics(
+        final_instructions: Dict[str, Dict[str, Any]],
+        local_tracks: List[Dict[str, Any]],
+        segment_results: Dict[int, Tuple[Dict[str, Dict[str, Any]], List[Dict[str, Any]]]],
+    ) -> Dict[str, Any]:
+        """Summarize merge completeness without changing the validation decision."""
+        expected_file_ids = [
+            str(file_id)
+            for track in local_tracks
+            for file_id in track.get("file_ids", [])
+        ]
+        local_file_ids_by_tid = {}
+        for track in local_tracks:
+            local_key = track.get("local_key")
+            if local_key:
+                local_file_ids_by_tid[f"{local_key[0]}_{local_key[1]}"] = [
+                    str(file_id) for file_id in track.get("file_ids", [])
+                ]
+
+        assigned_file_ids = [
+            file_id
+            for tid in final_instructions
+            for file_id in local_file_ids_by_tid.get(tid, [])
+        ]
+        expected_set = set(expected_file_ids)
+        assigned_set = set(assigned_file_ids)
+        duplicate_assignments = sorted(
+            file_id for file_id in assigned_file_ids
+            if assigned_file_ids.count(file_id) > 1
+        )
+        chunk_diagnostics = []
+        for start_idx in sorted(segment_results):
+            instructions, segment_logs = segment_results[start_idx]
+            chunk_diagnostics.append({
+                "start_idx": start_idx,
+                "instruction_count": len(instructions),
+                "log_count": len(segment_logs),
+            })
+
+        return {
+            "input_file_count": len(expected_file_ids),
+            "final_instruction_count": len(final_instructions),
+            "final_assigned_file_count": len(assigned_set),
+            "final_unassigned_file_ids": sorted(expected_set - assigned_set),
+            "unknown_instruction_tids": sorted(
+                set(final_instructions) - set(local_file_ids_by_tid)
+            ),
+            "duplicate_assignment_file_ids": sorted(set(duplicate_assignments)),
+            "chunk_count": len(segment_results),
+            "chunks": chunk_diagnostics,
         }
 
     @staticmethod
@@ -529,7 +582,8 @@ class LLMOrganizer:
         return "truncat" in err or "max_tokens" in err or "length" in err
 
     def _simplify_v_album(self, v: Optional[Dict], sampled: bool = False) -> Optional[Dict]:
-        if not v: return None
+        if not v:
+            return None
         v_copy = v.copy()
         tracks = v_copy.get("tracks", [])
         
@@ -707,6 +761,11 @@ class LLMOrganizer:
             full_logs.extend(segment_logs)
 
         alignment_res = self._build_slot_view_from_final_instructions(final_instructions, local_tracks)
+        alignment_res["diagnostics"] = self._build_alignment_diagnostics(
+            final_instructions,
+            local_tracks,
+            segment_results,
+        )
         if alignment_res.get("slots"):
             slot_confidences = [slot.get("confidence", 0) for slot in alignment_res["slots"].values() if isinstance(slot, dict)]
             if slot_confidences:
