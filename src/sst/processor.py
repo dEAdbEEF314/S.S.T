@@ -125,41 +125,63 @@ class LocalProcessor:
         slot_durations: Dict[tuple[int, str], List[float]] = {}
         steam_title_map: Dict[str, List[tuple[int, str]]] = {}
         steam_tracks_by_slot: Dict[tuple[int, str], Dict[str, Any]] = {}
+        
         for track in (steam_meta.store_tracklist if steam_meta else []):
             title = TrackManager.normalize_title(str(track.get("title") or track.get("name") or ""))
             slot_key = self._normalize_slot_key(track.get("disc", 1), track.get("number"))
             if slot_key is None:
-                # Ignore malformed Steam entries rather than storing an invalid
-                # key that cannot be used by the fast-track matcher.
                 continue
             if title:
                 steam_title_map.setdefault(title, []).append(slot_key)
             steam_tracks_by_slot[slot_key] = track
-        for (disc_num, clean_title), variants in track_groups.items():
+
+        for (disc_num, record_title), variants in track_groups.items():
             track_numbers = {variant.get("t_num_val") for variant in variants if variant.get("t_num_val") not in (None, "", "0")}
             slot_key: Optional[tuple[int, str]] = None
+            
+            clean_title_part = record_title.split("::")[0] if "::" in record_title else record_title
+            norm_local_title = TrackManager.normalize_title(clean_title_part)
+            norm_meta_title = TrackManager.normalize_title(str((variants[0].get("meta") or {}).get("title") or "")) if variants else ""
+            norm_titles = [t for t in (norm_local_title, norm_meta_title) if t]
+
+            candidate_slot_key = None
             if len(track_numbers) == 1:
                 candidate_slot_key = self._normalize_slot_key(disc_num, next(iter(track_numbers)))
-                if candidate_slot_key is not None:
-                    steam_track = steam_tracks_by_slot.get(candidate_slot_key)
-                    local_title = TrackManager.normalize_title(clean_title)
-                    steam_title = TrackManager.normalize_title(str((steam_track or {}).get("title") or (steam_track or {}).get("name") or ""))
+                if candidate_slot_key is not None and candidate_slot_key not in steam_tracks_by_slot:
+                    # An explicit track number exists but is outside valid Steam slots -> cannot fast-track
+                    return None
+
+            # If track number points to a valid steam slot and title matches or is not conflicting
+            if candidate_slot_key is not None and candidate_slot_key in steam_tracks_by_slot:
+                steam_track = steam_tracks_by_slot[candidate_slot_key]
+                steam_title = TrackManager.normalize_title(str((steam_track or {}).get("title") or (steam_track or {}).get("name") or ""))
+                if not norm_titles or steam_title in norm_titles:
                     slot_key = candidate_slot_key
-                    if steam_track and steam_title != local_title:
-                        slot_key = None
+
+            # If track number was wrong or didn't match title, try unique title match
             if slot_key is None and steam_meta:
-                title_matches = steam_title_map.get(TrackManager.normalize_title(clean_title), [])
-                if len(title_matches) == 1:
-                    slot_key = title_matches[0]
+                for norm_c in norm_titles:
+                    title_matches = steam_title_map.get(norm_c, [])
+                    if len(title_matches) == 1:
+                        slot_key = title_matches[0]
+                        break
+
+            # If still not resolved, fallback to candidate slot key if valid
+            if slot_key is None and candidate_slot_key is not None and candidate_slot_key in steam_tracks_by_slot:
+                slot_key = candidate_slot_key
+
             if slot_key is None:
                 return None
+
             slot_durations.setdefault(slot_key, []).extend(
                 float(variant.get("duration", 0.0) or 0.0) for variant in variants
             )
-            group_map[f"{disc_num}_{clean_title}"] = (slot_key, clean_title)
+            group_map[f"{disc_num}_{record_title}"] = (slot_key, record_title)
 
+        # Physical integrity check: Duration delta among variants mapped to the same slot must be < 1.0s
         if any(max(durations) - min(durations) >= 1.0 for durations in slot_durations.values() if durations):
             return None
+            
         return group_map
 
     def _check_fast_track(self, app_id: int, steam_meta: SteamMetadata, track_groups: Dict, mbz_candidates: List[Dict], fingerprint_bundle: Optional[Dict[str, Any]] = None) -> Tuple[bool, Optional[Dict], Optional[Dict]]:
