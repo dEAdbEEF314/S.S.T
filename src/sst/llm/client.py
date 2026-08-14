@@ -45,10 +45,11 @@ class LLMClient:
 
     def _estimate_expected_output_tokens(self, request_kind: str, request_units: int) -> int:
         if request_kind == "identity":
-            return self.ollama_num_predict
+            return min(self.ollama_num_predict, 4096)
         if request_kind == "track_mapping":
-            return max(1024, request_units * max(512, self.chunk_output_tokens_per_track))
-        return max(1024, request_units * max(512, self.chunk_output_tokens_per_track))
+            per_track = max(80, self.chunk_output_tokens_per_track)
+            return max(512, min(self.ollama_num_predict, 512 + request_units * per_track))
+        return max(512, min(self.ollama_num_predict, 512 + request_units * self.chunk_output_tokens_per_track))
 
     def _notify_progress(self, progress_callback: Optional[ProgressCallback], **event: Any):
         if not progress_callback:
@@ -152,6 +153,10 @@ class LLMClient:
                 # Keep the backend output budget aligned with the adaptive
                 # chunk planner. Unlimited generation caused repeated backend
                 # truncation at the server's context boundary.
+                if effective_num_ctx:
+                    approx_prompt_tokens = max(512, len(prompt) // 3)
+                    max_safe_output = max(256, effective_num_ctx - approx_prompt_tokens - 256)
+                    output_budget = min(output_budget, max_safe_output)
                 options = {"temperature": 0.0, "num_predict": output_budget}
                 if effective_num_ctx:
                     options["num_ctx"] = effective_num_ctx
@@ -209,19 +214,8 @@ class LLMClient:
                                 "duration_seconds": round(time.monotonic() - request_started, 3),
                             })
                             logger.warning(f"[{app_id}] LLM output truncated by backend: done_reason={done_reason}")
-                            if attempt < max_retries:
-                                self._notify_progress(
-                                    progress_callback,
-                                    phase="llm_request_retry",
-                                    app_id=app_id,
-                                    request_kind=request_kind,
-                                    request_units=request_units,
-                                    attempt=attempt + 1,
-                                    reason="response_truncated",
-                                )
-                                time.sleep(retry_delay)
-                                retry_delay *= 1.5
-                                continue
+                            # At temperature 0, identical retries will deterministically truncate again.
+                            # Skip wasteful retries and return immediately so organizer can shrink chunk size.
                             return None, log_entry
 
                         if self.llm_backend != "OLLAMA":

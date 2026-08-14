@@ -243,3 +243,52 @@ def test_build_fast_track_alignment_res_uses_local_track_order():
     assert alignment_res["slots"]["1"]["files"] == ["file-a"]
     assert alignment_res["slots"]["2"]["files"] == ["file-b"]
     assert alignment_res["unassigned_files"] == []
+
+
+def test_fast_track_succeeds_with_hash_delimited_record_keys():
+    processor = make_processor()
+    steam_meta = make_steam_meta()
+    
+    # Track groups with hashed record keys as produced by TrackManager.build_file_records
+    track_groups = {
+        (1, "main theme::a1b2c3d4"): [
+            {"file_id": "a1b2c3d4", "t_num_val": "1", "duration": 180.0, "format": "flac", "norm_stem": "main theme"}
+        ],
+        (1, "battle theme::e5f6g7h8"): [
+            {"file_id": "e5f6g7h8", "t_num_val": "2", "duration": 200.0, "format": "mp3", "norm_stem": "battle theme"}
+        ],
+    }
+
+    ok, final_map, global_id = processor._check_fast_track(1, steam_meta, track_groups, [])
+
+    assert ok is True
+    assert final_map is not None
+    assert "1_main theme::a1b2c3d4" in final_map
+    assert "1_battle theme::e5f6g7h8" in final_map
+    assert final_map["1_main theme::a1b2c3d4"]["matched_v_idx"] == 0
+    assert final_map["1_battle theme::e5f6g7h8"]["matched_v_idx"] == 1
+
+
+def test_fast_track_bundles_flac_and_mp3_variants_to_same_slot():
+    processor = make_processor()
+    steam_meta = make_steam_meta()
+
+    track_groups = {
+        (1, "main theme::flac_id"): [
+            {"file_id": "flac_id", "t_num_val": "1", "duration": 180.2, "format": "flac", "norm_stem": "main theme"}
+        ],
+        (1, "main theme::mp3_id"): [
+            {"file_id": "mp3_id", "t_num_val": "1", "duration": 180.5, "format": "mp3", "norm_stem": "main theme"}
+        ],
+        (1, "battle theme::flac_id2"): [
+            {"file_id": "flac_id2", "t_num_val": "2", "duration": 200.0, "format": "flac", "norm_stem": "battle theme"}
+        ],
+    }
+
+    ok, final_map, global_id = processor._check_fast_track(1, steam_meta, track_groups, [])
+
+    assert ok is True
+    assert final_map is not None
+    assert final_map["1_main theme::flac_id"]["matched_v_idx"] == 0
+    assert final_map["1_main theme::mp3_id"]["matched_v_idx"] == 0
+    assert final_map["1_battle theme::flac_id2"]["matched_v_idx"] == 1

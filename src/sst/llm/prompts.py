@@ -29,7 +29,7 @@ def build_mapping_prompt(
       ### LOCAL FILE SIGNALS TO PROCESS:
         {json.dumps(s_chunk, ensure_ascii=False)}
 
-        ### RULES:
+      ### RULES:
       1. STEAM defines the canonical slot structure. Prefer ACOUSTID / MBZ_RELEASE as evidence, but assign files to STEAM slots.
       2. Each local file must belong to at most one STEAM slot.
       3. Each STEAM slot in this chunk should list the exact file_id values that belong to it.
@@ -37,10 +37,10 @@ def build_mapping_prompt(
       5. If action is "use_steam", "use_fingerprint", or "use_mbz_search", provide the exact `matched_v_idx` of the referenced STEAM or auxiliary track.
       6. Use `override_track` or `override_disc` only when the source numbering is missing or broken.
       7. Do not create titles or metadata that are not supported by the provided signals.
-      8. Keep `reason` concise.
+      8. Keep `reason` EXTREMELY short and concise (under 30 chars).
       9. Output JSON ONLY. No preamble, no thinking.
 
-**NOTE: All reasoning (reason) MUST be output in the language code: {user_language}. If {user_language} is "ja" (Japanese), you MUST write in native Japanese and strictly avoid Chinese characters or vocabulary.**
+**NOTE: All reasoning (reason) MUST be output in the language code: {user_language}. If {user_language} is "ja" (Japanese), you MUST write in native Japanese. Keep reasons very short.**
 
 ### MANDATORY OUTPUT FORMAT (JSON ONLY):
 ```json
@@ -48,23 +48,19 @@ def build_mapping_prompt(
   "slots": {{
     "STEAM_SLOT_NUMBER": {{
       "files": ["FILE_ID"],
-      "confidence": 0.0,
-      "reason": "Reasoning in {user_language}"
+      "confidence": 0.95,
+      "reason": "Brief reason (max 30 chars)"
     }}
   }},
   "unassigned_files": ["FILE_ID"],
-  "unassigned_reason": "Reasoning in {user_language}",
+  "unassigned_reason": "Brief reason if any",
   "track_instructions": {{
     "FILE_ID": {{
-        "action": "use_fingerprint" | "use_mbz_search" | "use_steam" | "use_local",
+        "action": "use_steam" | "use_fingerprint" | "use_mbz_search" | "use_local",
         "matched_v_idx": number | null,
-        "override_title": string | null,
         "override_track": number | null,
         "override_disc": number | null,
-        "composer": string | null,
-        "lyricist": string | null,
-        "arranger": string | null,
-        "reason": "Reasoning in {user_language}"
+        "reason": "Brief reason (max 30 chars)"
      }}
   }}
 }}
