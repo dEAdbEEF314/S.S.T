@@ -7,7 +7,7 @@
 3. STEAM を構造の絶対的な正とし、その不備に対してのみ他ソースと LLM を使うこと。
 4. LLM はファイルを STEAM スロットに割り当てる判断者であり、タイトル生成やタグ値創作をしてはならない。
 5. 確証不足の結果は archive ではなく review に送ること。
-6. 変更を加えた場合は [CHANGE_HISTORY.md](CHANGE_HISTORY.md) の末尾へ日本語で追記すること。
+6. 変更を加えた場合は [CHANGE_HISTORY.md](CHANGE_HISTORY.md) の先頭（注記の直後）へ新しい順（時系列降順）に日本語で追記すること。
 
 ## Engineering Standards
 

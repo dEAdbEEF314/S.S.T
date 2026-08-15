@@ -191,3 +191,68 @@ def test_write_tags_marks_unconfirmed_fields_without_numeric_placeholders(monkey
     assert "S.S.T Unconfirmed" in str(frames["COMM"].text)
     assert "title" in str(frames["COMM"].text)
     assert "track_number" in str(frames["COMM"].text)
+
+
+def test_builder_preserves_steam_track_number_for_single_track_album():
+    from sst.builder import MetadataBuilder
+    from sst.models import SteamMetadata
+
+    steam_tracklist = [{"disc": 1, "number": "7", "title": "Opening", "duration_s": "0", "source": "STEAM_PICS"}]
+    steam_meta = SteamMetadata(
+        app_id=1611230,
+        name="Capcom Arcade Stadium: Mini Album Track 07",
+        developer="CAPCOM CO., LTD.",
+        publisher="CAPCOM CO., LTD.",
+        store_tracklist=steam_tracklist,
+    )
+
+    instr = {"action": "use_steam", "matched_v_idx": 0, "override_track": "7", "override_disc": "1"}
+    tag_map = MetadataBuilder.build_tag_map(
+        app_id=1611230,
+        disc=1,
+        clean_title="07 opening",
+        adopted_info={"filename_track": 7, "path": Path("dummy.flac"), "tier": "lossless"},
+        steam_meta=steam_meta,
+        instr=instr,
+        mbz_candidates=[],
+        track_sources={},
+        user_language_639_2="jpn",
+        slot_embedded_tags={},
+        global_identity={},
+        total_discs=1,
+    )
+
+    assert tag_map["track_number"] == "7"
+    assert tag_map["title"] == "Opening"
+
+
+def test_builder_flags_broken_numbering_when_single_track_has_number_zero():
+    from sst.builder import MetadataBuilder
+    from sst.models import SteamMetadata
+
+    steam_tracklist = [{"disc": 1, "number": "0", "title": "Opening", "duration_s": "0", "source": "STEAM_PICS"}]
+    steam_meta = SteamMetadata(
+        app_id=1611230,
+        name="Capcom Arcade Stadium: Mini Album Track 00",
+        developer="CAPCOM CO., LTD.",
+        publisher="CAPCOM CO., LTD.",
+        store_tracklist=steam_tracklist,
+    )
+
+    instr = {"action": "use_steam", "matched_v_idx": 0, "override_track": "0", "override_disc": "1"}
+    tag_map = MetadataBuilder.build_tag_map(
+        app_id=1611230,
+        disc=1,
+        clean_title="00 opening",
+        adopted_info={"filename_track": 0, "path": Path("dummy.flac"), "tier": "lossless"},
+        steam_meta=steam_meta,
+        instr=instr,
+        mbz_candidates=[],
+        track_sources={},
+        user_language_639_2="jpn",
+        slot_embedded_tags={},
+        global_identity={},
+        total_discs=1,
+    )
+
+    assert tag_map["track_number"] == "1"
