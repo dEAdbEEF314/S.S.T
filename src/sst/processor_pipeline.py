@@ -52,6 +52,7 @@ def handle_early_review_return(
         "app_id": app_id,
         "album_name": steam_meta.name,
         "status": "review",
+        "message": final_msg,
         "confidence_score": score,
         "album_confidence": score,
         "mapping_confidence": p1_res.get("mapping_confidence") if isinstance(p1_res, dict) else None,
@@ -108,5 +109,6 @@ def handle_early_review_return(
         shutil.rmtree(temp_output, ignore_errors=True)
         logger.info("[%s] 早期Reviewの中間ディレクトリを削除しました: %s", app_id, temp_output)
     
-    db.record_processed(app_id, "review", steam_meta.name, get_localized_now().isoformat(), summary_meta)
+    if db:
+        db.record_processed(app_id, "review", steam_meta.name, get_localized_now().isoformat(), summary_meta)
     return LocalProcessResult(app_id=app_id, status="review", album_name=steam_meta.name, confidence_score=score, confidence_reason=error_msg, message=final_msg, metadata=summary_meta)

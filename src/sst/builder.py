@@ -85,11 +85,13 @@ class MetadataBuilder:
         if steam_meta and steam_meta.store_tracklist:
             numbers = [str(t.get("number", "0")) for t in steam_meta.store_tracklist]
             zeros = numbers.count("0")
-            if len(numbers) > 0:
+            if len(numbers) > 1:
                 from collections import Counter
                 most_common_num, count = Counter(numbers).most_common(1)[0]
                 if count >= len(numbers) * 0.5 or zeros >= len(numbers) * 0.5:
                     is_steam_numbering_broken = True
+            elif len(numbers) == 1 and zeros == 1:
+                is_steam_numbering_broken = True
         
         # 2. matched_v_idxが無くても、use_local以外ならSTEAMトラックリストからのファジーマッチを試みて補完する
         if not pics_track and instr.get("action") != "use_local":

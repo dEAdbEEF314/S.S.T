@@ -57,6 +57,7 @@
 
 - バリデーションで検出する
 - 自動補修で確証が得られない限り review に送る
+- **早期Reviewメッセージの保全**: LLM応答欠落や事前判定ゲートによる早期Review（`handle_early_review_return`）時は、`summary_meta` に `message`（原因コードおよび理由文字列）を確実に記録し、後段の監査レポートやDBで原因が明示されるようにする。
 
 ### 3.3 低 confidence
 

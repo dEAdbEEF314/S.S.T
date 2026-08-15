@@ -60,9 +60,15 @@ def analyze_and_generate_report(db_path='data/sst_local_state.db', output_dir='r
     all_items = []
 
     unnatural_archives = []
-    unnatural_reviews_conf = []
-    unnatural_reviews_io = []
-    unnatural_reviews_minor = []
+    reviews_unassigned = []
+    reviews_audio = []
+    reviews_slot_mismatch = []
+    reviews_low_conf = []
+    reviews_early = []
+    reviews_io = []
+
+    fast_track_count = 0
+    steam_trust_count = 0
 
     # Check debug logs for I/O errors
     log_files = glob.glob('logs/*.log')
@@ -88,6 +94,11 @@ def analyze_and_generate_report(db_path='data/sst_local_state.db', output_dir='r
         reason = meta.get('confidence_reason') or 'No reason captured'
         strategy = meta.get('strategy') or 'N/A'
 
+        if strategy == 'FAST_TRACK' or 'Deterministic Fast-Track' in str(msg) or 'Deterministic fast-track' in str(reason):
+            fast_track_count += 1
+        elif 'STEAM-TRUST' in str(msg) or 'STEAM-TRUST' in str(reason):
+            steam_trust_count += 1
+
         item = {
             'app_id': app_id,
             'name': name,
@@ -98,6 +109,7 @@ def analyze_and_generate_report(db_path='data/sst_local_state.db', output_dir='r
             'reason': reason,
             'strategy': strategy,
             'track_count': len(tracks),
+            'unassigned_count': len(meta.get('unassigned_files', [])),
             'integrity': integrity,
             'meta': meta
         }
@@ -139,13 +151,17 @@ def analyze_and_generate_report(db_path='data/sst_local_state.db', output_dir='r
             app_id_int = int(app_id) if str(app_id).isdigit() else app_id
 
             if app_id_int in io_error_app_ids or 'CRITICAL: Audio Source Error' in msg:
-                unnatural_reviews_io.append(item)
-            elif any(token in msg for token in ['Duplicates', 'Track#0', 'Unknown Title', 'Dirty Tags', 'Duplicate Titles']) or integrity['duplicate_key_count'] or integrity['missing_slots']:
-                unnatural_reviews_minor.append(item)
-            elif msg == 'N/A (Early Review)' or 'No LLM response' in reason or conf < 90:
-                unnatural_reviews_conf.append(item)
+                reviews_io.append(item)
+            elif 'Audio quality warning' in msg or 'conversion_warning' in str(meta):
+                reviews_audio.append(item)
+            elif item['unassigned_count'] > 0:
+                reviews_unassigned.append(item)
+            elif any(token in msg for token in ['Slots Missing', 'Slots Unexpected', 'Track Count Mismatch', 'Duplicates']):
+                reviews_slot_mismatch.append(item)
+            elif msg == 'N/A (Early Review)' or 'No LLM response' in reason or 'EARLY_REVIEW' in str(meta.get('diagnostics', {})):
+                reviews_early.append(item)
             else:
-                unnatural_reviews_conf.append(item)
+                reviews_low_conf.append(item)
 
     # HTML Generation
     report_file = output_path / 'batch_analysis_report.html'
@@ -203,7 +219,7 @@ def analyze_and_generate_report(db_path='data/sst_local_state.db', output_dir='r
         .header-subtitle {{ color: var(--text-secondary); font-size: 0.95rem; }}
         .kpi-grid {{
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
             gap: 1.25rem;
             margin-bottom: 2.5rem;
         }}
@@ -216,10 +232,11 @@ def analyze_and_generate_report(db_path='data/sst_local_state.db', output_dir='r
         }}
         .kpi-card:hover {{ transform: translateY(-2px); }}
         .kpi-label {{ font-size: 0.85rem; color: var(--text-secondary); font-weight: 500; text-transform: uppercase; margin-bottom: 0.5rem; }}
-        .kpi-value {{ font-size: 2.25rem; font-weight: 700; }}
+        .kpi-value {{ font-size: 2rem; font-weight: 700; }}
         .kpi-value.archive {{ color: var(--color-archive); }}
         .kpi-value.review {{ color: var(--color-review); }}
         .kpi-value.target {{ color: var(--accent-light); }}
+        .kpi-value.info {{ color: var(--color-info); }}
         section {{
             background: var(--bg-card);
             border: 1px solid var(--border-color);
@@ -243,6 +260,7 @@ def analyze_and_generate_report(db_path='data/sst_local_state.db', output_dir='r
         .highlight-box.warning {{ border-left: 4px solid var(--color-review); }}
         .highlight-box.danger {{ border-left: 4px solid var(--color-danger); }}
         .highlight-box.success {{ border-left: 4px solid var(--color-archive); }}
+        .highlight-box.info {{ border-left: 4px solid var(--color-info); }}
         .table-container {{ overflow-x: auto; margin-top: 1rem; border-radius: 0.5rem; border: 1px solid var(--border-color); }}
         table {{ width: 100%; border-collapse: collapse; font-size: 0.88rem; text-align: left; }}
         th {{ background-color: #0f172a; color: var(--text-secondary); font-weight: 600; padding: 0.75rem 1rem; border-bottom: 1px solid var(--border-color); }}
@@ -251,8 +269,8 @@ def analyze_and_generate_report(db_path='data/sst_local_state.db', output_dir='r
         .badge {{ display: inline-block; padding: 0.2rem 0.55rem; border-radius: 0.375rem; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; }}
         .badge.archive {{ background-color: var(--color-archive-bg); color: var(--color-archive); border: 1px solid rgba(16, 185, 129, 0.3); }}
         .badge.review {{ background-color: var(--color-review-bg); color: var(--color-review); border: 1px solid rgba(245, 158, 11, 0.3); }}
-        .filter-bar {{ display: flex; gap: 1rem; margin-bottom: 1rem; align-items: center; }}
-        .search-input {{ background-color: #0f172a; border: 1px solid var(--border-color); color: var(--text-primary); padding: 0.5rem 1rem; border-radius: 0.375rem; flex: 1; }}
+        .filter-bar {{ display: flex; gap: 1rem; margin-bottom: 1rem; align-items: center; flex-wrap: wrap; }}
+        .search-input {{ background-color: #0f172a; border: 1px solid var(--border-color); color: var(--text-primary); padding: 0.5rem 1rem; border-radius: 0.375rem; flex: 1; min-width: 200px; }}
         .filter-btn {{ background: #0f172a; border: 1px solid var(--border-color); color: var(--text-secondary); padding: 0.5rem 1rem; border-radius: 0.375rem; cursor: pointer; }}
         .filter-btn.active {{ background: var(--accent-primary); color: white; border-color: var(--accent-primary); }}
     </style>
@@ -269,16 +287,20 @@ def analyze_and_generate_report(db_path='data/sst_local_state.db', output_dir='r
             <div class="kpi-value">{len(all_items)}</div>
         </div>
         <div class="kpi-card">
+            <div class="kpi-label">Fast-Track 発動数</div>
+            <div class="kpi-value info">{fast_track_count} <span style="font-size: 0.9rem; color: var(--text-secondary);">({fast_track_count/max(len(all_items),1)*100:.1f}%)</span></div>
+        </div>
+        <div class="kpi-card">
             <div class="kpi-label">Archive 判定</div>
-            <div class="kpi-value archive">{len(archives)} <span style="font-size: 1rem; color: var(--text-secondary);">({len(archives)/max(len(all_items),1)*100:.1f}%)</span></div>
+            <div class="kpi-value archive">{len(archives)} <span style="font-size: 0.9rem; color: var(--text-secondary);">({len(archives)/max(len(all_items),1)*100:.1f}%)</span></div>
         </div>
         <div class="kpi-card">
             <div class="kpi-label">Review 判定</div>
-            <div class="kpi-value review">{len(reviews)} <span style="font-size: 1rem; color: var(--text-secondary);">({len(reviews)/max(len(all_items),1)*100:.1f}%)</span></div>
+            <div class="kpi-value review">{len(reviews)} <span style="font-size: 0.9rem; color: var(--text-secondary);">({len(reviews)/max(len(all_items),1)*100:.1f}%)</span></div>
         </div>
         <div class="kpi-card">
-            <div class="kpi-label">現行判定の監査対象</div>
-            <div class="kpi-value target">最新行</div>
+            <div class="kpi-label">不自然なArchive</div>
+            <div class="kpi-value {'archive' if len(unnatural_archives)==0 else 'review'}">{len(unnatural_archives)}件</div>
         </div>
     </div>
 
@@ -288,35 +310,56 @@ def analyze_and_generate_report(db_path='data/sst_local_state.db', output_dir='r
         <p>自動判定で <code>Archive</code> とされたものの、メタデータ品質・美観の観点からクリーンアップ不足や不自然さが残るケースを自動検出しました。</p>
 
         <h3 class="card-subhead">検出された不自然な Archive 事例 ({len(unnatural_archives)}件)</h3>
-        <div class="highlight-box warning">
-            <ul>
-"""
-    for ua in unnatural_archives[:10]:
-        html_content += f"<li><code>AppID {ua['app_id']}</code> ({html.escape(ua['name'])}): {', '.join(ua['issues'])}</li>\n"
-
-    html_content += f"""
-            </ul>
+        <div class="highlight-box {'success' if len(unnatural_archives)==0 else 'warning'}">
+            {'<p style="color: var(--color-archive); margin:0;">✓ 不自然な Archive 事例は検出されませんでした（全件 Steam スロット 1:1 準拠）。</p>' if not unnatural_archives else '<ul>' + ''.join(f"<li><code>AppID {ua['app_id']}</code> ({html.escape(ua['name'])}): {', '.join(ua['issues'])}</li>" for ua in unnatural_archives[:10]) + '</ul>'}
         </div>
-        <p><strong>判断理由:</strong> <code>&amp;amp;</code> などのHTML特殊文字の残留や、Steam slotと最終トラックの不一致、最終キーの重複など、出力の整合性を低下させる事象を対象にしています。DeveloperとPublisherが同一社名の場合の <code>AlbumArtist</code> 重複は、両方のクレジットを保持する仕様のため異常扱いしません。</p>
+        <p><strong>判断基準:</strong> <code>&amp;amp;</code> などのHTML特殊文字の残留、Steam slotと最終トラックの不一致、最終キーの重複など、出力の整合性を低下させる事象を対象にしています。DeveloperとPublisherが同一社名の場合の <code>AlbumArtist</code> 重複は仕様通り保持します。</p>
     </section>
 
     <!-- Section 2 -->
     <section>
-        <h2 class="section-title review-title">2. 総合的に不自然な Review 送りのケースと判断理由</h2>
-        <p>Validatorのメッセージ、最終タグ、Steam slot、物理出力、LLM割当、ログを突合し、Reviewの原因を構造・I/O・音声警告・信頼度・LLMアライメントに分類します。</p>
+        <h2 class="section-title review-title">2. Review 送りの要因別分類と精査</h2>
+        <p>Validatorのメッセージ、最終タグ、Steam slot、物理出力、LLM割当、ログを突合し、Reviewの原因を要因別に分類しました。</p>
 
-        <h3 class="card-subhead">原因1: 信頼度・LLM判定ゲート ({len(unnatural_reviews_conf)}件)</h3>
-        <div class="highlight-box danger">
-            <p>物理構造が検証済みかを確認したうえで、confidence、mapping confidence、data quality、archive/review ratio、LLM strategyを根拠として扱います。<code>conf &lt; 100</code>だけでは早期Reviewの原因と断定しません。</p>
+        <h3 class="card-subhead">要因1: 未割当ファイル（Steamスロット外の余剰ファイル）の存在 ({len(reviews_unassigned)}件)</h3>
+        <div class="highlight-box info">
+            <p>Steamトラックリストに存在しないボーナストラック・未収録ファイルがローカルに存在するため、安全弁（Review隔離）が正常に働いたケースです。</p>
+            <ul>
+                {''.join(f"<li><code>AppID {r['app_id']}</code>: {html.escape(r['name'])} (未割当: {r['unassigned_count']}ファイル)</li>" for r in reviews_unassigned[:5])}
+            </ul>
         </div>
 
-        <h3 class="card-subhead">原因2: SMB/CIFS ネットワークマウント I/Oエラーによる <code>Audio Source Error</code> 誤判定 ({len(unnatural_reviews_io)}件)</h3>
+        <h3 class="card-subhead">要因2: 音声物理破損 / デコード警告 ({len(reviews_audio)}件)</h3>
         <div class="highlight-box danger">
-            <p>LLMの判定は100%完全一致であったにも関わらず、ファイルコピー (<code>shutil.copy2</code>) 実行時に <code>[Errno 112] Host is down</code> 等のI/Oエラーが発生し、バリデータが <code>CRITICAL: Audio Source Error</code> として誤降格させたケースです。</p>
+            <p>ローカルの音声ファイルが物理的に破損（FLACデコードエラー等）しており、FFmpeg変換警告を検知して正しく Review 隔離されたケースです。</p>
+            <ul>
+                {''.join(f"<li><code>AppID {r['app_id']}</code>: {html.escape(r['name'])} (Msg: {html.escape(str(r['msg']))})</li>" for r in reviews_audio)}
+            </ul>
         </div>
 
-        <h3 class="card-subhead">原因3: Steam構造・最終物理整合性 ({len(unnatural_reviews_minor)}件)</h3>
-        <p><code>Duplicates</code>、<code>Track#0</code>、未知タイトル、dirty tag、slot欠落、最終slot重複など、Archiveを許可できない構造上の問題を含みます。形式違いの入力候補と最終重複レコードは区別します。</p>
+        <h3 class="card-subhead">要因3: Steam構造・スロット不整合 ({len(reviews_slot_mismatch)}件)</h3>
+        <div class="highlight-box warning">
+            <p>Steamスロットとローカルファイルの間でトラック番号の食い違いや欠落が発生したケースです（単曲アルバム判定誤りによる不当Reviewを含む）。</p>
+            <ul>
+                {''.join(f"<li><code>AppID {r['app_id']}</code>: {html.escape(r['name'])} (Msg: {html.escape(str(r['msg']))})</li>" for r in reviews_slot_mismatch[:5])}
+            </ul>
+        </div>
+
+        <h3 class="card-subhead">要因4: 早期レビュー / トラックリスト不在 ({len(reviews_early)}件)</h3>
+        <div class="highlight-box warning">
+            <p>Steam上にトラックリストが存在しないボーナスコンテンツや、事前判定ゲートにより早期Reviewとなったケースです。</p>
+            <ul>
+                {''.join(f"<li><code>AppID {r['app_id']}</code>: {html.escape(r['name'])} (Msg: {html.escape(str(r['msg']))})</li>" for r in reviews_early)}
+            </ul>
+        </div>
+
+        <h3 class="card-subhead">要因5: 信頼度不足・LLM判断不確実 ({len(reviews_low_conf)}件)</h3>
+        <div class="highlight-box warning">
+            <p>LLM確信度が基準値（90%）を下回るか、ローカル重複によりマッピングに不確実性が残ったケースです。</p>
+            <ul>
+                {''.join(f"<li><code>AppID {r['app_id']}</code>: {html.escape(r['name'])} (Conf: {r['conf']}%, Msg: {html.escape(str(r['msg']))})</li>" for r in reviews_low_conf)}
+            </ul>
+        </div>
     </section>
 
     <!-- Section 3 -->

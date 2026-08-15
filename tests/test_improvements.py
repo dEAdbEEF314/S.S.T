@@ -432,3 +432,85 @@ def test_builder_prioritizes_steam_store_credits_for_composer():
     )
 
     assert tag_map["composer"] == "Steam Composer"
+
+
+def test_report_generator_displays_accurate_review_reason_when_fast_track_failed_validation():
+    from sst.report_generator import ReportGenerator
+
+    steam_meta = SteamMetadata(
+        app_id=1270860,
+        name="Exit the Gungeon Soundtrack",
+        developer="Developer",
+        publisher="Publisher",
+        store_tracklist=[{"disc": 1, "number": 1, "title": "Song"}],
+    )
+
+    llm_log = {"fast_track": True, "phase1_res": {}}
+    html = ReportGenerator.generate_html_report(
+        app_id=1270860,
+        steam_meta=steam_meta,
+        status="review",
+        message="[Audio quality warning]",
+        score=100,
+        reason="SYSTEM: Deterministic fast-track",
+        processed_tracks=[],
+        llm_log=llm_log,
+        mbz_candidates=[],
+        localized_now_str="2026-08-15 14:00:00",
+        priority_str="STEAM > ACOUSTID",
+    )
+
+    assert "FAST-TRACK REVIEW GATE" in html
+    assert "[Audio quality warning]" in html
+    assert "REVIEW REQUIRED" in html
+
+
+def test_handle_early_review_return_preserves_message(tmp_path):
+    from sst.processor_pipeline import handle_early_review_return
+    from datetime import datetime
+
+    steam_meta = SteamMetadata(
+        app_id=1495710,
+        name="Cyberpunk 2077 Bonus Content",
+        developer="CD PROJEKT RED",
+        publisher="CD PROJEKT RED",
+        store_tracklist=[],
+    )
+
+    diagnostics = {}
+    saved_packages = []
+
+    class FakePackager:
+        @staticmethod
+        def save_local_package(app_id, status, name, path, log_bundle, out_dir):
+            saved_packages.append((app_id, status, log_bundle))
+
+    from unittest.mock import patch
+    with patch("sst.processor_pipeline.PackageManager", FakePackager):
+        result = handle_early_review_return(
+            app_id=1495710,
+            steam_meta=steam_meta,
+            track_count=37,
+            llm_log={"phase1_log": {}, "phase1_res": {"album_confidence": 0, "confidence_reason": "Pre-alignment check blocked"}},
+            v_steam={},
+            v_local={},
+            v_fingerprint=None,
+            v_mbz_search=None,
+            diagnostics=diagnostics,
+            _diag=lambda *a, **k: None,
+            get_localized_now=lambda: datetime.now(),
+            send_notifications=lambda *a, **k: "discord-msg",
+            working_dir=tmp_path,
+            output_dir=str(tmp_path / "output"),
+            db=None,
+            config=MagicMock(resolved_metadata_source_priority="STEAM"),
+        )
+
+    assert result.status == "review"
+    assert len(saved_packages) == 1
+    log_bundle = saved_packages[0][2]
+    assert "metadata.json" in log_bundle
+    meta = log_bundle["metadata.json"]
+    assert "message" in meta
+    assert "PRE_ALIGNMENT_REVIEW_GATE" in meta["message"]
+    assert "Pre-alignment check blocked" in meta["message"]

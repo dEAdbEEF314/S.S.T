@@ -87,8 +87,11 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
         count = len(processed_tracks)
         
         display_reason = esc(reason)
-        if is_fast:
+        if status == "archive" and is_fast:
             display_reason = "<strong>🛡️ DETERMINISTIC FAST-TRACK ENABLED</strong><br><br>This album was automatically verified by matching perfect evidence from MusicBrainz or PICS. LLM inference was bypassed to maintain 100% data integrity."
+        elif status == "review" and is_fast:
+            rev_msg = esc(message or reason or "Validation / audio conversion issue")
+            display_reason = f"<strong>⚠️ FAST-TRACK REVIEW GATE</strong><br><br>Fast-track was initially attempted, but the album was sent to Review due to: <code>{rev_msg}</code>"
 
         p1_res = llm_log.get("phase1_res") or {}
         if quality is None:
