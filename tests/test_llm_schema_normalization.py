@@ -137,9 +137,35 @@ def test_normalize_track_mapping_result_accepts_explicit_slots_output():
         [{"v_idx": 4, "n": 5}, {"v_idx": 6, "n": 7}],
     )
 
-    assert normalized["track_instructions"]["0"]["action"] == "use_steam"
     assert normalized["track_instructions"]["0"]["matched_v_idx"] == 6
     assert normalized["track_instructions"]["2"]["override_track"] == "7"
+
+
+def test_normalize_slot_result_merges_prematch_data():
+    from sst.llm.prematch import PrematchResult
+
+    organizer = make_organizer()
+    prematch_map = {
+        "file-1": PrematchResult(file_id="file-1", mbz_track_index=15, override_track="1"),
+    }
+
+    normalized = organizer._normalize_track_mapping_result(
+        {
+            "slots": {
+                "1": {
+                    "files": ["file-1"],
+                    "confidence": 0.95,
+                    "reason": "prematched",
+                }
+            }
+        },
+        [{"v_idx": 0, "n": 1}],
+        prematch_map=prematch_map,
+    )
+
+    assert normalized["track_instructions"]["file-1"]["matched_v_idx"] == 0
+    assert normalized["track_instructions"]["file-1"]["mbz_track_index"] == 15
+    assert normalized["track_instructions"]["file-1"]["override_track"] == "1"
 
 
 def test_slot_identity_prefers_explicit_track_number_over_list_position():

@@ -10,9 +10,10 @@ def build_mapping_prompt(
     s_chunk: List[Dict[str, Any]],
     start_idx: int,
     user_language: str,
+    prematch_hints: Optional[Dict[str, Any]] = None,
 ) -> str:
     ref_fingerprint_str = json.dumps(ref_fingerprint, ensure_ascii=False) if ref_fingerprint else "NOT AVAILABLE"
-    end_idx = start_idx + len(s_chunk)
+    prematch_hints_str = f"\n      ### PRE-MATCHED SIGNALS (FOR REFERENCE ONLY):\n      {json.dumps(prematch_hints, ensure_ascii=False)}" if prematch_hints else ""
     return f"""
       Generate STEAM slot alignment instructions for the physical local files in this batch.
       Album identity summary: {json.dumps(global_res.get("global_tags"), ensure_ascii=False)}
@@ -24,23 +25,21 @@ def build_mapping_prompt(
       {ref_fingerprint_str}
 
       ### MBZ_SEARCH AUXILIARY SIGNALS:
-      {json.dumps(s_mbz_search.get("tracks", []) if s_mbz_search else [], ensure_ascii=False) if v_mbz_search else "NOT AVAILABLE"}
+      {json.dumps(s_mbz_search.get("tracks", []) if s_mbz_search else [], ensure_ascii=False) if v_mbz_search else "NOT AVAILABLE"}{prematch_hints_str}
 
       ### LOCAL FILE SIGNALS TO PROCESS:
         {json.dumps(s_chunk, ensure_ascii=False)}
 
       ### RULES:
-      1. STEAM defines the canonical slot structure. Prefer ACOUSTID / MBZ_RELEASE as evidence, but assign files to STEAM slots.
+      1. STEAM defines the canonical slot structure. Assign local files (file_id) to STEAM slots (STEAM_SLOT_NUMBER).
       2. Each local file must belong to at most one STEAM slot.
-      3. Each STEAM slot in this chunk should list the exact file_id values that belong to it.
-      4. Use ACOUSTID / MBZ_RELEASE when available, then MBZ_SEARCH, then filename / embedded numbering, then title similarity.
-      5. If action is "use_steam", "use_fingerprint", or "use_mbz_search", provide the exact `matched_v_idx` of the referenced STEAM or auxiliary track.
-      6. Use `override_track` or `override_disc` only when the source numbering is missing or broken.
-      7. Do not create titles or metadata that are not supported by the provided signals.
-      8. Keep `reason` EXTREMELY short and concise (under 30 chars).
-      9. Output JSON ONLY. No preamble, no thinking.
+      3. Multiple format variants of the same song (e.g. WAV and MP3) must be assigned to the SAME slot.
+      4. If a file does not match any STEAM slot, list it in `unassigned_files`.
+      5. Do not create titles or slot numbers that are not supported by the provided STEAM slots.
+      6. Keep `reason` EXTREMELY short and concise (under 20 chars).
+      7. Output JSON ONLY. No preamble, no thinking.
 
-**NOTE: All reasoning (reason) MUST be output in the language code: {user_language}. If {user_language} is "ja" (Japanese), you MUST write in native Japanese. Keep reasons very short.**
+**NOTE: All reasoning (reason, unassigned_reason) MUST be output in the language code: {user_language}. If {user_language} is "ja" (Japanese), you MUST write in native Japanese. Keep reasons very short.**
 
 ### MANDATORY OUTPUT FORMAT (JSON ONLY):
 ```json
@@ -49,20 +48,11 @@ def build_mapping_prompt(
     "STEAM_SLOT_NUMBER": {{
       "files": ["FILE_ID"],
       "confidence": 0.95,
-      "reason": "Brief reason (max 30 chars)"
+      "reason": "Brief reason (max 20 chars)"
     }}
   }},
   "unassigned_files": ["FILE_ID"],
-  "unassigned_reason": "Brief reason if any",
-  "track_instructions": {{
-    "FILE_ID": {{
-        "action": "use_steam" | "use_fingerprint" | "use_mbz_search" | "use_local",
-        "matched_v_idx": number | null,
-        "override_track": number | null,
-        "override_disc": number | null,
-        "reason": "Brief reason (max 30 chars)"
-     }}
-  }}
+  "unassigned_reason": "Brief reason if any"
 }}
 ```
 """

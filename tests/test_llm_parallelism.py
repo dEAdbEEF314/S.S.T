@@ -126,6 +126,7 @@ def test_align_slots_parallel_merges_deterministically(monkeypatch):
         num_ctx,
         base_chunk_size,
         progress_callback,
+        **kwargs,
     ):
         if start_idx == 0:
             time.sleep(0.02)
@@ -133,7 +134,6 @@ def test_align_slots_parallel_merges_deterministically(monkeypatch):
         logs = [{"segment": start_idx}]
         for offset, track in enumerate(segment_tracks):
             instructions[f"{track['local_key'][0]}_{track['local_key'][1]}"] = {
-                "action": "use_local",
                 "matched_v_idx": None,
                 "override_title": None,
                 "override_track": None,
