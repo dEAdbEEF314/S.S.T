@@ -230,7 +230,6 @@ class LocalProcessor:
             slot_idx = slot_map[slot_key]
             disc_num, track_number = slot_key
             instruction = {
-                "action": "use_steam",
                 "matched_v_idx": slot_idx,
                 "override_track": track_number,
                 "override_disc": str(disc_num),

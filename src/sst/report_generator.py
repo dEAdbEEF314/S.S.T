@@ -162,6 +162,21 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
             </tr>"""
 
         alignment_inputs_html = ""
+        unassigned_warning_html = ""
+        alignment_res = (llm_log or {}).get("alignment_res", {}) if isinstance(llm_log, dict) else {}
+        unassigned_list = alignment_res.get("unassigned_files", []) if isinstance(alignment_res, dict) else []
+        if unassigned_list:
+            items_html = "".join([f"<li><code>{esc(str(fid))}</code></li>" for fid in unassigned_list])
+            unassigned_warning_html = f"""
+    <div class="card" style="border: 2px solid var(--accent-yellow); background: #261f0d; margin-bottom: 20px;">
+        <h3 style="color: var(--accent-yellow); margin-top: 0;">⚠️ Steamスロット充足（余剰未割当ファイルあり: {len(unassigned_list)}件）</h3>
+        <p style="font-size: 0.85rem; margin-top: 0; color: #c9d1d9;">以下のローカルファイルはどのSteamスロットにも割り当てられなかったため、<code>unassigned/</code> サブディレクトリへ隔離保存されました。</p>
+        <ul style="font-size: 0.85rem; color: #8b949e; margin-bottom: 0;">
+            {items_html}
+        </ul>
+    </div>
+"""
+
         if alignment_inputs:
             alignment_inputs_html += '<div class="card" style="margin-top: 20px;"><h3>Alignment Inputs (LLM Prompt Data)</h3>'
             alignment_inputs_html += '<div style="display: flex; flex-direction: column; gap: 20px;">'
@@ -241,6 +256,7 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
             <strong>Decision Ratio:</strong> Arch {p1_res.get('archive_vs_review_ratio', {}).get('archive', 0)}% : Rev {p1_res.get('archive_vs_review_ratio', {}).get('review', 0)}%</p>
         </div>
     </div>
+    {unassigned_warning_html}
 
     <div class="card">
         <h3>Judgment Reasoning & Strategy</h3>

@@ -206,7 +206,7 @@ def test_builder_preserves_steam_track_number_for_single_track_album():
         store_tracklist=steam_tracklist,
     )
 
-    instr = {"action": "use_steam", "matched_v_idx": 0, "override_track": "7", "override_disc": "1"}
+    instr = {"matched_v_idx": 0, "override_track": "7", "override_disc": "1"}
     tag_map = MetadataBuilder.build_tag_map(
         app_id=1611230,
         disc=1,
@@ -239,7 +239,7 @@ def test_builder_flags_broken_numbering_when_single_track_has_number_zero():
         store_tracklist=steam_tracklist,
     )
 
-    instr = {"action": "use_steam", "matched_v_idx": 0, "override_track": "0", "override_disc": "1"}
+    instr = {"matched_v_idx": 0, "override_track": "0", "override_disc": "1"}
     tag_map = MetadataBuilder.build_tag_map(
         app_id=1611230,
         disc=1,
@@ -255,4 +255,38 @@ def test_builder_flags_broken_numbering_when_single_track_has_number_zero():
         total_discs=1,
     )
 
+    assert tag_map["track_number"] == "1"
+
+
+def test_builder_falls_back_to_fuzzy_without_v_idx():
+    from sst.builder import MetadataBuilder
+    from sst.models import SteamMetadata
+
+    steam_tracklist = [{"disc": 1, "number": "1", "title": "Solar Wind", "duration_s": "0", "source": "STEAM_PICS"}]
+    steam_meta = SteamMetadata(
+        app_id=100,
+        name="Space OST",
+        developer="Dev",
+        publisher="Pub",
+        store_tracklist=steam_tracklist,
+    )
+
+    # matched_v_idx is None, but title matches steam track
+    instr = {"matched_v_idx": None, "override_track": None}
+    tag_map = MetadataBuilder.build_tag_map(
+        app_id=100,
+        disc=1,
+        clean_title="01 Solar Wind",
+        adopted_info={"filename_track": 1, "path": Path("01 Solar Wind.mp3"), "tier": "lossy"},
+        steam_meta=steam_meta,
+        instr=instr,
+        mbz_candidates=[],
+        track_sources={},
+        user_language_639_2="jpn",
+        slot_embedded_tags={},
+        global_identity={},
+        total_discs=1,
+    )
+
+    assert tag_map["title"] == "Solar Wind"
     assert tag_map["track_number"] == "1"

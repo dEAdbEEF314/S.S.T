@@ -99,12 +99,10 @@ def test_katana_zero_format_variants_collapse_to_one_steam_file_per_slot():
             }
         ]
         final_metadata[f"1_{title}::{mp3_id}"] = {
-            "action": "use_steam",
             "matched_v_idx": track_number - 1,
             "reason": "タイトルが一致。",
         }
         final_metadata[f"1_{title}::{aiff_id}"] = {
-            "action": "use_steam",
             "matched_v_idx": track_number - 1,
             "reason": "タイトルが一致。",
         }
@@ -122,8 +120,7 @@ def test_katana_zero_format_variants_collapse_to_one_steam_file_per_slot():
     assert len(slot_variant_index) == 38
     assert len(adopted_files) == 38
     assert all(
-        instruction["action"] == "use_steam"
-        and instruction["matched_v_idx"] == index
+        instruction["matched_v_idx"] == index
         and instruction["reason"] != "Fallback"
         for index, instruction in enumerate(final_metadata.values())
     )

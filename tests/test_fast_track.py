@@ -58,7 +58,6 @@ def test_fast_track_succeeds_with_steam_slot_match():
     assert ok is True
     assert final_map is not None
     assert global_id is not None
-    assert final_map["1_main theme"]["action"] == "use_steam"
     assert final_map["1_main theme"]["matched_v_idx"] == 0
     assert final_map["1_battle theme"]["matched_v_idx"] == 1
     assert global_id["canonical_year"] == "2024"
@@ -90,7 +89,7 @@ def test_select_best_unassigned_files_keeps_only_highest_tier_variant(tmp_path):
         ],
     }
 
-    selected = select_best_unassigned_files(track_groups, {"1_assigned": {"action": "use_steam"}})
+    selected = select_best_unassigned_files(track_groups, {"1_assigned": {"matched_v_idx": 0}})
 
     assert len(selected) == 1
     assert selected[0]["file_id"] == "aif-id"

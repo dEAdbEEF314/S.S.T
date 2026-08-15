@@ -111,8 +111,8 @@ class SteamWebClient:
                     time.sleep(2 ** (attempt + 1))  # 2s, 4s, 8s exponential backoff
                 
                 if app_data:
-                    result["name"] = app_data.get("name")
-                    result["genres"] = [g.get("description") for g in app_data.get("genres", []) if g.get("description")]
+                    result["name"] = html.unescape(app_data.get("name")) if app_data.get("name") else None
+                    result["genres"] = [html.unescape(g.get("description")) for g in app_data.get("genres", []) if g.get("description")]
                     result["release_date"] = app_data.get("release_date", {}).get("date")
                     description = app_data.get("detailed_description", "")
                 else:
@@ -154,10 +154,11 @@ class SteamWebClient:
                         sorted_keys = sorted(pics_tracks.keys(), key=lambda x: int(x))
                         for k in sorted_keys:
                             t = pics_tracks[k]
+                            raw_title = t.get("originalname", "")
                             result["store_tracklist"].append({
                                 "disc": int(t.get("discnumber", 1)),
                                 "number": str(t.get("tracknumber", "")),
-                                "title": t.get("originalname", ""),
+                                "title": html.unescape(raw_title) if raw_title else "",
                                 "duration_s": t.get("s", "0"),
                                 "source": "STEAM_PICS",
                             })

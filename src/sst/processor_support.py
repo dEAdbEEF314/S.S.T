@@ -265,7 +265,7 @@ def resolve_duplicate_mappings(
     idx_map = defaultdict(list)
     for tid, instr in final_metadata.items():
         v_idx = instr.get("matched_v_idx")
-        if v_idx is not None and instr.get("action") in ["use_steam", "use_fingerprint"]:
+        if v_idx is not None:
             idx_map[v_idx].append(tid)
 
     store_tracks = steam_meta.store_tracklist

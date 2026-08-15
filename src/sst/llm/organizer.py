@@ -5,6 +5,7 @@ from typing import List, Dict, Any, Optional, Tuple, Callable
 from ..config import DEFAULT_METADATA_SOURCE_PRIORITY
 from .client import LLMClient
 from .prompts import build_mapping_prompt, build_identity_prompt, build_steam_tracklist_extraction_prompt
+from .prematch import resolve_prematch_signals, PrematchResult
 from ..steam_tracklist import validate_llm_tracklist
 
 logger = logging.getLogger('sst.llm.organizer')
@@ -159,9 +160,10 @@ class LLMOrganizer:
         full_ref_mbz_search: List[Dict[str, Any]],
         v_mbz_search: Optional[Dict[str, Any]],
         full_ref_steam: Optional[List[Dict[str, Any]]] = None,
+        prematch_map: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Dict[str, Any]]:
         merged: Dict[str, Dict[str, Any]] = {}
-        normalized_track_res = self._normalize_track_mapping_result(track_res, full_ref_steam)
+        normalized_track_res = self._normalize_track_mapping_result(track_res, full_ref_steam, prematch_map=prematch_map)
         if not normalized_track_res or "track_instructions" not in normalized_track_res:
             return merged
 
@@ -196,20 +198,19 @@ class LLMOrganizer:
             tid = f"{matching_track['local_key'][0]}_{matching_track['local_key'][1]}"
 
             mv_idx = data.get("matched_v_idx")
-            if data.get("action") == "use_fingerprint" and mv_idx is not None:
-                if mv_idx < len(ref_fingerprint):
+            # 互換性フォールバック（旧形式のtrack_instructionsが渡された場合）
+            if data.get("mbz_track_index") is None:
+                if data.get("action") == "use_fingerprint" and mv_idx is not None and mv_idx < len(ref_fingerprint):
                     ref_track = ref_fingerprint[mv_idx]
                     data["mbz_track_index"] = ref_track.get("mbz_idx")
                     if data.get("override_track") is None and ref_track.get("n") is not None:
                         data["override_track"] = str(ref_track.get("n"))
-            elif data.get("action") == "use_mbz_search" and mv_idx is not None and v_mbz_search:
-                if mv_idx < len(full_ref_mbz_search):
+                elif data.get("action") == "use_mbz_search" and mv_idx is not None and v_mbz_search and mv_idx < len(full_ref_mbz_search):
                     ref_track = full_ref_mbz_search[mv_idx]
                     data["mbz_track_index"] = ref_track.get("mbz_idx")
                     if data.get("override_track") is None and ref_track.get("n") is not None:
                         data["override_track"] = str(ref_track.get("n"))
-            elif data.get("action") == "use_steam" and mv_idx is not None and full_ref_steam:
-                if mv_idx < len(full_ref_steam):
+                elif mv_idx is not None and full_ref_steam and mv_idx < len(full_ref_steam):
                     ref_track = full_ref_steam[mv_idx]
                     if data.get("override_track") is None and ref_track.get("n") is not None:
                         data["override_track"] = str(ref_track.get("n"))
@@ -261,6 +262,7 @@ class LLMOrganizer:
         cls,
         track_res: Dict[str, Any],
         full_ref_steam: Optional[List[Dict[str, Any]]],
+        prematch_map: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         if not isinstance(track_res, dict):
             return {}
@@ -278,11 +280,12 @@ class LLMOrganizer:
                 continue
             for file_idx in slot_data.get("files", []):
                 file_key = str(file_idx)
+                pm = prematch_map.get(file_key) if prematch_map else None
                 track_instructions[file_key] = {
-                    "action": "use_steam",
                     "matched_v_idx": matched_v_idx,
+                    "mbz_track_index": pm.mbz_track_index if pm else None,
                     "override_title": None,
-                    "override_track": str(slot_key) if str(slot_key).isdigit() else None,
+                    "override_track": str(slot_key) if str(slot_key).isdigit() else (pm.override_track if pm else None),
                     "override_disc": None,
                     "composer": None,
                     "lyricist": None,
@@ -468,6 +471,7 @@ class LLMOrganizer:
         num_ctx: Optional[int],
         base_chunk_size: int,
         progress_callback: Optional[ProgressCallback],
+        prematch_map: Optional[Dict[str, Any]] = None,
     ) -> Tuple[int, Dict[str, Dict[str, Any]], List[Dict[str, Any]]]:
         segment_logs: List[Dict[str, Any]] = []
         segment_instructions: Dict[str, Dict[str, Any]] = {}
@@ -479,13 +483,20 @@ class LLMOrganizer:
             chunk_start = start_idx + offset
             chunk = segment_tracks[offset:offset + current_chunk_size]
             s_chunk = []
+            chunk_prematch_hints = {}
             for idx, track in enumerate(chunk):
+                fids = track.get("file_ids", [])
                 s_chunk.append({
-                    "file_ids": track.get("file_ids", []),
+                    "file_ids": fids,
                     "t": track.get("title"),
                     "d": track.get("disc"),
                     "dur": (track.get("duration_ms", 0) // 1000) if track.get("duration_ms") else None,
                 })
+                if prematch_map:
+                    for fid in fids:
+                        pm = prematch_map.get(str(fid))
+                        if pm and pm.evidence:
+                            chunk_prematch_hints[str(fid)] = pm.to_dict()
 
             ref_steam, ref_fingerprint = self._resolve_mapping_references(
                 chunk_start,
@@ -502,6 +513,7 @@ class LLMOrganizer:
                 s_chunk,
                 chunk_start,
                 self.user_language,
+                prematch_hints=chunk_prematch_hints or None,
             )
             track_res, track_log = self._call_llm(
                 app_id,
@@ -540,6 +552,7 @@ class LLMOrganizer:
                     full_ref_mbz_search,
                     v_mbz_search,
                     full_ref_steam,
+                    prematch_map=prematch_map,
                 )
             )
             offset += len(chunk)
@@ -699,6 +712,15 @@ class LLMOrganizer:
         full_ref_fingerprint = (self._simplify_v_album(v_fingerprint, sampled=False) or {}).get("tracks", []) if v_fingerprint else []
         full_ref_mbz_search = (self._simplify_v_album(v_mbz_search, sampled=False) or {}).get("tracks", []) if v_mbz_search else []
 
+        # Prematch layer: resolve signals deterministically before Phase 2 chunking
+        prematch_map = resolve_prematch_signals(
+            local_tracks=local_tracks,
+            full_ref_steam=full_ref_steam,
+            full_ref_fingerprint=full_ref_fingerprint,
+            full_ref_mbz_search=full_ref_mbz_search,
+            v_mbz_search=v_mbz_search,
+        )
+
         dynamic_chunk_size = max(1, self._adaptive_chunk_size(self.chunk_size_virtual))
         segments = [
             (start_idx, local_tracks[start_idx:start_idx + dynamic_chunk_size])
@@ -729,6 +751,7 @@ class LLMOrganizer:
                         resolved_num_ctx,
                         dynamic_chunk_size,
                         progress_callback,
+                        prematch_map=prematch_map,
                     ): start_idx
                     for start_idx, segment_tracks in segments
                 }
@@ -752,6 +775,7 @@ class LLMOrganizer:
                     resolved_num_ctx,
                     dynamic_chunk_size,
                     progress_callback,
+                    prematch_map=prematch_map,
                 )
                 segment_results[start_idx] = (instructions, segment_logs)
 

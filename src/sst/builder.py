@@ -93,8 +93,8 @@ class MetadataBuilder:
             elif len(numbers) == 1 and zeros == 1:
                 is_steam_numbering_broken = True
         
-        # 2. matched_v_idxが無くても、use_local以外ならSTEAMトラックリストからのファジーマッチを試みて補完する
-        if not pics_track and instr.get("action") != "use_local":
+        # 2. matched_v_idxが無くても、STEAMトラックリストからのファジーマッチを試みて補完する
+        if not pics_track and instr.get("matched_v_idx") is None:
             fuzzy_clean_title = re.sub(r'^(\d+[\s._-]+)+', '', clean_title)
             fuzzy_clean_title = re.sub(r'\.[a-zA-Z0-9]+$', '', fuzzy_clean_title)
             fuzzy_clean_title = re.sub(r'[^a-zA-Z0-9]', ' ', fuzzy_clean_title)
@@ -160,7 +160,7 @@ class MetadataBuilder:
             res_track = str(pics_track.get("number"))
         elif instr.get("override_track") and str(instr.get("override_track")) != "0" and not is_steam_numbering_broken:
             res_track = str(instr.get("override_track"))
-        elif instr.get("action") == "use_steam" and instr.get("matched_v_idx") is not None:
+        elif instr.get("matched_v_idx") is not None:
             res_track = str(int(instr.get("matched_v_idx")) + 1)
         elif mbz_track:
             val = mbz_track.get("position") or mbz_track.get("track_num")

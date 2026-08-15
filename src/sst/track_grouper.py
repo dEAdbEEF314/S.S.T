@@ -1,3 +1,4 @@
+import html
 import re
 import logging
 import subprocess
@@ -58,6 +59,7 @@ class TrackManager:
 
     @staticmethod
     def normalize_title(stem: str) -> str:
+        stem = html.unescape(stem or "")
         stem = re.sub(r'^(\d+[\s._-]+)+', '', stem)
         stem = re.sub(r'[\s(\[]+(?:aiff|mp3|flac|wav|lossless|high[\s-]*res|ost|soundtrack|official|[\s\-])+[\s)\]]+$', '', stem, flags=re.IGNORECASE)
         stem = re.sub(r'[^a-zA-Z0-9]', ' ', stem)
