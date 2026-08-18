@@ -71,6 +71,14 @@ class ResultValidator:
         unassigned_files = alignment_res.get("unassigned_files") or []
         if unassigned_files:
             issues.append(f"Unassigned Files ({len(unassigned_files)})")
+
+        # 提案3: LLM矛盾の拒否を明示（自動修正で隠さない）
+        rejected_slot_keys = alignment_res.get("rejected_slot_keys") or []
+        if rejected_slot_keys:
+            issues.append(f"LLM Rejected Slots ({len(rejected_slot_keys)})")
+        duplicate_assignment_file_ids = alignment_res.get("duplicate_assignment_file_ids") or []
+        if duplicate_assignment_file_ids:
+            issues.append(f"LLM Duplicate Assignment ({len(duplicate_assignment_file_ids)})")
         
         # Track #0 / Unknown Title. Steam is authoritative: an official
         # Unknown (Unused) slot is legitimate and must not be treated as an
@@ -172,6 +180,12 @@ class ResultValidator:
         diagnostics = llm_log.setdefault("diagnostics", {})
         diagnostics["steam_unknown_count"] = legitimate_unknown_count
         diagnostics["anomalous_unknown_count"] = anomalous_unknown_count
+        steam_expected_slots = len(steam_meta.store_tracklist or [])
+        adopted_slots = len(tracks)
+        unassigned_slots = max(0, steam_expected_slots - adopted_slots)
+        diagnostics["steam_expected_slots"] = steam_expected_slots
+        diagnostics["adopted_slots"] = adopted_slots
+        diagnostics["unassigned_slots"] = unassigned_slots
         diagnostics["review_causes"] = list(issues)
         diagnostics["primary_review_cause"] = issues[0] if issues else None
         diagnostics["secondary_review_causes"] = issues[1:]

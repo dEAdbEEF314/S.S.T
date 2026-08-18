@@ -395,6 +395,13 @@ class LocalProcessor:
             # We still need track_sources for build_tag_map
             track_sources = TrackManager.prepare_llm_track_context(track_groups)
             slot_variant_index, track_to_slot_index = build_slot_variant_index(final_metadata, track_groups, steam_meta)
+            multi_variant_slot_count = sum(1 for variants in slot_variant_index.values() if len(variants) > 1)
+            _diag(
+                "SLOT_VARIANT_BUILT",
+                slot_count=len(slot_variant_index),
+                variant_count=sum(len(v) for v in slot_variant_index.values()),
+                multi_variant_slot_count=multi_variant_slot_count,
+            )
             
             # Identity and strategy for builder
             p1_res = llm_log.get("phase1_res", {})
@@ -446,12 +453,19 @@ class LocalProcessor:
 
             from concurrent.futures import ThreadPoolExecutor
             adopted_files = adopt_best_file_per_slot(track_groups, slot_variant_index, track_to_slot_index)
+            _diag(
+                "TRACKS_ADOPTED",
+                adopted_slot_count=len(adopted_files),
+                adopted_file_count=sum(len(v) for v in adopted_files.values()),
+            )
             with ThreadPoolExecutor(max_workers=self.config.max_encoding_tasks) as executor:
                 track_results = list(executor.map(_process_single_track, adopted_files.items()))
 
             processed_tracks_meta = self._normalize_processed_tracks(
                 [r["track_meta"] for r in track_results if r.get("track_meta")]
             )
+            io_retry_logs = [r["io_retry_log"] for r in track_results if r.get("io_retry_log")]
+            io_retry_count = sum(1 for log in io_retry_logs if log.get("retried"))
             alignment_unassigned_ids = {
                 str(file_id)
                 for file_id in (llm_log.get("alignment_res", {}) or {}).get("unassigned_files", [])
@@ -533,6 +547,12 @@ class LocalProcessor:
                     "adopted_file_count": len(adopted_files),
                     "unassigned_file_count": len(unassigned_manifest),
                     "archive_artifact_issues": artifact_issues,
+                    "track_group_count": len(track_groups),
+                    "slot_variant_count": len(slot_variant_index),
+                    "multi_variant_slot_count": multi_variant_slot_count,
+                    "adopted_slot_count": len(adopted_files),
+                    "io_retry_count": io_retry_count,
+                    "io_retry_logs": io_retry_logs[:5],
                 },
                 "strategy": p1_res.get("strategy"),
                 "confidence_reason": reason, 

@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Any
 
 import sst.processor as processor_module
@@ -291,3 +292,110 @@ def test_fast_track_bundles_flac_and_mp3_variants_to_same_slot():
     assert final_map["1_main theme::flac_id"]["matched_v_idx"] == 0
     assert final_map["1_main theme::mp3_id"]["matched_v_idx"] == 0
     assert final_map["1_battle theme::flac_id2"]["matched_v_idx"] == 1
+
+
+def test_fast_track_accepts_html_entity_titles():
+    """提案4: Steam title の HTML実体参照を html.unescape で正規化し Fast-Track 成功。"""
+    processor = make_processor()
+    steam_meta = SteamMetadata(
+        app_id=1,
+        name="Entity OST",
+        developer="Dev",
+        publisher="Pub",
+        release_date="2024-01-02",
+        store_tracklist=[
+            {"number": 1, "title": "Ryu & Ken", "disc": 1},
+            {"number": 2, "title": "Chun-Li", "disc": 1},
+        ],
+    )
+    track_groups = {
+        (1, "ryu & ken::a1"): [
+            {"file_id": "a1", "path": Path("/tmp/a1.flac"), "t_num_val": "1", "duration": 180.0, "format": "flac", "norm_stem": "ryu & ken"}
+        ],
+        (1, "chun-li::b2"): [
+            {"file_id": "b2", "path": Path("/tmp/b2.flac"), "t_num_val": "2", "duration": 200.0, "format": "flac", "norm_stem": "chun-li"}
+        ],
+    }
+
+    ok, final_map, _ = processor._check_fast_track(1, steam_meta, track_groups, [])
+
+    assert ok is True
+    assert final_map is not None
+    assert final_map["1_ryu & ken::a1"]["matched_v_idx"] == 0
+
+
+def test_fast_track_single_track_album():
+    """提案4: 単曲アルバム（Steam slot 1件 + ローカル1件）で Fast-Track 成功。"""
+    processor = make_processor()
+    steam_meta = SteamMetadata(
+        app_id=1,
+        name="Single OST",
+        developer="Dev",
+        publisher="Pub",
+        release_date="2024-01-02",
+        store_tracklist=[{"number": 1, "title": "Only Track", "disc": 1}],
+    )
+    track_groups = {
+        (1, "only track::a1"): [
+            {"file_id": "only_a1", "path": Path("/tmp/only_a1.flac"), "t_num_val": "1", "duration": 180.0, "format": "flac", "norm_stem": "only track"}
+        ],
+    }
+
+    ok, final_map, _ = processor._check_fast_track(1, steam_meta, track_groups, [])
+
+    assert ok is True
+    assert final_map is not None
+    assert final_map["1_only track::a1"]["matched_v_idx"] == 0
+
+
+def test_fast_track_rejects_duplicate_steam_slots():
+    """提案4: Steam tracklist に同一slotキー（disc/track重複）が含まれる場合は Fast-Track 不採用。"""
+    processor = make_processor()
+    steam_meta = SteamMetadata(
+        app_id=1,
+        name="Abnormal OST",
+        developer="Dev",
+        publisher="Pub",
+        release_date="2024-01-02",
+        store_tracklist=[
+            {"number": 1, "title": "Track A", "disc": 1},
+            {"number": 1, "title": "Track B (duplicate slot)", "disc": 1},
+        ],
+    )
+    track_groups = {
+        (1, "track a::a1"): [
+            {"file_id": "a1", "path": Path("/tmp/a1.flac"), "t_num_val": "1", "duration": 180.0, "format": "flac", "norm_stem": "track a"}
+        ],
+        (1, "track b::b2"): [
+            {"file_id": "b2", "path": Path("/tmp/b2.flac"), "t_num_val": "1", "duration": 200.0, "format": "flac", "norm_stem": "track b"}
+        ],
+    }
+
+    ok, _, _ = processor._check_fast_track(1, steam_meta, track_groups, [])
+
+    assert ok is False
+
+
+def test_fast_track_final_one_file_per_slot():
+    """提案4: Fast-Track成功時、adopt_best_file_per_slot が slot数と一致し各slotに1ファイル。"""
+    from sst.processor_support import build_slot_variant_index, adopt_best_file_per_slot
+
+    processor = make_processor()
+    steam_meta = make_steam_meta()
+    track_groups = {
+        (1, "main theme::a1"): [
+            {"file_id": "a1", "path": Path("/tmp/a1.flac"), "t_num_val": "1", "duration": 180.0, "format": "flac", "norm_stem": "main theme"}
+        ],
+        (1, "battle theme::b2"): [
+            {"file_id": "b2", "path": Path("/tmp/b2.flac"), "t_num_val": "2", "duration": 200.0, "format": "flac", "norm_stem": "battle theme"}
+        ],
+    }
+    ok, final_map, _ = processor._check_fast_track(1, steam_meta, track_groups, [])
+    assert ok is True
+    assert final_map is not None
+
+    slot_variant_index, _ = build_slot_variant_index(final_map, track_groups, steam_meta)
+    adopted = adopt_best_file_per_slot(track_groups, slot_variant_index, _)
+    # 提案4: 最終1slot=1採用ファイル（slot数と採用数が一致）
+    assert len(adopted) == len(steam_meta.store_tracklist)
+    assert len(adopted) == len(slot_variant_index)

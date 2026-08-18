@@ -38,6 +38,15 @@ def handle_early_review_return(
         
     diagnostics["review_cause_code"] = "EARLY_REVIEW_RETURN"
     diagnostics["upstream_cause_code"] = "LLM_RESPONSE_MISSING" if not p1_res else "PRE_ALIGNMENT_REVIEW_GATE"
+    steam_expected_slots = len(steam_meta.store_tracklist or [])
+    adopted_slots = 0
+    unassigned_slots = steam_expected_slots
+    final_msg = f"LLM Failure: {error_msg}" if not p1_res else f"Low Confidence ({diagnostics['upstream_cause_code']}): {error_msg}"
+    diagnostics["steam_expected_slots"] = steam_expected_slots
+    diagnostics["adopted_slots"] = adopted_slots
+    diagnostics["unassigned_slots"] = unassigned_slots
+    diagnostics["primary_review_cause"] = final_msg
+    diagnostics["secondary_review_causes"] = []
     _diag(
         "EARLY_REVIEW_RETURN",
         review_cause_code=diagnostics["review_cause_code"],
@@ -45,8 +54,6 @@ def handle_early_review_return(
         album_confidence=score,
         error=error_msg,
     )
-    
-    final_msg = f"LLM Failure: {error_msg}" if not p1_res else f"Low Confidence ({diagnostics['upstream_cause_code']}): {error_msg}"
     
     summary_meta = {
         "app_id": app_id,
@@ -61,6 +68,18 @@ def handle_early_review_return(
         "processed_at": get_localized_now().isoformat(),
         "tracks": [],
         "steam_info": steam_meta.model_dump(),
+        "audit": {
+            "steam_expected_slots": steam_expected_slots,
+            "final_adopted_slots": adopted_slots,
+            "final_duplicate_slots": 0,
+            "steam_legitimate_unknown": 0,
+            "anomalous_unknown": 0,
+            "input_file_count": len(steam_meta.store_tracklist or []),
+            "adopted_file_count": 0,
+            "unassigned_file_count": len(steam_meta.store_tracklist or []),
+            "archive_artifact_issues": [],
+            "review_phase": "EARLY_REVIEW",
+        },
         "diagnostics": diagnostics,
     }
     
