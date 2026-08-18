@@ -1,4 +1,3 @@
-import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from rich.console import Console
@@ -54,3 +53,35 @@ def test_job_runner_resilience_on_host_down_error(tmp_path):
     for r in results:
         assert r.status == "error"
         assert "Host is down" in r.message or "Process returned None" in r.message or r.message != ""
+
+
+def test_copy_with_retry_records_structured_attempts(tmp_path):
+    """提案5: copy_with_retry が試行の構造化記録を返す（成功時）。"""
+    from sst.processor_tracks import copy_with_retry
+
+    src = tmp_path / "src.flac"
+    src.write_bytes(b"audio")
+    dst = tmp_path / "dst.flac"
+
+    log = copy_with_retry(src, dst)
+
+    assert log["final_state"] == "success"
+    assert log["retried"] is False
+    assert log["attempts"][0]["success"] is True
+    assert dst.exists()
+
+
+def test_copy_with_retry_records_failure_and_does_not_silently_succeed(tmp_path):
+    """提案5: 最終コピー失敗は final_state=failed を返し、呼び出し側で検出される。"""
+    from sst.processor_tracks import copy_with_retry
+
+    src = tmp_path / "missing.flac"
+    dst = tmp_path / "dst.flac"
+
+    log = copy_with_retry(src, dst, retries=2, initial_delay=0.0)
+
+    assert log["final_state"] == "failed"
+    assert log["retried"] is True
+    assert len(log["attempts"]) == 2
+    assert all(not a["success"] for a in log["attempts"])
+    assert dst.exists() is False

@@ -267,3 +267,33 @@ def test_call_llm_emits_progress_and_structured_logs(monkeypatch):
     ))
     assert done_payload["total_tokens"] == 15
     assert done_payload["eval_count"] == 5
+
+
+def test_llm_request_done_records_request_id_and_wait_seconds():
+    """提案6: LLM_REQUEST_DONE に request_id / wait_seconds / cache_hit が含まれる。"""
+    organizer = _build_organizer()
+
+    class FakeResponse:
+        status_code = 200
+        def json(self):
+            return {
+                "message": {"content": '{"ok": true}'},
+                "done_reason": "stop",
+                "prompt_eval_count": 10,
+                "eval_count": 5,
+            }
+
+    with patch("sst.llm.client.requests.post", return_value=FakeResponse()), \
+         patch("sst.llm.client.logger.info") as mock_info:
+        result, log_entry = organizer._call_llm(1, "prompt", request_kind="track_mapping", request_units=2)
+
+    assert result == {"ok": True}
+    assert "request_id" in log_entry
+    assert len(log_entry["request_id"]) == 12
+    done_payload = json.loads(next(
+        call.args[1] for call in mock_info.call_args_list
+        if call.args[0] == "LLM_REQUEST_DONE %s"
+    ))
+    assert done_payload["request_id"] == log_entry["request_id"]
+    assert isinstance(done_payload["wait_seconds"], float)
+    assert "cache_hit" in done_payload

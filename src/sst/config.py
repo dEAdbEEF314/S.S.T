@@ -63,6 +63,11 @@ class Config(BaseSettings):
     max_encoding_tasks: int = 4
     fingerprint_all: bool = True
     auto_audit_enabled: bool = True
+
+    # LLM結果キャッシュ（提案7: 検証を弱めない）
+    sst_llm_cache_enabled: bool = True
+    sst_llm_cache_ttl_seconds: int = 86400
+    sst_llm_cache_path: str = "data/llm_cache.json"
     
     # MusicBrainz Scoring Settings
     score_mbz_direct_steam_link: int = 500
@@ -166,6 +171,9 @@ class Config(BaseSettings):
             "chunk_output_tokens_per_track": self.llm_chunk_output_tokens_per_track,
             "chunk_output_safety_ratio": self.llm_chunk_output_safety_ratio,
             "metadata_source_priority": self.resolved_metadata_source_priority,
+            "llm_cache_enabled": self.sst_llm_cache_enabled,
+            "llm_cache_ttl_seconds": self.sst_llm_cache_ttl_seconds,
+            "llm_cache_path": self.sst_llm_cache_path,
         }
 
     def resolve_llm_num_ctx_cap(self, tier_name: str) -> int:

@@ -1,11 +1,12 @@
 import logging
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Optional, Tuple, Callable
 
 from ..config import DEFAULT_METADATA_SOURCE_PRIORITY
 from .client import LLMClient
 from .prompts import build_mapping_prompt, build_identity_prompt, build_steam_tracklist_extraction_prompt
-from .prematch import resolve_prematch_signals, PrematchResult
+from .prematch import resolve_prematch_signals
 from ..steam_tracklist import validate_llm_tracklist
 
 logger = logging.getLogger('sst.llm.organizer')
@@ -32,7 +33,10 @@ class LLMOrganizer:
                  chunk_adaptive: bool = True,
                  chunk_output_tokens_per_track: int = 180,
                  chunk_output_safety_ratio: float = 0.75,
-                 metadata_source_priority: str = DEFAULT_METADATA_SOURCE_PRIORITY):
+                 metadata_source_priority: str = DEFAULT_METADATA_SOURCE_PRIORITY,
+                 llm_cache_enabled: bool = True,
+                 llm_cache_ttl_seconds: int = 86400,
+                 llm_cache_path: str = "data/llm_cache.json"):
         self.user_language = user_language
         self.llm_backend = llm_backend.upper()
         self.llm_request_parallelism_enabled = llm_request_parallelism_enabled
@@ -44,6 +48,12 @@ class LLMOrganizer:
         self.chunk_output_safety_ratio = max(0.2, min(0.95, chunk_output_safety_ratio))
         self.chunk_output_tokens_per_track = max(1, chunk_output_tokens_per_track)
         self.llm_limit_tpm = tpm
+        from .llm_cache import LLMResultCache
+        self.llm_cache = LLMResultCache(
+            cache_path=llm_cache_path,
+            ttl_seconds=llm_cache_ttl_seconds,
+            enabled=llm_cache_enabled,
+        )
         
         self.client = LLMClient(
             api_key=api_key, base_url=base_url, model=model, rpm=rpm, tpm=tpm, rpd=rpd,
@@ -87,6 +97,20 @@ class LLMOrganizer:
         description_text: str,
         progress_callback: Optional[ProgressCallback] = None,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        cache_key_input = description_text or ""
+        cached = self.llm_cache.get(cache_key_input, "steam_tracklist_extraction", self.user_language)
+        if cached is not None:
+            log_entry: Dict[str, Any] = {
+                "request_kind": "steam_tracklist_extraction",
+                "cache": self.llm_cache.audit_hit(cache_key_input, "steam_tracklist_extraction", self.user_language),
+                "response": cached,
+            }
+            tracks, errors = validate_llm_tracklist(cached)
+            log_entry["validation_errors"] = errors
+            if tracks:
+                log_entry["tracklist_source"] = "STEAM_TEXT_TRACKLIST_LLM"
+            return tracks, log_entry
+
         prompt = build_steam_tracklist_extraction_prompt(description_text, self.user_language)
         response, log_entry = self._call_llm(
             app_id,
@@ -100,6 +124,7 @@ class LLMOrganizer:
         if not tracks:
             return [], log_entry
         log_entry["tracklist_source"] = "STEAM_TEXT_TRACKLIST_LLM"
+        log_entry["cache"] = self.llm_cache.put(cache_key_input, "steam_tracklist_extraction", self.user_language, response)
         return tracks, log_entry
 
     def _call_llm(
@@ -272,11 +297,13 @@ class LLMOrganizer:
             return track_res
 
         track_instructions: Dict[str, Dict[str, Any]] = {}
+        rejected_slot_keys: List[str] = []
         for slot_key, slot_data in track_res.get("slots", {}).items():
             if not isinstance(slot_data, dict):
                 continue
             matched_v_idx = cls._resolve_slot_key_to_v_idx(str(slot_key), full_ref_steam)
             if matched_v_idx is None:
+                rejected_slot_keys.append(str(slot_key))
                 continue
             for file_idx in slot_data.get("files", []):
                 file_key = str(file_idx)
@@ -295,6 +322,7 @@ class LLMOrganizer:
 
         normalized = dict(track_res)
         normalized["track_instructions"] = track_instructions
+        normalized["rejected_slot_keys"] = rejected_slot_keys
         return normalized
 
     @staticmethod
@@ -325,6 +353,7 @@ class LLMOrganizer:
                 for file_id in track.get("file_ids", [])
             }
             seen_file_ids: set[str] = set()
+            rejected_file_ids: List[str] = []
             validated_slots: Dict[str, Dict[str, Any]] = {}
             for slot_key, slot_data in track_res.get("slots", {}).items():
                 if not isinstance(slot_data, dict):
@@ -336,6 +365,7 @@ class LLMOrganizer:
                         normalized_file_id not in known_file_ids
                         or normalized_file_id in seen_file_ids
                     ):
+                        rejected_file_ids.append(normalized_file_id)
                         continue
                     valid_files.append(normalized_file_id)
                     seen_file_ids.add(normalized_file_id)
@@ -349,6 +379,7 @@ class LLMOrganizer:
                 "slots": validated_slots,
                 "unassigned_files": [file_id for file_id in local_file_ids if file_id not in seen_file_ids],
                 "unassigned_reason": track_res.get("unassigned_reason"),
+                "rejected_file_ids": sorted(set(rejected_file_ids)),
             }
 
         slots: Dict[str, Dict[str, Any]] = {}
@@ -407,6 +438,8 @@ class LLMOrganizer:
             if assigned_file_ids.count(file_id) > 1
         )
         chunk_diagnostics = []
+        rejected_slot_keys: List[str] = []
+        rejected_file_ids: List[str] = []
         for start_idx in sorted(segment_results):
             instructions, segment_logs = segment_results[start_idx]
             chunk_diagnostics.append({
@@ -414,6 +447,10 @@ class LLMOrganizer:
                 "instruction_count": len(instructions),
                 "log_count": len(segment_logs),
             })
+            for log in segment_logs:
+                if isinstance(log, dict):
+                    rejected_slot_keys.extend(log.get("rejected_slot_keys") or [])
+                    rejected_file_ids.extend(log.get("rejected_file_ids") or [])
 
         return {
             "input_file_count": len(expected_file_ids),
@@ -424,6 +461,8 @@ class LLMOrganizer:
                 set(final_instructions) - set(local_file_ids_by_tid)
             ),
             "duplicate_assignment_file_ids": sorted(set(duplicate_assignments)),
+            "rejected_slot_keys": sorted(set(rejected_slot_keys)),
+            "rejected_file_ids": sorted(set(rejected_file_ids)),
             "chunk_count": len(segment_results),
             "chunks": chunk_diagnostics,
         }
@@ -656,15 +695,31 @@ class LLMOrganizer:
         # Identity and album-level confidence
         identity_prompt = build_identity_prompt(s_steam, s_fingerprint, s_mbz_search, s_local, self.user_language)
         local_tracks = v_local.get("tracks", [])
-        global_res, global_log = self._call_llm(
-            app_id,
-            identity_prompt,
-            num_ctx=resolved_num_ctx,
-            request_kind="identity",
-            request_units=len(local_tracks),
-            progress_callback=progress_callback,
+        cache_key_input = json.dumps(
+            {"steam": s_steam, "fingerprint": s_fingerprint, "mbz_search": s_mbz_search, "local": s_local},
+            sort_keys=True, ensure_ascii=False,
         )
-        full_logs.append(global_log)
+        cached_identity = self.llm_cache.get(cache_key_input, "identity", self.user_language)
+        if cached_identity is not None:
+            global_log: Dict[str, Any] = {
+                "request_kind": "identity",
+                "cache": self.llm_cache.audit_hit(cache_key_input, "identity", self.user_language),
+                "response": cached_identity,
+            }
+            full_logs.append(global_log)
+            global_res = cached_identity
+        else:
+            global_res, global_log = self._call_llm(
+                app_id,
+                identity_prompt,
+                num_ctx=resolved_num_ctx,
+                request_kind="identity",
+                request_units=len(local_tracks),
+                progress_callback=progress_callback,
+            )
+            full_logs.append(global_log)
+            if global_res:
+                global_log["cache"] = self.llm_cache.put(cache_key_input, "identity", self.user_language, global_res)
 
         if not global_res:
              return None, {"phase1_res": None, "phase1_log": global_log}

@@ -2,7 +2,7 @@ import logging
 import shutil
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .builder import MetadataBuilder
 from .models import SteamMetadata
@@ -12,17 +12,47 @@ from .track_grouper import TrackManager
 logger = logging.getLogger("sst.processor")
 
 
-def copy_with_retry(src: Path, dst: Path, retries: int = 3, initial_delay: float = 1.0):
+def copy_with_retry(src: Path, dst: Path, retries: int = 3, initial_delay: float = 1.0) -> Dict[str, Any]:
+    """Copy a file with retry, returning a structured record of attempts.
+
+    The record preserves the failure type and final state so the caller can
+    audit I/O resilience without weakening the verification contract: a final
+    copy failure still surfaces as a track failure upstream.
+    """
+    attempts: List[Dict[str, Any]] = []
     for attempt in range(retries):
         try:
             shutil.copy2(src, dst)
-            return
+            attempts.append({
+                "attempt": attempt + 1,
+                "error_type": None,
+                "error": None,
+                "success": True,
+            })
+            return {
+                "source": src.name,
+                "attempts": attempts,
+                "final_state": "success",
+                "retried": attempt > 0,
+            }
         except (OSError, IOError, PermissionError) as e:
+            attempts.append({
+                "attempt": attempt + 1,
+                "error_type": type(e).__name__,
+                "error": str(e),
+                "success": False,
+            })
             if attempt == retries - 1:
-                raise
+                break
             delay = initial_delay * (2 ** attempt)
             logger.warning(f"File copy failed for {src.name} ({e}), retrying in {delay}s (Attempt {attempt+1}/{retries})...")
             time.sleep(delay)
+    return {
+        "source": src.name,
+        "attempts": attempts,
+        "final_state": "failed",
+        "retried": len(attempts) > 1,
+    }
 
 
 def process_single_track(
@@ -84,7 +114,7 @@ def process_single_track(
         local_raw_dir = buffer_dir / disc_subdir
         local_raw_dir.mkdir(parents=True, exist_ok=True)
         local_source_path = local_raw_dir / adopted_info["path"].name
-        copy_with_retry(adopted_info["path"], local_source_path)
+        io_retry_log = copy_with_retry(adopted_info["path"], local_source_path)
 
         processed_path, has_warnings = tagger.convert_and_limit(
             local_source_path,
@@ -113,6 +143,7 @@ def process_single_track(
             },
             "had_warning": bool(has_warnings),
             "failed": False,
+            "io_retry_log": io_retry_log,
         }
 
     except Exception as e:
@@ -122,4 +153,5 @@ def process_single_track(
             "track_meta": None,
             "had_warning": False,
             "failed": True,
+            "io_retry_log": io_retry_log,
         }

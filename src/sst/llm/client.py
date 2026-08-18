@@ -1,5 +1,6 @@
 import re
 import json
+import hashlib
 import logging
 import requests
 import time
@@ -124,6 +125,7 @@ class LLMClient:
             "response": None,
             "error": None,
             "request_kind": request_kind,
+            "request_id": hashlib.sha1(f"{app_id}:{request_kind}:{time.monotonic_ns()}".encode("utf-8")).hexdigest()[:12],
             "attempts": [],
         }
 
@@ -136,7 +138,8 @@ class LLMClient:
         max_retries = 3
         retry_delay = 5
         effective_num_ctx = num_ctx or self.ollama_num_ctx
-        request_started = time.monotonic()
+        request_enqueued = time.monotonic()
+        request_started = request_enqueued
 
         self._notify_progress(
             progress_callback,
@@ -201,6 +204,10 @@ class LLMClient:
                             "done_reason": done_reason,
                             "prompt_eval_count": res_json.get("prompt_eval_count"),
                             "eval_count": res_json.get("eval_count"),
+                            "load_duration_ns": res_json.get("load_duration"),
+                            "prompt_eval_duration_ns": res_json.get("prompt_eval_duration"),
+                            "eval_duration_ns": res_json.get("eval_duration"),
+                            "total_duration_ns": res_json.get("total_duration"),
                         }
 
                         if done_reason in {"length", "max_tokens"}:
@@ -256,12 +263,16 @@ class LLMClient:
                                 total_duration = round(time.monotonic() - request_started, 3)
                                 prompt_eval_count = log_entry.get("meta", {}).get("prompt_eval_count")
                                 eval_count = log_entry.get("meta", {}).get("eval_count")
+                                # 提案6: prompt cache ヒット判定（概算・監査用途）
+                                expected_prompt_tokens = self._estimate_expected_output_tokens(request_kind, request_units) + len(prompt) // 4
+                                cache_hit = bool(prompt_eval_count) and prompt_eval_count < expected_prompt_tokens * 0.9
                                 log_entry["attempts"].append({
                                     "attempt": attempt + 1,
                                     "done_reason": done_reason,
                                     "duration_seconds": total_duration,
-                                    "prompt_eval_count": log_entry.get("meta", {}).get("prompt_eval_count"),
-                                    "eval_count": log_entry.get("meta", {}).get("eval_count"),
+                                    "prompt_eval_count": prompt_eval_count,
+                                    "eval_count": eval_count,
+                                    "cache_hit": cache_hit,
                                 })
                                 logger.info(
                                     "LLM_REQUEST_DONE %s",
@@ -276,7 +287,9 @@ class LLMClient:
                                         "eval_count": eval_count,
                                         "total_tokens": (prompt_eval_count or 0) + (eval_count or 0),
                                         "output_budget": output_budget,
-                                        "wait_seconds": 0,
+                                        "wait_seconds": round(request_started - request_enqueued, 3),
+                                        "cache_hit": cache_hit,
+                                        "request_id": log_entry.get("request_id"),
                                     }, ensure_ascii=False),
                                 )
                                 self._notify_progress(
