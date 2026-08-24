@@ -17,7 +17,7 @@ from .alignment_inputs import AlignmentInputBuilder
 from .track_grouper import TrackManager
 from .validator import ResultValidator
 from .report_generator import ReportGenerator
-from .processor_support import adopt_best_file_per_slot, build_slot_variant_index, fetch_album_artwork, send_notifications, resolve_duplicate_mappings, select_best_unassigned_files
+from .processor_support import adopt_best_file_per_slot, build_slot_variant_index, fetch_album_artwork, send_notifications, resolve_duplicate_mappings, select_best_unassigned_files, reconcile_deterministic_unassigned_slots
 from .processor_tracks import process_single_track
 from .alignment_flow import collect_alignment_inputs, consolidate_alignment_inputs
 from .processor_pipeline import handle_early_review_return
@@ -141,8 +141,9 @@ class LocalProcessor:
             
             clean_title_part = record_title.split("::")[0] if "::" in record_title else record_title
             norm_local_title = TrackManager.normalize_title(clean_title_part)
+            norm_stem_title = TrackManager.normalize_title(Path(clean_title_part).stem)
             norm_meta_title = TrackManager.normalize_title(str((variants[0].get("meta") or {}).get("title") or "")) if variants else ""
-            norm_titles = [t for t in (norm_local_title, norm_meta_title) if t]
+            norm_titles = [t for t in (norm_local_title, norm_stem_title, norm_meta_title) if t]
 
             candidate_slot_key = None
             if len(track_numbers) == 1:
@@ -391,6 +392,16 @@ class LocalProcessor:
             if final_metadata:
                 self._resolve_duplicate_mappings(app_id, final_metadata, steam_meta, track_groups)
 
+            # Identity and strategy for builder
+            p1_res = llm_log.get("phase1_res", {})
+            global_identity = p1_res.get("global_tags", {}) if p1_res else {}
+
+            # --- DETERMINISTIC RESIDUAL RECONCILIATION (Sudoku 1:1 match) ---
+            if final_metadata:
+                reconciled = reconcile_deterministic_unassigned_slots(final_metadata, track_groups, steam_meta, global_identity)
+                if reconciled:
+                    _diag("DETERMINISTIC_RECONCILED", reconciled_count=len(reconciled))
+
             # Compatibility layer for existing validator/tagger
             # We still need track_sources for build_tag_map
             track_sources = TrackManager.prepare_llm_track_context(track_groups)
@@ -402,10 +413,6 @@ class LocalProcessor:
                 variant_count=sum(len(v) for v in slot_variant_index.values()),
                 multi_variant_slot_count=multi_variant_slot_count,
             )
-            
-            # Identity and strategy for builder
-            p1_res = llm_log.get("phase1_res", {})
-            global_identity = p1_res.get("global_tags", {}) if p1_res else {}
             
             # For now, we skip the old MusicBrainz Alignment and VGMdb Integration sections
             
@@ -475,6 +482,8 @@ class LocalProcessor:
                 track_groups,
                 final_metadata,
                 alignment_unassigned_ids or None,
+                slot_variant_index=slot_variant_index,
+                track_to_slot_index=track_to_slot_index,
             ):
                 manifest = {
                     "track_id": unassigned["track_id"],

@@ -574,13 +574,38 @@ class LLMOrganizer:
 
             segment_logs.append(track_log)
             if track_res is None:
-                logger.warning(
-                    "[%s] Track mapping returned no result for virtual chunk at index=%s; "
-                    "continuing with an empty instruction set.",
-                    app_id,
-                    chunk_start,
-                )
-                track_res = {}
+                # If LLM failed/truncated, attempt safe deterministic prematch fallback before giving up
+                fallback_slots = {}
+                for track in chunk:
+                    for fid in track.get("file_ids", []):
+                        fid_str = str(fid)
+                        pm = prematch_map.get(fid_str) if prematch_map else None
+                        if pm and (pm.acoustid_steam_slot or pm.mbz_search_steam_slot or pm.override_track):
+                            target_slot = str(pm.acoustid_steam_slot or pm.mbz_search_steam_slot or pm.override_track)
+                            fallback_slots[target_slot] = {
+                                "files": [fid_str],
+                                "confidence": 0.95,
+                                "reason": f"SYSTEM: Prematch fallback ({pm.evidence[0] if pm.evidence else 'rule'})",
+                            }
+                        else:
+                            t_num = track.get("n") or track.get("track_num")
+                            if t_num and str(t_num).isdigit() and full_ref_steam and 0 < int(t_num) <= len(full_ref_steam):
+                                fallback_slots[str(t_num)] = {
+                                    "files": [fid_str],
+                                    "confidence": 0.90,
+                                    "reason": f"SYSTEM: Number match fallback (#{t_num})",
+                                }
+                if fallback_slots:
+                    logger.info(f"[{app_id}] Truncation/LLM failure at index={chunk_start}: recovered {len(fallback_slots)} slots via deterministic prematch fallback.")
+                    track_res = {"slots": fallback_slots, "unassigned_files": []}
+                else:
+                    logger.warning(
+                        "[%s] Track mapping returned no result for virtual chunk at index=%s; "
+                        "continuing with an empty instruction set.",
+                        app_id,
+                        chunk_start,
+                    )
+                    track_res = {}
             segment_instructions.update(
                 self._merge_track_instructions(
                     track_res,
@@ -647,9 +672,9 @@ class LLMOrganizer:
                 continue
             st = {
                 "v_idx": idx, # Unique index in this alignment input bundle
-                "d": t.get("disc"),
-                "n": t.get("track_num"),
-                "t": t.get("title")
+                "d": t.get("disc") or t.get("d"),
+                "n": t.get("track_num") or t.get("n") or t.get("number"),
+                "t": t.get("title") or t.get("t")
             }
             # Keep credits if they exist (FINGERPRINT source)
             if t.get("credits"):
@@ -721,22 +746,63 @@ class LLMOrganizer:
             if global_res:
                 global_log["cache"] = self.llm_cache.put(cache_key_input, "identity", self.user_language, global_res)
 
+        steam_count = len(v_steam.get("tracks", []))
+        local_count = len(v_local.get("tracks", []))
+
         if not global_res:
-             return None, {"phase1_res": None, "phase1_log": global_log}
+            # If identity LLM failed/truncated but STEAM and LOCAL structurally match 1:1,
+            # activate STEAM-TRUST fallback rather than failing the whole album.
+            if steam_count > 0 and steam_count == local_count:
+                logger.warning(f"[{app_id}] Identity LLM call failed/truncated. Activating STEAM-TRUST fallback ({steam_count} tracks).")
+                global_res = {
+                    "album_confidence": 100,
+                    "mapping_confidence": 90,
+                    "data_quality": 80,
+                    "identity_confidence": 100,
+                    "integrity_quality": 100,
+                    "archive_vs_review_ratio": {"archive": 100, "review": 0},
+                    "confidence_reason": "SYSTEM: STEAM-TRUSTフォールバック (LLM応答切断のため構造一致を採用)",
+                    "strategy": "STEAM_BASED",
+                    "semantic_label": "Steam Tracklist",
+                    "global_tags": {
+                        "canonical_album_artist": v_steam.get("artist"),
+                        "canonical_genre": "Soundtrack",
+                        "canonical_year": v_steam.get("year"),
+                        "canonical_label": v_steam.get("label"),
+                        "chosen_mbz_id": None,
+                    },
+                    "concerns": ["LLM identity truncated; fallen back to Steam metadata"],
+                }
+            else:
+                return None, {"phase1_res": None, "phase1_log": global_log}
 
         global_res = self._normalize_identity_result(global_res)
 
         # --- SYSTEM-LEVEL HEURISTICS (PRE-NORMALIZE) ---
-        # 1. STEAM-TRUST Path: If STEAM count matches LOCAL count exactly
+        # 1. STEAM-TRUST Path: If STEAM count matches LOCAL count (or unique variant slots)
         # and LLM was conservative (conf < 95), trust the structural match.
         steam_count = len(v_steam.get("tracks", []))
         local_count = len(v_local.get("tracks", []))
         current_conf = global_res.get("identity_confidence", 0)
+
+        # Multi-format variant equivalence: check unique track keys in local_tracks
+        unique_local_slots = len({
+            (
+                str(track.get("disc", 1)),
+                str(track.get("track_num") or track.get("filename_track") or track.get("title") or track.get("norm_stem") or "")
+            )
+            for track in local_tracks
+        }) if local_tracks else 0
+        structural_match = (steam_count > 0 and (steam_count == local_count or steam_count == unique_local_slots))
         
-        if steam_count > 0 and steam_count == local_count:
+        if structural_match:
             if current_conf < 100 and (not v_fingerprint or current_conf >= 80):
-                logger.info(f"[{app_id}] Applying STEAM-TRUST: Structural match detected ({steam_count} tracks). Boosting confidence to 100%.")
+                logger.info(f"[{app_id}] Applying STEAM-TRUST: Structural match detected (Steam: {steam_count}, Local: {local_count}, Unique: {unique_local_slots}). Boosting confidence to 100%.")
                 global_res["identity_confidence"] = 100
+                global_res["album_confidence"] = 100
+                global_res["mapping_confidence"] = 100
+                global_res["integrity_quality"] = 100
+                global_res["data_quality"] = 100
                 global_res["archive_vs_review_ratio"] = {"archive": 100, "review": 0}
                 global_res["strategy"] = "STEAM_BASED"
                 global_res["confidence_reason"] = f"SYSTEM: STEAM-TRUSTにより確信度を100%に引き上げました ({steam_count}トラックとの構造的一致)"
@@ -776,22 +842,117 @@ class LLMOrganizer:
             v_mbz_search=v_mbz_search,
         )
 
-        dynamic_chunk_size = max(1, self._adaptive_chunk_size(self.chunk_size_virtual))
-        segments = [
-            (start_idx, local_tracks[start_idx:start_idx + dynamic_chunk_size])
-            for start_idx in range(0, len(local_tracks), dynamic_chunk_size)
+        # 1. 確定済みスロットの抽出 (Deterministic Pre-resolution)
+        deterministic_instructions: Dict[str, Dict[str, Any]] = {}
+        resolved_slot_keys: set[str] = set()
+        resolved_local_indices: set[int] = set()
+
+        slot_to_fids: Dict[str, List[str]] = {}
+        for fid_str, pm in prematch_map.items():
+            if pm and pm.is_deterministic and pm.deterministic_steam_slot is not None:
+                slot_key = str(pm.deterministic_steam_slot)
+                slot_to_fids.setdefault(slot_key, []).append(fid_str)
+
+        fid_to_track_idx = {}
+        for idx, track in enumerate(local_tracks):
+            for fid in track.get("file_ids", []):
+                fid_to_track_idx[str(fid)] = idx
+
+        for slot_key, fids in slot_to_fids.items():
+            matched_v_idx = self._resolve_slot_key_to_v_idx(slot_key, full_ref_steam)
+            if matched_v_idx is not None:
+                resolved_slot_keys.add(slot_key)
+                for fid in fids:
+                    pm = prematch_map.get(fid)
+                    track_idx = fid_to_track_idx.get(fid)
+                    if track_idx is not None:
+                        resolved_local_indices.add(track_idx)
+                        matching_track = local_tracks[track_idx]
+                        tid = f"{matching_track['local_key'][0]}_{matching_track['local_key'][1]}"
+                        tags = global_res.get("global_tags", {}) if isinstance(global_res.get("global_tags"), dict) else {}
+                        deterministic_instructions[tid] = {
+                            "matched_v_idx": matched_v_idx,
+                            "mbz_track_index": pm.mbz_track_index if pm else None,
+                            "override_title": None,
+                            "override_track": str(slot_key),
+                            "override_disc": None,
+                            "reason": f"SYSTEM: Deterministic match ({pm.evidence[0] if pm and pm.evidence else 'exact'})",
+                            "TPE2": tags.get("canonical_album_artist"),
+                            "TCON": tags.get("canonical_genre"),
+                            "TDRC": tags.get("canonical_year"),
+                            "TPUB": tags.get("canonical_label"),
+                        }
+
+        # 2. 未確定トラックと空きスロットの抽出 (Unresolved Differential)
+        unmatched_local_tracks = [
+            track for idx, track in enumerate(local_tracks)
+            if idx not in resolved_local_indices
+        ]
+        unfilled_steam_slots = [
+            slot for slot in full_ref_steam
+            if str(slot.get("n", slot.get("v_idx", 0) + 1)) not in resolved_slot_keys
         ]
 
-        should_parallelize = self.llm_backend == "OLLAMA" and self.llm_request_parallelism_enabled and len(segments) > 1
+        logger.info(
+            f"[{app_id}] 差分推論アライメント: 確定済みスロット={len(resolved_slot_keys)}/{len(full_ref_steam)}, "
+            f"未確定ローカルトラック={len(unmatched_local_tracks)}/{len(local_tracks)}, "
+            f"空きSteamスロット={len(unfilled_steam_slots)}"
+        )
+
+        final_instructions = dict(deterministic_instructions)
         segment_results: Dict[int, Tuple[Dict[str, Dict[str, Any]], List[Dict[str, Any]]]] = {}
 
-        if should_parallelize:
-            worker_count = self._resolve_phase2_worker_count(execution_profile, len(segments))
-            logger.info(f"[{app_id}] Phase 2 mapping chunk を並列実行します。segments={len(segments)} workers={worker_count}")
-            with ThreadPoolExecutor(max_workers=worker_count) as executor:
-                future_map = {
-                    executor.submit(
-                        self._process_track_mapping_segment,
+        if not unmatched_local_tracks or not unfilled_steam_slots:
+            logger.info(f"[{app_id}] すべてのトラックが決定論的プレマッチで確定しました。LLM Phase 2 をバイパスし、確信度を100%に設定します。")
+            global_res["identity_confidence"] = 100
+            global_res["album_confidence"] = 100
+            global_res["mapping_confidence"] = 100
+            global_res["integrity_quality"] = 100
+            global_res["data_quality"] = 100
+            global_res["strategy"] = "STEAM_BASED"
+            global_res["semantic_label"] = "Archive"
+            global_res["archive_vs_review_ratio"] = {"archive": 100, "review": 0}
+            global_res["confidence_reason"] = f"SYSTEM: すべてのトラックが決定論的プレマッチで確定 ({len(deterministic_instructions)}/{len(full_ref_steam)}スロット)"
+            segment_results[0] = (deterministic_instructions, [])
+        else:
+            dynamic_chunk_size = max(1, self._adaptive_chunk_size(self.chunk_size_virtual))
+            segments = [
+                (start_idx, unmatched_local_tracks[start_idx:start_idx + dynamic_chunk_size])
+                for start_idx in range(0, len(unmatched_local_tracks), dynamic_chunk_size)
+            ]
+            should_parallelize = self.llm_backend == "OLLAMA" and self.llm_request_parallelism_enabled and len(segments) > 1
+
+            if should_parallelize:
+                worker_count = self._resolve_phase2_worker_count(execution_profile, len(segments))
+                logger.info(f"[{app_id}] Phase 2 differential mapping chunk を並列実行します。segments={len(segments)} workers={worker_count}")
+                with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                    future_map = {
+                        executor.submit(
+                            self._process_track_mapping_segment,
+                            app_id,
+                            start_idx,
+                            segment_tracks,
+                            local_tracks,
+                            global_res,
+                            s_mbz_search,
+                            v_mbz_search,
+                            unfilled_steam_slots,
+                            full_ref_fingerprint,
+                            full_ref_mbz_search,
+                            coherence_mappings,
+                            resolved_num_ctx,
+                            dynamic_chunk_size,
+                            progress_callback,
+                            prematch_map=prematch_map,
+                        ): start_idx
+                        for start_idx, segment_tracks in segments
+                    }
+                    for future in as_completed(future_map):
+                        start_idx, instructions, segment_logs = future.result()
+                        segment_results[start_idx] = (instructions, segment_logs)
+            else:
+                for start_idx, segment_tracks in segments:
+                    start_idx, instructions, segment_logs = self._process_track_mapping_segment(
                         app_id,
                         start_idx,
                         segment_tracks,
@@ -799,7 +960,7 @@ class LLMOrganizer:
                         global_res,
                         s_mbz_search,
                         v_mbz_search,
-                        full_ref_steam,
+                        unfilled_steam_slots,
                         full_ref_fingerprint,
                         full_ref_mbz_search,
                         coherence_mappings,
@@ -807,37 +968,13 @@ class LLMOrganizer:
                         dynamic_chunk_size,
                         progress_callback,
                         prematch_map=prematch_map,
-                    ): start_idx
-                    for start_idx, segment_tracks in segments
-                }
-                for future in as_completed(future_map):
-                    start_idx, instructions, segment_logs = future.result()
+                    )
                     segment_results[start_idx] = (instructions, segment_logs)
-        else:
-            for start_idx, segment_tracks in segments:
-                start_idx, instructions, segment_logs = self._process_track_mapping_segment(
-                    app_id,
-                    start_idx,
-                    segment_tracks,
-                    local_tracks,
-                    global_res,
-                    s_mbz_search,
-                    v_mbz_search,
-                    full_ref_steam,
-                    full_ref_fingerprint,
-                    full_ref_mbz_search,
-                    coherence_mappings,
-                    resolved_num_ctx,
-                    dynamic_chunk_size,
-                    progress_callback,
-                    prematch_map=prematch_map,
-                )
-                segment_results[start_idx] = (instructions, segment_logs)
 
-        for start_idx in sorted(segment_results):
-            instructions, segment_logs = segment_results[start_idx]
-            final_instructions.update(instructions)
-            full_logs.extend(segment_logs)
+            for start_idx in sorted(segment_results):
+                instructions, segment_logs = segment_results[start_idx]
+                final_instructions.update(instructions)
+                full_logs.extend(segment_logs)
 
         alignment_res = self._build_slot_view_from_final_instructions(final_instructions, local_tracks)
         alignment_res["diagnostics"] = self._build_alignment_diagnostics(

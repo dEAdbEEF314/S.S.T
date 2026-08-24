@@ -116,17 +116,23 @@ class ResultValidator:
         d_count = 0
         chosen_mbz_idx = p1_res.get("global_tags", {}).get("chosen_mbz_index")
         mbz_release = mbz_candidates[chosen_mbz_idx] if mbz_candidates and chosen_mbz_idx is not None and chosen_mbz_idx < len(mbz_candidates) else None
+        steam_titles = [str(tr.get("title") or tr.get("name") or "").strip().lower() for tr in (steam_meta.store_tracklist or [])]
+        mbz_titles = [str(tr.get("title", "")).strip().lower() for tr in (mbz_release.get("tracks", []) if mbz_release else [])]
 
         for t in tracks:
-            title = str(t["tags"].get("title", ""))
+            title = str(t["tags"].get("title", "")).strip()
+            title_source = str(t.get("title_source", "")).upper()
             track_num = str(t["tags"].get("track_number", "0"))
+            
+            # If the title source is directly from Steam, it is authoritative by spec
+            if title_source == "STEAM" or title.lower() in steam_titles:
+                continue
+
             match = dirty_pattern.match(title)
             if match:
                 if match.group(2) == '.' and match.end() < len(title) and title[match.end()].isdigit():
                     continue
-                mbz_titles = [str(tr.get("title", "")).lower() for tr in mbz_release.get("tracks", [])] if mbz_release else []
-                steam_titles = [str(tr.get("title", "")).lower() for tr in steam_meta.store_tracklist] if steam_meta and steam_meta.store_tracklist else []
-                if title.lower() in mbz_titles or title.lower() in steam_titles:
+                if title.lower() in mbz_titles:
                     continue
                 prefixed_num = match.group(1).lstrip('0') or '0'
                 clean_track_num = track_num.lstrip('0') or '0'
@@ -160,6 +166,10 @@ class ResultValidator:
             issues.append("CRITICAL: Audio Source Error")
         elif audio_warn:
             issues.append("Audio quality warning")
+
+        diagnostics = llm_log.setdefault("diagnostics", {})
+        diagnostics["audio_quality_warnings"] = bool(audio_warn)
+        diagnostics["audio_source_failures"] = bool(audio_fail)
 
         # --- 3. Confidence & Quality Thresholds ---
         llm_archive_path = album_confidence >= 90 and mapping_confidence >= 80 and data_quality >= 70

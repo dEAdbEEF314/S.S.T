@@ -37,11 +37,22 @@ def handle_early_review_return(
         error_msg = "No reason provided by LLM."
         
     diagnostics["review_cause_code"] = "EARLY_REVIEW_RETURN"
-    diagnostics["upstream_cause_code"] = "LLM_RESPONSE_MISSING" if not p1_res else "PRE_ALIGNMENT_REVIEW_GATE"
     steam_expected_slots = len(steam_meta.store_tracklist or [])
+    if not p1_res:
+        diagnostics["upstream_cause_code"] = "LLM_RESPONSE_MISSING"
+        final_msg = f"LLM Failure: {error_msg}"
+    elif score >= 90 and steam_expected_slots > 0:
+        diagnostics["upstream_cause_code"] = "TRACK_MAPPING_FAILURE"
+        final_msg = f"Track Mapping Failure (No valid slot assignments): {error_msg}"
+    else:
+        diagnostics["upstream_cause_code"] = "PRE_ALIGNMENT_REVIEW_GATE"
+        if steam_expected_slots == 0:
+            final_msg = f"Low Confidence (PRE_ALIGNMENT_REVIEW_GATE: Steam Tracklist Missing): {error_msg}"
+        else:
+            final_msg = f"Low Confidence ({diagnostics['upstream_cause_code']}): {error_msg}"
+    
     adopted_slots = 0
     unassigned_slots = steam_expected_slots
-    final_msg = f"LLM Failure: {error_msg}" if not p1_res else f"Low Confidence ({diagnostics['upstream_cause_code']}): {error_msg}"
     diagnostics["steam_expected_slots"] = steam_expected_slots
     diagnostics["adopted_slots"] = adopted_slots
     diagnostics["unassigned_slots"] = unassigned_slots

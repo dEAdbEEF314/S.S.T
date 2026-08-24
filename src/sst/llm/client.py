@@ -49,8 +49,8 @@ class LLMClient:
             return min(self.ollama_num_predict, 4096)
         if request_kind == "track_mapping":
             per_track = max(80, self.chunk_output_tokens_per_track)
-            return max(512, min(self.ollama_num_predict, 512 + request_units * per_track))
-        return max(512, min(self.ollama_num_predict, 512 + request_units * self.chunk_output_tokens_per_track))
+            return max(1536, min(self.ollama_num_predict, 1536 + request_units * per_track))
+        return max(1024, min(self.ollama_num_predict, 1024 + request_units * self.chunk_output_tokens_per_track))
 
     def _notify_progress(self, progress_callback: Optional[ProgressCallback], **event: Any):
         if not progress_callback:
