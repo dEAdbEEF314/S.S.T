@@ -43,6 +43,8 @@ def build_slot_variant_index(
         except ValueError:
             return 999
 
+    # 1. First pass: map tracks explicitly aligned in final_metadata
+    unaligned_groups = []
     for (disc, clean_title), variants in track_groups.items():
         track_id = f"{disc}_{clean_title}"
         instr = final_metadata.get(track_id, {}) if isinstance(final_metadata, dict) else {}
@@ -53,17 +55,68 @@ def build_slot_variant_index(
             track = steam_meta.store_tracklist[int(matched_v_idx)]
             slot_key = _normalize_slot_key(track.get("disc", 1), track.get("number"))
 
-        if slot_key is None:
+        if slot_key is None and instr.get("override_track") is not None:
             slot_key = _normalize_slot_key(instr.get("override_disc", disc), instr.get("override_track"))
 
-        if slot_key is None:
-            track_numbers = [variant.get("t_num_val") for variant in variants if variant.get("t_num_val") not in (None, "", "0")]
-            inferred_track = track_numbers[0] if track_numbers else None
-            slot_key = _normalize_slot_key(disc, inferred_track)
+        if slot_key is not None:
+            slot_variants[slot_key].extend(variants)
+            track_to_slot[track_id] = slot_key
+        else:
+            unaligned_groups.append(((disc, clean_title), variants))
 
+    # 2. Second pass: format variant consolidation for unaligned groups
+    # If an unaligned group is a format variant of an already assigned slot (same disc, diff format, dur diff < 1.0s, title match),
+    # merge it into that slot's variants as a subordinate variant.
+    remaining_unaligned = []
+    for (disc, clean_title), variants in unaligned_groups:
+        track_id = f"{disc}_{clean_title}"
+        if not variants:
+            continue
+        raw_title = clean_title.split("::")[0] if "::" in clean_title else clean_title
+        u_norm_title = TrackManager.normalize_title(raw_title)
+        u_dur = float(variants[0].get("duration", 0.0) or 0.0)
+        u_fmt = str(variants[0].get("format", "")).lower()
+        u_num = str(variants[0].get("t_num_val") or "").lstrip("0")
+
+        merged_slot_key = None
+        for slot_key, assigned_variants in list(slot_variants.items()):
+            if not isinstance(slot_key, tuple) or len(slot_key) != 2 or not str(slot_key[1]).isdigit():
+                continue
+            s_disc, _ = slot_key
+            if s_disc != disc:
+                continue
+
+            for a_var in assigned_variants:
+                a_fmt = str(a_var.get("format", "")).lower()
+                a_dur = float(a_var.get("duration", 0.0) or 0.0)
+                a_stem = a_var.get("norm_stem") or ""
+                a_num = str(a_var.get("t_num_val") or "").lstrip("0")
+
+                is_diff_fmt = (a_fmt != u_fmt) and bool(a_fmt and u_fmt)
+                dur_ok = abs(a_dur - u_dur) < 1.0 if (a_dur > 0 and u_dur > 0) else True
+                num_match = (a_num == u_num and a_num != "")
+                title_match = bool(u_norm_title and a_stem and (u_norm_title == a_stem or u_norm_title.startswith(a_stem) or a_stem.startswith(u_norm_title)))
+
+                if is_diff_fmt and dur_ok and (title_match or num_match):
+                    merged_slot_key = slot_key
+                    break
+            if merged_slot_key:
+                break
+
+        if merged_slot_key is not None:
+            slot_variants[merged_slot_key].extend(variants)
+            track_to_slot[track_id] = merged_slot_key
+        else:
+            remaining_unaligned.append(((disc, clean_title), variants))
+
+    # 3. Third pass: fallback for remaining unaligned groups (inferred track or clean_title)
+    for (disc, clean_title), variants in remaining_unaligned:
+        track_id = f"{disc}_{clean_title}"
+        track_numbers = [variant.get("t_num_val") for variant in variants if variant.get("t_num_val") not in (None, "", "0")]
+        inferred_track = track_numbers[0] if track_numbers else None
+        slot_key = _normalize_slot_key(disc, inferred_track)
         if slot_key is None:
             slot_key = (disc, clean_title)
-
         slot_variants[slot_key].extend(variants)
         track_to_slot[track_id] = slot_key
 
@@ -111,18 +164,41 @@ def select_best_unassigned_files(
     track_groups: Dict,
     final_metadata: Dict[str, Any],
     unassigned_file_ids: Optional[set[str]] = None,
+    slot_variant_index: Optional[Dict[tuple[int, str], List[Dict[str, Any]]]] = None,
+    track_to_slot_index: Optional[Dict[str, tuple[int, str]]] = None,
 ) -> List[Dict[str, Any]]:
     """Select one highest-tier source file for each unassigned logical group."""
     priorities = TrackManager.get_audio_format_priority()
+
+    assigned_file_ids_in_slots = set()
+    if slot_variant_index:
+        for slot_key, variants in slot_variant_index.items():
+            if isinstance(slot_key, tuple) and len(slot_key) == 2 and str(slot_key[1]).isdigit():
+                for v in variants:
+                    if v.get("file_id"):
+                        assigned_file_ids_in_slots.add(str(v["file_id"]))
+
     selected = []
     for (disc, clean_title), variants in track_groups.items():
         track_id = f"{disc}_{clean_title}"
         if track_id in final_metadata or not variants:
             continue
+
+        if track_to_slot_index and track_id in track_to_slot_index:
+            s_key = track_to_slot_index[track_id]
+            if isinstance(s_key, tuple) and len(s_key) == 2 and str(s_key[1]).isdigit():
+                continue
+
         if unassigned_file_ids is not None:
             variants = [variant for variant in variants if variant.get("file_id") in unassigned_file_ids]
             if not variants:
                 continue
+
+        if assigned_file_ids_in_slots:
+            variants = [v for v in variants if str(v.get("file_id")) not in assigned_file_ids_in_slots]
+            if not variants:
+                continue
+
         chosen = min(
             variants,
             key=lambda variant: priorities.index(str(variant.get("format", "")).lower())
@@ -180,19 +256,113 @@ def fetch_album_artwork(
                 logger.debug(f"MBZアートワークの取得に失敗しました: {e}")
 
     # 3. Steam (Store Header)
-    url = steam_meta.header_image_url
-    if not url and steam_meta.app_id:
-        url = f"https://cdn.akamai.steamstatic.com/steam/apps/{steam_meta.app_id}/header.jpg"
-    if url:
-        try:
-            r = requests.get(url, timeout=15)
-            if r.status_code == 200:
-                logger.info("Steamソースからアルバムアートワークを採用しました")
-                return r.content
-        except Exception as e:
-            logger.debug(f"Steamアートワークの取得に失敗しました: {e}")
+    # 3. STEAM (Header Image)
+    if steam_meta.header_image_url:
+        logger.info("STEAMソースからアルバムアートワークを採用しました")
+        return mbz_client.download_artwork(steam_meta.header_image_url)
 
+    logger.warning("全ソースから有効なアルバムアートワークを取得できませんでした")
     return None
+
+
+def reconcile_deterministic_unassigned_slots(
+    final_metadata: Dict[str, Any],
+    track_groups: Dict,
+    steam_meta: SteamMetadata,
+    global_identity: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """
+    Reconciles unassigned files with missing Steam slots using a deterministic 1:1 match
+    (Sudoku-like elimination) without title synthesis or LLM guessing.
+    """
+    reconciled_logs = []
+    store_tracklist = steam_meta.store_tracklist or []
+    if not store_tracklist or not track_groups:
+        return reconciled_logs
+
+    assigned_v_indices = {
+        instr.get("matched_v_idx")
+        for instr in final_metadata.values()
+        if instr.get("matched_v_idx") is not None
+    }
+
+    missing_steam = [
+        (idx, st) for idx, st in enumerate(store_tracklist)
+        if idx not in assigned_v_indices
+    ]
+
+    assigned_tids = set(final_metadata.keys())
+    unassigned_group_keys = [
+        key for key in track_groups.keys()
+        if f"{key[0]}_{key[1]}" not in assigned_tids
+    ]
+
+    if not missing_steam or not unassigned_group_keys:
+        return reconciled_logs
+
+    # Find unique 1:1 deterministic matches (number match or strict title match)
+    for idx, steam_slot in missing_steam:
+        s_disc = int(steam_slot.get("disc", 1))
+        s_num = str(steam_slot.get("number") or steam_slot.get("n", "0")).split("/")[0].lstrip("0") or "0"
+        s_title = TrackManager.normalize_title(str(steam_slot.get("title") or steam_slot.get("name") or ""))
+
+        matching_groups = []
+        for group_key in unassigned_group_keys:
+            tid = f"{group_key[0]}_{group_key[1]}"
+            if tid in final_metadata:
+                continue
+            variants = track_groups.get(group_key, [])
+            t_disc = int(group_key[0])
+            t_num_val = variants[0].get("t_num_val") if variants else None
+            t_num = str(t_num_val or "0").split("/")[0].lstrip("0") or "0"
+
+            raw_title = group_key[1].split("::")[0] if "::" in group_key[1] else group_key[1]
+            t_title = TrackManager.normalize_title(raw_title)
+
+            num_match = (s_disc == t_disc and s_num == t_num and s_num != "0")
+            title_match = bool(s_title and t_title and (s_title == t_title or s_title.startswith(t_title) or t_title.startswith(s_title)))
+
+            if num_match or title_match:
+                matching_groups.append((group_key, "number_match" if num_match else "title_match", variants))
+
+        # Apply when exactly one match or all matches are multi-format variants of the same track
+        if matching_groups:
+            durations = [float(v.get("duration", 0.0) or 0.0) for _, _, vars in matching_groups for v in vars]
+            is_same_variant_set = (
+                len({TrackManager.normalize_title(gk[1].split("::")[0] if "::" in gk[1] else gk[1]) for gk, _, _ in matching_groups}) <= 1
+                and (not durations or max(durations) - min(durations) < 1.0)
+            )
+
+            if len(matching_groups) == 1 or is_same_variant_set:
+                for group_key, match_rule, _ in matching_groups:
+                    tid = f"{group_key[0]}_{group_key[1]}"
+                    final_metadata[tid] = {
+                        "matched_v_idx": idx,
+                        "mbz_track_index": None,
+                        "override_title": None,
+                        "override_track": str(steam_slot.get("number") or steam_slot.get("n")),
+                        "override_disc": None,
+                        "composer": None,
+                        "lyricist": None,
+                        "arranger": None,
+                        "reason": f"SYSTEM: 決定論的残差確定 (Steam Slot #{s_num}: '{s_title}')",
+                        "TPE2": global_identity.get("canonical_album_artist"),
+                        "TCON": global_identity.get("canonical_genre"),
+                        "TDRC": global_identity.get("canonical_year"),
+                        "TPUB": global_identity.get("canonical_label"),
+                    }
+                    log_entry = {
+                        "tid": tid,
+                        "matched_v_idx": idx,
+                        "steam_slot": s_num,
+                        "steam_title": s_title,
+                        "rule": match_rule,
+                    }
+                    reconciled_logs.append(log_entry)
+                    logger.info(f"決定論的残差確定: {tid} -> Steam Slot {s_num} ('{s_title}') by {match_rule}")
+                assigned_v_indices.add(idx)
+
+    return reconciled_logs
 
 
 def send_notifications(
@@ -273,9 +443,9 @@ def resolve_duplicate_mappings(
         if len(tids) <= 1:
             continue
 
-        # --- NEW: FORMAT DEDUPLICATION ---
+        # --- FORMAT DEDUPLICATION ---
         # ユーザーの「フォーマットごとの仮想アルバム処理」に基づき、
-        # LLMが同一のSTEAMトラックにマッピングした異なるフォーマットのトラックを統合する。
+        # 同一のSTEAMトラックにマッピングされた異なるフォーマットのトラックを統合する。
         from .track_grouper import TrackManager
         priorities = TrackManager.get_audio_format_priority()
 
@@ -296,20 +466,35 @@ def resolve_duplicate_mappings(
                     return 999
             return 999
 
+        def get_stem_and_duration(tid):
+            group_key = get_group_key(tid)
+            if group_key not in track_groups or not track_groups[group_key]:
+                return "", 0.0, ""
+            variants = track_groups[group_key]
+            raw_title = group_key[1].split("::")[0] if "::" in group_key[1] else group_key[1]
+            norm_title = TrackManager.normalize_title(raw_title)
+            fmt = str(variants[0].get("format", "")).lower()
+            dur = float(variants[0].get("duration", 0.0) or 0.0)
+            return norm_title, dur, fmt
+
         tids_sorted = sorted(tids, key=get_priority)
         best_tid = tids_sorted[0]
+        best_norm_title, best_dur, best_fmt = get_stem_and_duration(best_tid)
         
         merged_any = False
         tids_to_remove = []
         for tid in tids_sorted[1:]:
-            try:
-                best_stem = best_tid.split("_", 1)[1].rsplit(" ", 1)[0]
-                this_stem = tid.split("_", 1)[1].rsplit(" ", 1)[0]
-            except Exception:
-                best_stem = best_tid
-                this_stem = tid
+            this_norm_title, this_dur, this_fmt = get_stem_and_duration(tid)
 
-            if best_stem == this_stem:
+            # 4重AND条件による厳格なバリアント統合判定
+            # 1. 異なるフォーマットであること
+            # 2. 再生時間差が 1.0s 未満であること
+            # 3. 正規化タイトル/Stemが一致または高度に類似していること
+            is_diff_fmt = (best_fmt != this_fmt) and bool(best_fmt and this_fmt)
+            dur_diff_ok = abs(best_dur - this_dur) < 1.0 if (best_dur > 0 and this_dur > 0) else True
+            title_match = (best_norm_title == this_norm_title) or (best_norm_title.startswith(this_norm_title) or this_norm_title.startswith(best_norm_title))
+
+            if is_diff_fmt and dur_diff_ok and title_match:
                 best_group_key = get_group_key(best_tid)
                 group_key = get_group_key(tid)
                 if group_key in track_groups and best_group_key in track_groups:
@@ -321,7 +506,7 @@ def resolve_duplicate_mappings(
                     del final_metadata[tid]
                 tids_to_remove.append(tid)
                 merged_any = True
-                logger.info(f"[{app_id}] フォーマット重複を解決: {tid} を最高品質の {best_tid} に統合しました。")
+                logger.info(f"[{app_id}] フォーマット重複を解決: {tid} ({this_fmt}) を最高品質の {best_tid} ({best_fmt}) に統合しました (再生時間差: {abs(best_dur - this_dur):.2f}s)。")
 
         if merged_any:
             best_group_key = get_group_key(best_tid)

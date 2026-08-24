@@ -1,6 +1,50 @@
 import json
 from typing import List, Dict, Any, Optional
 
+def build_differential_mapping_prompt(
+    global_res: Dict[str, Any],
+    unfilled_steam_slots: List[Dict[str, Any]],
+    unmatched_local_tracks: List[Dict[str, Any]],
+    user_language: str,
+    auxiliary_signals: Optional[Dict[str, Any]] = None,
+) -> str:
+    aux_str = f"\n      ### AUXILIARY SIGNALS (REFERENCE ONLY):\n      {json.dumps(auxiliary_signals, ensure_ascii=False)}" if auxiliary_signals else ""
+    return f"""
+      Generate STEAM slot alignment for the REMAINING UNRESOLVED local files only.
+      Deterministic slots have already been resolved; your task is to map ONLY these remaining tracks into the available empty STEAM slots.
+      Album identity summary: {json.dumps(global_res.get("global_tags"), ensure_ascii=False)}
+
+      ### AVAILABLE EMPTY STEAM SLOTS:
+      {json.dumps(unfilled_steam_slots, ensure_ascii=False)}
+{aux_str}
+      ### UNRESOLVED LOCAL FILES TO MAP:
+      {json.dumps(unmatched_local_tracks, ensure_ascii=False)}
+
+      ### RULES:
+      1. Map local file_ids ONLY into the AVAILABLE EMPTY STEAM SLOTS provided above.
+      2. Each local file must belong to at most one STEAM slot.
+      3. Multiple format variants of the same song (e.g. WAV and MP3) must be assigned to the SAME slot.
+      4. If a file does not match any of the available STEAM slots, list it in `unassigned_files`.
+      5. Keep `reason` EXTREMELY short and concise (under 20 chars).
+      6. Output JSON ONLY. No preamble, no thinking.
+
+**NOTE: All reasoning (reason, unassigned_reason) MUST be output in the language code: {user_language}. If {user_language} is "ja" (Japanese), you MUST write in native Japanese. Keep reasons very short.**
+
+### MANDATORY OUTPUT FORMAT (JSON ONLY):
+```json
+{{
+  "slots": {{
+    "STEAM_SLOT_NUMBER": {{
+      "files": ["FILE_ID"],
+      "confidence": 0.95,
+      "reason": "Brief reason (max 20 chars)"
+    }}
+  }},
+  "unassigned_files": ["FILE_ID"],
+  "unassigned_reason": "Brief reason if any"
+}}
+```
+"""
 def build_mapping_prompt(
     global_res: Dict[str, Any],
     s_mbz_search: Dict[str, Any],
