@@ -80,7 +80,8 @@ class AlignmentInputBuilder:
             
             # Fetch summary info for tie-break (fast fetch)
             details = self.mbz.get_release_details(rid)
-            if not details: continue
+            if not details:
+                continue
             
             # 1. Structural Match (+50pt)
             mb_track_count = 0
@@ -134,10 +135,14 @@ class AlignmentInputBuilder:
                 for rel in rels:
                     rtype = rel.get("type")
                     target = rel.get("artist", {}).get("name")
-                    if rtype == "composer": credits["composer"].append(target)
-                    elif rtype == "lyricist": credits["lyricist"].append(target)
-                    elif rtype == "arranger": credits["arranger"].append(target)
-                    elif rtype == "remixer": credits["remixer"].append(target)
+                    if rtype == "composer":
+                        credits["composer"].append(target)
+                    elif rtype == "lyricist":
+                        credits["lyricist"].append(target)
+                    elif rtype == "arranger":
+                        credits["arranger"].append(target)
+                    elif rtype == "remixer":
+                        credits["remixer"].append(target)
 
                 mb_all_tracks.append({
                     "disc": m_pos,

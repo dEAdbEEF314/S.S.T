@@ -1,9 +1,6 @@
 import vdf
 import logging
-import requests
-import time
-import json
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Any
 from pathlib import Path
 
 from .utils import ensure_path
@@ -47,7 +44,8 @@ class SteamScanner:
         
         if override_path:
             p = ensure_path(override_path)
-            if p not in wsl_libs: wsl_libs.append(p)
+            if p not in wsl_libs:
+                wsl_libs.append(p)
         
         logger.info(f"{len(wsl_libs)} 個のライブラリで SteamScanner を初期化しました。")
         return wsl_libs
@@ -68,11 +66,13 @@ class SteamScanner:
         logger.info(f"{len(self.library_paths)} 個のライブラリから {len(all_acf_files)} 個の ACF ファイルを見つけました。")
 
         for acf_file in all_acf_files:
-            if limit and len(soundtracks) >= limit: break
+            if limit and len(soundtracks) >= limit:
+                break
             
             try:
                 manifest = self._parse_acf(acf_file)
-                if not manifest: continue
+                if not manifest:
+                    continue
                 
                 app_state = manifest.get("AppState", {})
                 current_id = int(app_state.get("appid", 0))
@@ -96,8 +96,10 @@ class SteamScanner:
                 potential_ids = [parent_appid]
                 depots = app_state.get("InstalledDepots", {})
                 for d_id, d_data in depots.items():
-                    try: potential_ids.append(int(d_id))
-                    except Exception: pass
+                    try:
+                        potential_ids.append(int(d_id))
+                    except Exception:
+                        pass
                 
                 enriched = self._get_local_metadata(current_id, force=force)
                 if not enriched and not target_appids:
@@ -198,12 +200,14 @@ class SteamScanner:
             genres_data = common.get("genres", {})
             if isinstance(genres_data, dict):
                 metadata["genres"] = [g.get("description") or g.get("name") for g in genres_data.values() if isinstance(g, dict) and (g.get("description") or g.get("name"))]
-            if metadata["genres"]: metadata["genre"] = metadata["genres"][0]
+            if metadata["genres"]:
+                metadata["genre"] = metadata["genres"][0]
 
         # Release Date & Artwork (Local fallbacks)
         if not metadata.get("release_date"):
             rt = common.get("release_date")
-            if rt: metadata["release_date"] = str(rt)
+            if rt:
+                metadata["release_date"] = str(rt)
         if not metadata.get("header_image_url"):
             metadata["header_image_url"] = f"https://cdn.akamai.steamstatic.com/steam/apps/{app_id}/header.jpg"
         if not metadata.get("capsule_image_url"):
@@ -308,15 +312,18 @@ class SteamScanner:
         if manifest_dir:
             # 1. Check music/ (Prioritize dedicated soundtrack folder)
             path = library_root / "music" / manifest_dir
-            if path.exists(): return path
+            if path.exists():
+                return path
             # 2. Check common/ (Standard game install folder)
             path = library_root / "common" / manifest_dir
-            if path.exists(): return path
+            if path.exists():
+                return path
             
         # 3. Last resort: check by AppID folder name in music or common
         for sub in ["music", "common"]:
             path = library_root / sub / str(app_id)
-            if path.exists(): return path
+            if path.exists():
+                return path
             
         # 4. Fallback to music/manifest_dir even if not exist (for downstream skip)
         return library_root / "music" / (manifest_dir or str(app_id))

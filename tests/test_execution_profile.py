@@ -1,6 +1,5 @@
 import pytest
-from pydantic_settings import BaseSettings
-from sst.processor import LocalProcessor, AlbumExecutionProfile
+from sst.processor import LocalProcessor
 from sst.config import Config
 
 class MockDB:

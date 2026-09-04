@@ -55,7 +55,8 @@ class TrackManager:
         try:
             cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(path)]
             return float(subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout.strip())
-        except Exception: return 0.0
+        except Exception:
+            return 0.0
 
     @staticmethod
     def normalize_title(stem: str) -> str:
@@ -77,8 +78,10 @@ class TrackManager:
             if meta.get("disc_number"):
                 try:
                     d_str = str(meta.get("disc_number")).split('/')[0]
-                    if d_str.isdigit(): disc = int(d_str)
-                except Exception: pass
+                    if d_str.isdigit():
+                        disc = int(d_str)
+                except Exception:
+                    pass
             
             # Fallback to directory name if disc is still 1
             if disc == 1:
@@ -186,7 +189,8 @@ class TrackManager:
                         data = getattr(value, "data", value)
                         if isinstance(data, bytes) and data:
                             return data
-            except Exception: continue
+            except Exception:
+                continue
         return None
 
     @staticmethod
@@ -209,10 +213,14 @@ class TrackManager:
             if not t_name:
                 for v in variants:
                     if v["meta"]:
-                        if v["meta"].get("album"): albums.append(v["meta"]["album"])
-                        if v["meta"].get("artist"): artists.append(v["meta"]["artist"])
-                        if v["meta"].get("year"): years.append(str(v["meta"]["year"]))
-                        if not t_name and v["meta"].get("title"): t_name = v["meta"]["title"]
+                        if v["meta"].get("album"):
+                            albums.append(v["meta"]["album"])
+                        if v["meta"].get("artist"):
+                            artists.append(v["meta"]["artist"])
+                        if v["meta"].get("year"):
+                            years.append(str(v["meta"]["year"]))
+                        if not t_name and v["meta"].get("title"):
+                            t_name = v["meta"]["title"]
             
             # 3. Fallback to filename
             if not t_name and variants:
@@ -222,8 +230,15 @@ class TrackManager:
             if t_name:
                 track_data.append((t_name, int(avg_dur * 1000)))
         
-        def most_common(lst): return Counter(lst).most_common(1)[0][0] if lst else None
-        return {"album": most_common(albums), "artist": most_common(artists), "year": most_common(years), "tracks": track_data}
+        def most_common(lst):
+            return Counter(lst).most_common(1)[0][0] if lst else None
+
+        return {
+            "album": most_common(albums),
+            "artist": most_common(artists),
+            "year": most_common(years),
+            "tracks": track_data,
+        }
 
     @staticmethod
     def prepare_llm_track_context(track_groups: Dict) -> Dict[str, List[Dict[str, Any]]]:
@@ -233,10 +248,29 @@ class TrackManager:
             for v in variants:
                 if v["meta"]:
                     for k, val in v["meta"].items():
-                        if val and str(val).lower() not in ["", "none", "unknown", "0"] and k not in merged_tags: merged_tags[k] = val
+                        if val and str(val).lower() not in ["", "none", "unknown", "0"] and k not in merged_tags:
+                            merged_tags[k] = val
             tid = f"{disc}_{clean_title}"
-            sources = [{"type": "filename", "content": variants[0]["path"].name, "file_ids": [v["file_id"] for v in variants], "inferred_track_num": variants[0].get("filename_track"), "duration": round(sum(v["duration"] for v in variants)/len(variants), 2), "weight": "weak"}]
-            if merged_tags: sources.append({"type": "embedded_merged", "tags": merged_tags, "duration": sources[0]["duration"], "weight": "strong" if len(variants) > 1 else "moderate"})
-            else: sources.append({"type": "no_tags_found", "content": "No metadata found", "weight": "critical_missing"})
+            sources = [{
+                "type": "filename",
+                "content": variants[0]["path"].name,
+                "file_ids": [v["file_id"] for v in variants],
+                "inferred_track_num": variants[0].get("filename_track"),
+                "duration": round(sum(v["duration"] for v in variants) / len(variants), 2),
+                "weight": "weak",
+            }]
+            if merged_tags:
+                sources.append({
+                    "type": "embedded_merged",
+                    "tags": merged_tags,
+                    "duration": sources[0]["duration"],
+                    "weight": "strong" if len(variants) > 1 else "moderate",
+                })
+            else:
+                sources.append({
+                    "type": "no_tags_found",
+                    "content": "No metadata found",
+                    "weight": "critical_missing",
+                })
             context[tid] = sources
         return context

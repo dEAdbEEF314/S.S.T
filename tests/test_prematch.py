@@ -1,4 +1,4 @@
-from sst.llm.prematch import resolve_prematch_signals, PrematchResult
+from sst.llm.prematch import resolve_prematch_signals
 
 
 def test_acoustid_match_resolves_steam_slot():

@@ -47,7 +47,8 @@ class DistributedRateLimiter:
                 elif sum(t[1] for t in self.token_times) + tokens > self.limit_tpm:
                     if self.token_times:
                         wait = self.token_times[0][0] + 61.0 - now
-                    else: return True
+                    else:
+                        return True
                 else:
                     self.request_times.append(now)
                     self.token_times.append((now, tokens))

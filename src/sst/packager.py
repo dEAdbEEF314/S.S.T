@@ -13,32 +13,38 @@ class PackageManager:
         Creates a ZIP archive and preserves it under the configured output root.
         """
         from .utils import ensure_path
-        import subprocess
         
         try:
-            # 1. Prepare final destination (Windows side)
+            # 1. Prepare final destination
             final_output_root = ensure_path(output_root)
             output_base = final_output_root / status
             output_base.mkdir(parents=True, exist_ok=True)
             
             # Sanitize filename for ZIP
-            safe_name = "".join([c if c.isalnum() or c in ".-_" else "_" for c in album_name])
+            safe_name = "".join([c if c.isalnum() or c in ".-_" else "_" for c in album_name]).strip("._-")
+            if not safe_name:
+                safe_name = "album"
             zip_filename = f"{app_id}_{safe_name}.zip"
             final_zip_path = output_base / zip_filename
-            extract_dir = output_base / f"{app_id}_{safe_name}"
 
-            # 2. Write log files into the source directory
+            # 2. Write log files into the source directory safely (prevent path traversal)
+            resolved_source = source_dir.resolve()
             for log_name, log_content in logs.items():
                 if log_content:
-                    if log_name.endswith(".json"):
+                    clean_name = Path(log_name).name
+                    if not clean_name:
+                        continue
+                    if clean_name.endswith(".json"):
                         json_dir = source_dir / "json"
                         json_dir.mkdir(exist_ok=True)
-                        log_file = json_dir / log_name
-                        with open(log_file, "w", encoding="utf-8") as f:
-                            json.dump(log_content, f, indent=2, ensure_ascii=False)
+                        log_file = json_dir / clean_name
+                        if log_file.resolve().is_relative_to(resolved_source):
+                            with open(log_file, "w", encoding="utf-8") as f:
+                                json.dump(log_content, f, indent=2, ensure_ascii=False)
                     else:
-                        log_file = source_dir / log_name
-                        log_file.write_text(str(log_content), encoding="utf-8")
+                        log_file = source_dir / clean_name
+                        if log_file.resolve().is_relative_to(resolved_source):
+                            log_file.write_text(str(log_content), encoding="utf-8")
 
             # 3. Create ZIP in NATIVE temp directory
             temp_zip_base = source_dir.parent / f"bundle_{app_id}"
@@ -53,7 +59,7 @@ class PackageManager:
                 shutil.copyfile(str(temp_zip_file), str(final_zip_path))
                 temp_zip_file.unlink()
             
-            # 5. Success: Return the path to the preserved ZIP file (Windows bulk transfer is a future roadmap)
+            # 5. Success: Return the path to the preserved ZIP file
             logger.info(f"Package successfully created as a ZIP archive: {final_zip_path}")
                 
             return final_zip_path

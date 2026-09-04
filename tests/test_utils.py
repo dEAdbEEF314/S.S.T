@@ -1,4 +1,3 @@
-import pytest
 from pathlib import Path
 from sst.utils import normalize_path, ensure_path
 

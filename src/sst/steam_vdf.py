@@ -28,7 +28,7 @@ class SteamBinaryVDF:
             with open(filepath, 'rb') as f:
                 # 1. Read Header
                 magic = struct.unpack('<I', f.read(4))[0]
-                universe = struct.unpack('<I', f.read(4))[0]
+                _universe = struct.unpack('<I', f.read(4))[0]
                 
                 # Support Version 41 (0x07564429) and Version 29 (0x07564428)
                 is_v41 = (magic == 0x07564429)
@@ -54,15 +54,15 @@ class SteamBinaryVDF:
                         break
                         
                     app_id = struct.unpack('<I', app_id_bytes)[0]
-                    size = struct.unpack('<I', f.read(4))[0]
-                    info_state = struct.unpack('<I', f.read(4))[0]
-                    last_updated = struct.unpack('<I', f.read(4))[0]
-                    pics_token = struct.unpack('<Q', f.read(8))[0]
-                    sha1_hash = f.read(20)
-                    change_number = struct.unpack('<I', f.read(4))[0]
+                    _size = struct.unpack('<I', f.read(4))[0]
+                    _info_state = struct.unpack('<I', f.read(4))[0]
+                    _last_updated = struct.unpack('<I', f.read(4))[0]
+                    _pics_token = struct.unpack('<Q', f.read(8))[0]
+                    _sha1_hash = f.read(20)
+                    _change_number = struct.unpack('<I', f.read(4))[0]
                     
                     if is_v29 or is_v41:
-                        binary_sha1 = f.read(20)
+                        _binary_sha1 = f.read(20)
                     
                     # Parse the actual KV data
                     vdf_data = SteamBinaryVDF._parse_kv(f, string_table)

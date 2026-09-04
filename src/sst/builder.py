@@ -1,7 +1,7 @@
 import logging
 import re
 import html
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Optional
 from .models import SteamMetadata
 
 logger = logging.getLogger("sst.builder")
@@ -9,7 +9,8 @@ logger = logging.getLogger("sst.builder")
 class MetadataBuilder:
     @staticmethod
     def _clean_title_logic(title: str, track_number: Optional[str] = None) -> str:
-        if not title: return ""
+        if not title:
+            return ""
         
         # Check for leading track numbers like "01. ", "1 - ", etc.
         match = re.match(r'^(\d+)([\s.-]+)', title)
@@ -64,7 +65,8 @@ class MetadataBuilder:
         mbz_album = None
         mbz_track = None
         mbz_idx = instr.get("chosen_mbz_index")
-        if mbz_idx is None or mbz_idx == -1: mbz_idx = 0
+        if mbz_idx is None or mbz_idx == -1:
+            mbz_idx = 0
         if mbz_candidates and mbz_idx < len(mbz_candidates):
             mbz_album = mbz_candidates[mbz_idx]
             t_idx = instr.get("mbz_track_index")
@@ -149,7 +151,8 @@ class MetadataBuilder:
             res_artist = res_artist or mbz_album.get("artist")
         if not res_artist and steam_meta.store_credits:
             match = re.search(r'Artist:\s*(.*)', steam_meta.store_credits, re.IGNORECASE)
-            if match: res_artist = match.group(1).strip()
+            if match:
+                res_artist = match.group(1).strip()
         
         # Fallback: Developer (when missing or generic placeholder)
         if not res_artist or res_artist.lower() in ["various artists", "va", "various"]:
@@ -165,7 +168,8 @@ class MetadataBuilder:
             res_track = str(int(instr.get("matched_v_idx")) + 1)
         elif mbz_track:
             val = mbz_track.get("position") or mbz_track.get("track_num")
-            if val: res_track = str(val)
+            if val:
+                res_track = str(val)
             
         if not res_track or res_track == "0":
             local_track = str(local_tags.get("track_number") or "0").split('/')[0].strip()
@@ -200,12 +204,17 @@ class MetadataBuilder:
             parts = str(res_disc).split("/")
             res_disc = parts[0].strip()
             if len(parts) > 1:
-                try: actual_total_discs = max(actual_total_discs, int(parts[1].strip()))
-                except ValueError: pass
+                try:
+                    actual_total_discs = max(actual_total_discs, int(parts[1].strip()))
+                except ValueError:
+                    pass
 
-        if not res_disc: res_disc = str(disc)
-        try: actual_total_discs = max(actual_total_discs, int(res_disc))
-        except ValueError: pass
+        if not res_disc:
+            res_disc = str(disc)
+        try:
+            actual_total_discs = max(actual_total_discs, int(res_disc))
+        except ValueError:
+            pass
 
         # 2.5 TYER (Year)
         res_year = None
@@ -224,12 +233,7 @@ class MetadataBuilder:
             match = re.search(r'(\d{4})', str(raw_date))
             res_year = match.group(1) if match else "0000"
 
-        # 2.6 TPUB (Retired field)
-        res_label = None
-        if mbz_album and mbz_album.get("label") and mbz_album.get("label") not in ["無", "none", "Unknown", "N/A"]:
-            res_label = mbz_album.get("label")
-        elif global_identity.get("canonical_label") and global_identity.get("canonical_label") not in ["無", "none", "Unknown", "N/A"]:
-            res_label = global_identity.get("canonical_label")
+        # 2.6 TPUB (Retired field per METADATA_SOURCE_SPEC.md - not exported to final tags)
 
         # 2.7 TCOM (Composer): STEAM credits are authoritative; LLM output is not.
         res_composer = None

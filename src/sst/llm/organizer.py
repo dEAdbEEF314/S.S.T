@@ -530,6 +530,56 @@ class LLMOrganizer:
 
         return LLMOrganizer._build_slot_view({"track_instructions": track_instruction_map}, local_tracks)
 
+    @staticmethod
+    def _prepare_chunk_payload(
+        chunk: List[Dict[str, Any]],
+        prematch_map: Optional[Dict[str, Any]],
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        s_chunk = []
+        chunk_prematch_hints = {}
+        for track in chunk:
+            fids = track.get("file_ids", [])
+            s_chunk.append({
+                "file_ids": fids,
+                "t": track.get("title"),
+                "d": track.get("disc"),
+                "dur": (track.get("duration_ms", 0) // 1000) if track.get("duration_ms") else None,
+            })
+            if prematch_map:
+                for fid in fids:
+                    pm = prematch_map.get(str(fid))
+                    if pm and pm.evidence:
+                        chunk_prematch_hints[str(fid)] = pm.to_dict()
+        return s_chunk, chunk_prematch_hints
+
+    @staticmethod
+    def _recover_prematch_fallback_slots(
+        chunk: List[Dict[str, Any]],
+        prematch_map: Optional[Dict[str, Any]],
+        full_ref_steam: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        fallback_slots = {}
+        for track in chunk:
+            for fid in track.get("file_ids", []):
+                fid_str = str(fid)
+                pm = prematch_map.get(fid_str) if prematch_map else None
+                if pm and (pm.acoustid_steam_slot or pm.mbz_search_steam_slot or pm.override_track):
+                    target_slot = str(pm.acoustid_steam_slot or pm.mbz_search_steam_slot or pm.override_track)
+                    fallback_slots[target_slot] = {
+                        "files": [fid_str],
+                        "confidence": 0.95,
+                        "reason": f"SYSTEM: Prematch fallback ({pm.evidence[0] if pm.evidence else 'rule'})",
+                    }
+                else:
+                    t_num = track.get("n") or track.get("track_num")
+                    if t_num and str(t_num).isdigit() and full_ref_steam and 0 < int(t_num) <= len(full_ref_steam):
+                        fallback_slots[str(t_num)] = {
+                            "files": [fid_str],
+                            "confidence": 0.90,
+                            "reason": f"SYSTEM: Number match fallback (#{t_num})",
+                        }
+        return fallback_slots
+
     def _process_track_mapping_segment(
         self,
         app_id: int,
@@ -557,21 +607,7 @@ class LLMOrganizer:
             current_chunk_size = min(current_base_chunk_size, len(segment_tracks) - offset)
             chunk_start = start_idx + offset
             chunk = segment_tracks[offset:offset + current_chunk_size]
-            s_chunk = []
-            chunk_prematch_hints = {}
-            for idx, track in enumerate(chunk):
-                fids = track.get("file_ids", [])
-                s_chunk.append({
-                    "file_ids": fids,
-                    "t": track.get("title"),
-                    "d": track.get("disc"),
-                    "dur": (track.get("duration_ms", 0) // 1000) if track.get("duration_ms") else None,
-                })
-                if prematch_map:
-                    for fid in fids:
-                        pm = prematch_map.get(str(fid))
-                        if pm and pm.evidence:
-                            chunk_prematch_hints[str(fid)] = pm.to_dict()
+            s_chunk, chunk_prematch_hints = self._prepare_chunk_payload(chunk, prematch_map)
 
             ref_steam, ref_fingerprint = self._resolve_mapping_references(
                 chunk_start,
@@ -610,27 +646,7 @@ class LLMOrganizer:
 
             segment_logs.append(track_log)
             if track_res is None:
-                # If LLM failed/truncated, attempt safe deterministic prematch fallback before giving up
-                fallback_slots = {}
-                for track in chunk:
-                    for fid in track.get("file_ids", []):
-                        fid_str = str(fid)
-                        pm = prematch_map.get(fid_str) if prematch_map else None
-                        if pm and (pm.acoustid_steam_slot or pm.mbz_search_steam_slot or pm.override_track):
-                            target_slot = str(pm.acoustid_steam_slot or pm.mbz_search_steam_slot or pm.override_track)
-                            fallback_slots[target_slot] = {
-                                "files": [fid_str],
-                                "confidence": 0.95,
-                                "reason": f"SYSTEM: Prematch fallback ({pm.evidence[0] if pm.evidence else 'rule'})",
-                            }
-                        else:
-                            t_num = track.get("n") or track.get("track_num")
-                            if t_num and str(t_num).isdigit() and full_ref_steam and 0 < int(t_num) <= len(full_ref_steam):
-                                fallback_slots[str(t_num)] = {
-                                    "files": [fid_str],
-                                    "confidence": 0.90,
-                                    "reason": f"SYSTEM: Number match fallback (#{t_num})",
-                                }
+                fallback_slots = self._recover_prematch_fallback_slots(chunk, prematch_map, full_ref_steam)
                 if fallback_slots:
                     logger.info(f"[{app_id}] Truncation/LLM failure at index={chunk_start}: recovered {len(fallback_slots)} slots via deterministic prematch fallback.")
                     track_res = {"slots": fallback_slots, "unassigned_files": []}
@@ -729,31 +745,20 @@ class LLMOrganizer:
             
         return v_copy
 
-    def align_slots(
+    def _resolve_album_identity(
         self,
         app_id: int,
-        v_steam: Dict,
-        v_fingerprint: Optional[Dict],
-        v_mbz_search: Optional[Dict],
-        v_local: Dict,
-        execution_profile: Optional[Any] = None,
-        num_ctx: Optional[int] = None,
-        progress_callback: Optional[ProgressCallback] = None,
-    ) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
-        """
-        Consolidates the STEAM structure and auxiliary signal bundles into final slot alignment instructions.
-        """
-        full_logs = []
-        
-        # Simplify albums to save context
-        s_steam = self._simplify_v_album(v_steam, sampled=True) or {}
-        s_fingerprint = self._simplify_v_album(v_fingerprint, sampled=True) or {}
-        s_mbz_search = self._simplify_v_album(v_mbz_search, sampled=True) or {}
-        s_local = self._simplify_v_album(v_local, sampled=True) or {}
-        
-        resolved_num_ctx = self._resolve_execution_num_ctx(execution_profile, num_ctx)
-
-        # Identity and album-level confidence
+        s_steam: Dict[str, Any],
+        s_fingerprint: Dict[str, Any],
+        s_mbz_search: Dict[str, Any],
+        s_local: Dict[str, Any],
+        v_steam: Dict[str, Any],
+        v_local: Dict[str, Any],
+        v_fingerprint: Optional[Dict[str, Any]],
+        resolved_num_ctx: Optional[int],
+        progress_callback: Optional[ProgressCallback],
+        full_logs: List[Dict[str, Any]],
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
         identity_prompt = build_identity_prompt(s_steam, s_fingerprint, s_mbz_search, s_local, self.user_language)
         local_tracks = v_local.get("tracks", [])
         cache_key_input = json.dumps(
@@ -786,8 +791,6 @@ class LLMOrganizer:
         local_count = len(v_local.get("tracks", []))
 
         if not global_res:
-            # If identity LLM failed/truncated but STEAM and LOCAL structurally match 1:1,
-            # activate STEAM-TRUST fallback rather than failing the whole album.
             if steam_count > 0 and steam_count == local_count:
                 logger.warning(f"[{app_id}] Identity LLM call failed/truncated. Activating STEAM-TRUST fallback ({steam_count} tracks).")
                 global_res = {
@@ -814,14 +817,6 @@ class LLMOrganizer:
 
         global_res = self._normalize_identity_result(global_res)
 
-        # --- SYSTEM-LEVEL HEURISTICS (PRE-NORMALIZE) ---
-        # 1. STEAM-TRUST Path: If STEAM count matches LOCAL count (or unique variant slots)
-        # and LLM was conservative (conf < 95), trust the structural match.
-        steam_count = len(v_steam.get("tracks", []))
-        local_count = len(v_local.get("tracks", []))
-        current_conf = global_res.get("identity_confidence", 0)
-
-        # Multi-format variant equivalence: check unique track keys in local_tracks
         unique_local_slots = len({
             (
                 str(track.get("disc", 1)),
@@ -830,7 +825,8 @@ class LLMOrganizer:
             for track in local_tracks
         }) if local_tracks else 0
         structural_match = (steam_count > 0 and (steam_count == local_count or steam_count == unique_local_slots))
-        
+        current_conf = global_res.get("identity_confidence", 0)
+
         if structural_match:
             if current_conf < 100 and (not v_fingerprint or current_conf >= 80):
                 logger.info(f"[{app_id}] Applying STEAM-TRUST: Structural match detected (Steam: {steam_count}, Local: {local_count}, Unique: {unique_local_slots}). Boosting confidence to 100%.")
@@ -843,13 +839,11 @@ class LLMOrganizer:
                 global_res["strategy"] = "STEAM_BASED"
                 global_res["confidence_reason"] = f"SYSTEM: STEAM-TRUSTにより確信度を100%に引き上げました ({steam_count}トラックとの構造的一致)"
 
-        # Normalize confidence if in 0-1 range
         conf = int(global_res.get("identity_confidence", 0))
         if 0 < conf <= 1:
             conf = int(conf * 100)
             global_res["identity_confidence"] = conf
-        
-        # Ensure ratio is valid
+
         ratio = global_res.get("archive_vs_review_ratio", {})
         if not isinstance(ratio, dict) or not ratio:
             global_res["archive_vs_review_ratio"] = {"archive": 0, "review": 100}
@@ -857,28 +851,15 @@ class LLMOrganizer:
             concerns = global_res.setdefault("concerns", [])
             concerns.append("Low album confidence before slot alignment")
 
-        # Slot alignment with chunking
-        final_instructions = {}
+        return global_res, None
 
-        # The specification uses direct STEAM-slot alignment; legacy coherence
-        # routing is retained only as an unused compatibility method.
-        coherence_mappings = None
-
-        # Prepare full simplified reference tracks for slot alignment (not sampled)
-        full_ref_steam = (self._simplify_v_album(v_steam, sampled=False) or {}).get("tracks", [])
-        full_ref_fingerprint = (self._simplify_v_album(v_fingerprint, sampled=False) or {}).get("tracks", []) if v_fingerprint else []
-        full_ref_mbz_search = (self._simplify_v_album(v_mbz_search, sampled=False) or {}).get("tracks", []) if v_mbz_search else []
-
-        # Prematch layer: resolve signals deterministically before Phase 2 chunking
-        prematch_map = resolve_prematch_signals(
-            local_tracks=local_tracks,
-            full_ref_steam=full_ref_steam,
-            full_ref_fingerprint=full_ref_fingerprint,
-            full_ref_mbz_search=full_ref_mbz_search,
-            v_mbz_search=v_mbz_search,
-        )
-
-        # 1. 確定済みスロットの抽出 (Deterministic Pre-resolution)
+    def _extract_deterministic_prematches(
+        self,
+        local_tracks: List[Dict[str, Any]],
+        full_ref_steam: List[Dict[str, Any]],
+        prematch_map: Dict[str, Any],
+        global_res: Dict[str, Any],
+    ) -> Tuple[Dict[str, Dict[str, Any]], set[int], List[Dict[str, Any]], List[Dict[str, Any]]]:
         deterministic_instructions: Dict[str, Dict[str, Any]] = {}
         resolved_v_indices: set[int] = set()
         resolved_local_indices: set[int] = set()
@@ -918,7 +899,6 @@ class LLMOrganizer:
                         "TPUB": tags.get("canonical_label"),
                     }
 
-        # 2. 未確定トラックと空きスロットの抽出 (Unresolved Differential)
         unmatched_local_tracks = [
             track for idx, track in enumerate(local_tracks)
             if idx not in resolved_local_indices
@@ -927,6 +907,143 @@ class LLMOrganizer:
             slot for slot in full_ref_steam
             if slot.get("v_idx") not in resolved_v_indices
         ]
+        return deterministic_instructions, resolved_v_indices, unmatched_local_tracks, unfilled_steam_slots
+
+    def _run_differential_segments(
+        self,
+        app_id: int,
+        unmatched_local_tracks: List[Dict[str, Any]],
+        local_tracks: List[Dict[str, Any]],
+        unfilled_steam_slots: List[Dict[str, Any]],
+        global_res: Dict[str, Any],
+        s_mbz_search: Dict[str, Any],
+        v_mbz_search: Optional[Dict[str, Any]],
+        full_ref_fingerprint: List[Dict[str, Any]],
+        full_ref_mbz_search: List[Dict[str, Any]],
+        coherence_mappings: Optional[Dict[str, Any]],
+        resolved_num_ctx: Optional[int],
+        execution_profile: Optional[Any],
+        progress_callback: Optional[ProgressCallback],
+        prematch_map: Optional[Dict[str, Any]],
+    ) -> Dict[int, Tuple[Dict[str, Dict[str, Any]], List[Dict[str, Any]]]]:
+        segment_results: Dict[int, Tuple[Dict[str, Dict[str, Any]], List[Dict[str, Any]]]] = {}
+        dynamic_chunk_size = max(1, self._adaptive_chunk_size(self.chunk_size_virtual))
+        segments = [
+            (start_idx, unmatched_local_tracks[start_idx:start_idx + dynamic_chunk_size])
+            for start_idx in range(0, len(unmatched_local_tracks), dynamic_chunk_size)
+        ]
+        should_parallelize = self.llm_backend == "OLLAMA" and self.llm_request_parallelism_enabled and len(segments) > 1
+
+        if should_parallelize:
+            worker_count = self._resolve_phase2_worker_count(execution_profile, len(segments))
+            logger.info(f"[{app_id}] Phase 2 differential mapping chunk を並列実行します。segments={len(segments)} workers={worker_count}")
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                future_map = {
+                    executor.submit(
+                        self._process_track_mapping_segment,
+                        app_id,
+                        start_idx,
+                        segment_tracks,
+                        local_tracks,
+                        global_res,
+                        s_mbz_search,
+                        v_mbz_search,
+                        unfilled_steam_slots,
+                        full_ref_fingerprint,
+                        full_ref_mbz_search,
+                        coherence_mappings,
+                        resolved_num_ctx,
+                        dynamic_chunk_size,
+                        progress_callback,
+                        prematch_map=prematch_map,
+                    ): start_idx
+                    for start_idx, segment_tracks in segments
+                }
+                for future in as_completed(future_map):
+                    start_idx, instructions, segment_logs = future.result()
+                    segment_results[start_idx] = (instructions, segment_logs)
+        else:
+            for start_idx, segment_tracks in segments:
+                start_idx, instructions, segment_logs = self._process_track_mapping_segment(
+                    app_id,
+                    start_idx,
+                    segment_tracks,
+                    local_tracks,
+                    global_res,
+                    s_mbz_search,
+                    v_mbz_search,
+                    unfilled_steam_slots,
+                    full_ref_fingerprint,
+                    full_ref_mbz_search,
+                    coherence_mappings,
+                    resolved_num_ctx,
+                    dynamic_chunk_size,
+                    progress_callback,
+                    prematch_map=prematch_map,
+                )
+                segment_results[start_idx] = (instructions, segment_logs)
+        return segment_results
+
+    def align_slots(
+        self,
+        app_id: int,
+        v_steam: Dict,
+        v_fingerprint: Optional[Dict],
+        v_mbz_search: Optional[Dict],
+        v_local: Dict,
+        execution_profile: Optional[Any] = None,
+        num_ctx: Optional[int] = None,
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+        """
+        Consolidates the STEAM structure and auxiliary signal bundles into final slot alignment instructions.
+        """
+        full_logs = []
+        
+        s_steam = self._simplify_v_album(v_steam, sampled=True) or {}
+        s_fingerprint = self._simplify_v_album(v_fingerprint, sampled=True) or {}
+        s_mbz_search = self._simplify_v_album(v_mbz_search, sampled=True) or {}
+        s_local = self._simplify_v_album(v_local, sampled=True) or {}
+        
+        resolved_num_ctx = self._resolve_execution_num_ctx(execution_profile, num_ctx)
+
+        global_res, early_failure = self._resolve_album_identity(
+            app_id,
+            s_steam,
+            s_fingerprint,
+            s_mbz_search,
+            s_local,
+            v_steam,
+            v_local,
+            v_fingerprint,
+            resolved_num_ctx,
+            progress_callback,
+            full_logs,
+        )
+        if early_failure is not None or global_res is None:
+            return None, early_failure or {}
+
+        local_tracks = v_local.get("tracks", [])
+        coherence_mappings = None
+
+        full_ref_steam = (self._simplify_v_album(v_steam, sampled=False) or {}).get("tracks", [])
+        full_ref_fingerprint = (self._simplify_v_album(v_fingerprint, sampled=False) or {}).get("tracks", []) if v_fingerprint else []
+        full_ref_mbz_search = (self._simplify_v_album(v_mbz_search, sampled=False) or {}).get("tracks", []) if v_mbz_search else []
+
+        prematch_map = resolve_prematch_signals(
+            local_tracks=local_tracks,
+            full_ref_steam=full_ref_steam,
+            full_ref_fingerprint=full_ref_fingerprint,
+            full_ref_mbz_search=full_ref_mbz_search,
+            v_mbz_search=v_mbz_search,
+        )
+
+        (
+            deterministic_instructions,
+            resolved_v_indices,
+            unmatched_local_tracks,
+            unfilled_steam_slots,
+        ) = self._extract_deterministic_prematches(local_tracks, full_ref_steam, prematch_map, global_res)
 
         logger.info(
             f"[{app_id}] 差分推論アライメント: 確定済みスロット={len(resolved_v_indices)}/{len(full_ref_steam)}, "
@@ -950,62 +1067,22 @@ class LLMOrganizer:
             global_res["confidence_reason"] = f"SYSTEM: すべてのトラックが決定論的プレマッチで確定 ({len(deterministic_instructions)}/{len(full_ref_steam)}スロット)"
             segment_results[0] = (deterministic_instructions, [])
         else:
-            dynamic_chunk_size = max(1, self._adaptive_chunk_size(self.chunk_size_virtual))
-            segments = [
-                (start_idx, unmatched_local_tracks[start_idx:start_idx + dynamic_chunk_size])
-                for start_idx in range(0, len(unmatched_local_tracks), dynamic_chunk_size)
-            ]
-            should_parallelize = self.llm_backend == "OLLAMA" and self.llm_request_parallelism_enabled and len(segments) > 1
-
-            if should_parallelize:
-                worker_count = self._resolve_phase2_worker_count(execution_profile, len(segments))
-                logger.info(f"[{app_id}] Phase 2 differential mapping chunk を並列実行します。segments={len(segments)} workers={worker_count}")
-                with ThreadPoolExecutor(max_workers=worker_count) as executor:
-                    future_map = {
-                        executor.submit(
-                            self._process_track_mapping_segment,
-                            app_id,
-                            start_idx,
-                            segment_tracks,
-                            local_tracks,
-                            global_res,
-                            s_mbz_search,
-                            v_mbz_search,
-                            unfilled_steam_slots,
-                            full_ref_fingerprint,
-                            full_ref_mbz_search,
-                            coherence_mappings,
-                            resolved_num_ctx,
-                            dynamic_chunk_size,
-                            progress_callback,
-                            prematch_map=prematch_map,
-                        ): start_idx
-                        for start_idx, segment_tracks in segments
-                    }
-                    for future in as_completed(future_map):
-                        start_idx, instructions, segment_logs = future.result()
-                        segment_results[start_idx] = (instructions, segment_logs)
-            else:
-                for start_idx, segment_tracks in segments:
-                    start_idx, instructions, segment_logs = self._process_track_mapping_segment(
-                        app_id,
-                        start_idx,
-                        segment_tracks,
-                        local_tracks,
-                        global_res,
-                        s_mbz_search,
-                        v_mbz_search,
-                        unfilled_steam_slots,
-                        full_ref_fingerprint,
-                        full_ref_mbz_search,
-                        coherence_mappings,
-                        resolved_num_ctx,
-                        dynamic_chunk_size,
-                        progress_callback,
-                        prematch_map=prematch_map,
-                    )
-                    segment_results[start_idx] = (instructions, segment_logs)
-
+            segment_results = self._run_differential_segments(
+                app_id,
+                unmatched_local_tracks,
+                local_tracks,
+                unfilled_steam_slots,
+                global_res,
+                s_mbz_search,
+                v_mbz_search,
+                full_ref_fingerprint,
+                full_ref_mbz_search,
+                coherence_mappings,
+                resolved_num_ctx,
+                execution_profile,
+                progress_callback,
+                prematch_map,
+            )
             for start_idx in sorted(segment_results):
                 instructions, segment_logs = segment_results[start_idx]
                 final_instructions.update(instructions)
