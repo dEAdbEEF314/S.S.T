@@ -211,6 +211,18 @@ class LLMClient:
                         }
 
                         if done_reason in {"length", "max_tokens"}:
+                            if self.llm_backend == "OLLAMA" and attempt < max_retries:
+                                # 仕様書 §11.5: Truncation 発生時は出力トークン上限（num_predict）を倍増してリトライ
+                                current_predict = payload.get("options", {}).get("num_predict", output_budget)
+                                new_predict = min(current_predict * 2, self.ollama_num_predict)
+                                if new_predict > current_predict:
+                                    logger.warning(
+                                        f"[{app_id}] LLM output truncated (done_reason={done_reason}). "
+                                        f"Doubling num_predict ({current_predict} -> {new_predict}) and retrying..."
+                                    )
+                                    payload["options"]["num_predict"] = new_predict
+                                    continue
+
                             log_entry["error"] = f"response truncated by backend (done_reason={done_reason})"
                             log_entry["error_code"] = "response_truncated"
                             log_entry["truncated"] = True
@@ -221,8 +233,6 @@ class LLMClient:
                                 "duration_seconds": round(time.monotonic() - request_started, 3),
                             })
                             logger.warning(f"[{app_id}] LLM output truncated by backend: done_reason={done_reason}")
-                            # At temperature 0, identical retries will deterministically truncate again.
-                            # Skip wasteful retries and return immediately so organizer can shrink chunk size.
                             return None, log_entry
 
                         if self.llm_backend != "OLLAMA":

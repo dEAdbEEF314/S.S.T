@@ -20,6 +20,9 @@ class SteamMetadata(BaseModel):
     parent_genres: List[str] = [] # ALL parent genres
     parent_release_date: Optional[str] = None
     header_image_url: Optional[str] = None
+    parent_header_image_url: Optional[str] = None
+    capsule_image_url: Optional[str] = None
+    has_sibling_soundtracks: bool = False
     store_tracklist: List[Dict[str, Any]] = [] # Steam/PICS or official description fallback
     store_tracklist_source: Optional[str] = None # STEAM_PICS or STEAM_TEXT_TRACKLIST
     store_tracklist_language: Optional[str] = None

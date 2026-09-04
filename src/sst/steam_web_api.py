@@ -8,7 +8,6 @@ from html.parser import HTMLParser
 from typing import Dict, Any, Optional
 
 from .db import DatabaseManager
-from .steam_tracklist import validate_llm_tracklist
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +42,26 @@ class SteamWebClient:
             return []
         return candidates
 
+    @staticmethod
+    def parse_pics_tracks(album_meta: dict) -> list[Dict[str, Any]]:
+        tracks = []
+        pics_tracks = album_meta.get("tracks", {})
+        if isinstance(pics_tracks, dict):
+            sorted_keys = sorted(pics_tracks.keys(), key=lambda x: int(x) if str(x).isdigit() else 9999)
+            for k in sorted_keys:
+                t = pics_tracks[k]
+                raw_title = t.get("originalname", "")
+                m_val = int(t.get("m", 0) or 0)
+                s_val = int(t.get("s", 0) or 0)
+                tracks.append({
+                    "disc": int(t.get("discnumber", 1) or 1),
+                    "number": str(t.get("tracknumber", "")),
+                    "title": html.unescape(raw_title) if raw_title else "",
+                    "duration_s": str(m_val * 60 + s_val),
+                    "source": "STEAM_PICS",
+                })
+        return tracks
+
     def fetch_store_tags(self, app_id: int) -> Dict[str, str]:
         """Fetch the official tagid/name pairs embedded in the Steam store page."""
         url = f"https://store.steampowered.com/app/{app_id}/?l={self.language}"
@@ -71,7 +90,19 @@ class SteamWebClient:
         # 1. Check Database first
         db_data = None if force else self.db.get_store_data(app_id)
         
-        result = {"genres": [], "tags": [], "name": None, "store_tracklist": [], "store_tracklist_source": None, "store_tracklist_language": None, "store_credits": "", "label": None, "release_date": None}
+        result = {
+            "genres": [],
+            "tags": [],
+            "name": None,
+            "store_tracklist": [],
+            "store_tracklist_source": None,
+            "store_tracklist_language": None,
+            "store_credits": "",
+            "label": None,
+            "release_date": None,
+            "header_image_url": None,
+            "capsule_image_url": None,
+        }
         
         if db_data:
             result["store_tracklist"] = db_data.get("tracklist", [])
@@ -114,6 +145,8 @@ class SteamWebClient:
                     result["name"] = html.unescape(app_data.get("name")) if app_data.get("name") else None
                     result["genres"] = [html.unescape(g.get("description")) for g in app_data.get("genres", []) if g.get("description")]
                     result["release_date"] = app_data.get("release_date", {}).get("date")
+                    result["header_image_url"] = app_data.get("header_image")
+                    result["capsule_image_url"] = app_data.get("capsule_image")
                     description = app_data.get("detailed_description", "")
                 else:
                     description = ""
@@ -135,7 +168,8 @@ class SteamWebClient:
                         if pr.status_code == 200:
                             p_json = pr.json()
                             app_pics = p_json.get("data", {}).get(str(app_id), {})
-                            if app_pics: break # Success
+                            if app_pics:
+                                break  # Success
                         logger.debug(f"Tier 2 の試行 {attempt+1} が失敗しました (ステータス: {pr.status_code})")
                     except Exception as e:
                         logger.debug(f"Tier 2 の試行 {attempt+1} エラー: {e}")
@@ -148,24 +182,10 @@ class SteamWebClient:
                 # Maximum Information: Change Number and Raw PICS
                 pics_change_num = app_pics.get("_change_number")
                 
-                pics_tracks = album_meta.get("tracks", {})
-                if isinstance(pics_tracks, dict):
-                    try:
-                        sorted_keys = sorted(pics_tracks.keys(), key=lambda x: int(x))
-                        for k in sorted_keys:
-                            t = pics_tracks[k]
-                            raw_title = t.get("originalname", "")
-                            result["store_tracklist"].append({
-                                "disc": int(t.get("discnumber", 1)),
-                                "number": str(t.get("tracknumber", "")),
-                                "title": html.unescape(raw_title) if raw_title else "",
-                                "duration_s": t.get("s", "0"),
-                                "source": "STEAM_PICS",
-                            })
-                        if result["store_tracklist"]:
-                            result["store_tracklist_source"] = "STEAM_PICS"
-                    except Exception as e:
-                        logger.debug(f"PICS トラックのソート中にエラーが発生しました: {e}")
+                pics_tracks = self.parse_pics_tracks(album_meta)
+                if pics_tracks:
+                    result["store_tracklist"] = pics_tracks
+                    result["store_tracklist_source"] = "STEAM_PICS"
 
                 if not result["store_tracklist"]:
                     description_language = self.language
@@ -207,8 +227,10 @@ class SteamWebClient:
                     role_data = meta_section.get(role, {})
                     val = role_data.get(target_lang) or role_data.get("english")
                     if val:
-                        if role == "label": result["label"] = val
-                        else: credits_parts.append(f"{role.capitalize()}: {val}")
+                        if role == "label":
+                            result["label"] = val
+                        else:
+                            credits_parts.append(f"{role.capitalize()}: {val}")
                 
                 if credits_parts:
                     result["store_credits"] = "\n".join(credits_parts)

@@ -132,10 +132,11 @@ class MetadataBuilder:
             res_title = local_tags.get("title")
             chosen_src = "EMBED"
         else:
-            res_title = clean_title
+            res_title = clean_title.split("::")[0] if "::" in clean_title else clean_title
             chosen_src = "LOCAL"
 
-        res_title = res_title or clean_title
+        clean_fallback = clean_title.split("::")[0] if "::" in clean_title else clean_title
+        res_title = res_title or clean_fallback
         if " / " in res_title and len(res_title) > 60:
             res_title = res_title.split(" / ", 1)[0].strip()
 
@@ -282,10 +283,11 @@ class MetadataBuilder:
         def _u(val):
             return html.unescape(str(val)) if val is not None else ""
 
-        album_artist_parts = [part for part in [steam_meta.developer, steam_meta.publisher] if part]
+        album_artist_parts = [_u(part).strip() for part in [steam_meta.developer, steam_meta.publisher] if part]
+        clean_fallback_title = clean_title.split("::")[0] if "::" in clean_title else clean_title
 
         return {
-            "title": _u(res_title or clean_title).strip(),
+            "title": _u(res_title or clean_fallback_title).strip(),
             "artist": _u(res_artist).strip(),
             "album": _u(steam_meta.name).strip(),
             "album_artist": ", ".join(album_artist_parts),

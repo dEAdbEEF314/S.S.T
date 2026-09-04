@@ -344,17 +344,25 @@ class LocalProcessor:
             execution_profile = self._build_album_execution_profile(track_count)
             logger.info(f"[{app_id}] 実行プロファイル: {execution_profile.tier_name} (Tracks: {track_count}, num_ctx: {execution_profile.num_ctx_cap}, workers: {execution_profile.phase2_parallel_workers})")
 
-            v_steam, v_local, v_fingerprint, v_mbz_search, mbz_log = collect_alignment_inputs(
-                app_id, steam_meta, track_groups, self.alignment_input_builder, _diag, on_track_complete
+            # --- FAST-TRACK 先行判定 (最優先評価: LLM・外部API照会バイパス) ---
+            fast_track_ok, fast_track_map, fast_track_identity = self._check_fast_track(
+                app_id, steam_meta, track_groups, mbz_candidates=[], fingerprint_bundle=None
             )
-            mbz_candidates = self._build_mbz_candidates_from_alignment_inputs(v_fingerprint, v_mbz_search)
 
-            fast_track_ok, fast_track_map, fast_track_identity = self._check_fast_track(app_id, steam_meta, track_groups, mbz_candidates, v_fingerprint)
             if fast_track_ok:
+                processing_route = "FAST_TRACK"
+                diagnostics["processing_route"] = processing_route
+                v_steam = self.alignment_input_builder.build_steam_album(steam_meta)
+                v_local = self.alignment_input_builder.build_local_album(track_groups)
+                v_fingerprint = None
+                v_mbz_search = None
+                mbz_candidates = []
+                mbz_log = {"status": "fast_track_bypassed"}
                 final_metadata = fast_track_map or {}
                 fast_track_alignment_res = self._build_fast_track_alignment_res(final_metadata, v_local)
                 llm_log = {
                     "fast_track": True,
+                    "processing_route": processing_route,
                     "phase1_res": {
                         "album_confidence": 100,
                         "mapping_confidence": 100,
@@ -362,7 +370,7 @@ class LocalProcessor:
                         "identity_confidence": 100,
                         "integrity_quality": 100,
                         "archive_vs_review_ratio": {"archive": 100, "review": 0},
-                        "confidence_reason": "SYSTEM: Deterministic fast-track",
+                        "confidence_reason": "SYSTEM: Deterministic fast-track (LLM/API bypassed)",
                         "strategy": "FAST_TRACK",
                         "semantic_label": "Archive",
                         "global_tags": fast_track_identity or {},
@@ -372,6 +380,15 @@ class LocalProcessor:
                 }
                 _diag("FAST_TRACK_SELECTED", mapped_track_count=len(final_metadata))
             else:
+                # --- オンデマンド信号収集 (Fast-Track 不成立時のみ実行) ---
+                processing_route = "LLM_ONE_SHOT" if execution_profile.prefer_one_shot else "LLM_CHUNKED"
+                diagnostics["processing_route"] = processing_route
+                _diag("ON_DEMAND_SIGNAL_GATHERING_START")
+                v_steam, v_local, v_fingerprint, v_mbz_search, mbz_log = collect_alignment_inputs(
+                    app_id, steam_meta, track_groups, self.alignment_input_builder, _diag, on_track_complete
+                )
+                mbz_candidates = self._build_mbz_candidates_from_alignment_inputs(v_fingerprint, v_mbz_search)
+
                 final_metadata, llm_log = consolidate_alignment_inputs(
                     app_id,
                     self.llm,
@@ -383,6 +400,7 @@ class LocalProcessor:
                     _diag,
                     llm_progress_callback=llm_progress_callback,
                 )
+                llm_log["processing_route"] = processing_route
 
             # The LLM may return None when alignment cannot be consolidated.
             # Keep downstream helpers on their declared dictionary contract.
@@ -508,8 +526,26 @@ class LocalProcessor:
                 unassigned_manifest.append(manifest)
             any_audio_warnings = any(r.get("had_warning") for r in track_results)
             any_audio_failures = any(r.get("failed") for r in track_results)
+            audio_warned_tracks = [
+                r.get("warned_track_label") for r in track_results
+                if r.get("had_warning") and r.get("warned_track_label")
+            ]
 
-            status, message, score, quality, reason = ResultValidator.validate(app_id, processed_tracks_meta, llm_log, mbz_candidates, steam_meta, any_audio_failures, any_audio_warnings)
+            status, message, score, quality, reason = ResultValidator.validate(
+                app_id,
+                processed_tracks_meta,
+                llm_log,
+                mbz_candidates,
+                steam_meta,
+                any_audio_failures,
+                any_audio_warnings,
+                audio_warned_tracks=audio_warned_tracks,
+                unassigned_manifest=unassigned_manifest,
+            )
+            if audio_warned_tracks:
+                logger.info(
+                    f"[{app_id}] {steam_meta.name}: 本来Archive相当ですが、微小問題（音声品質警告）を含むためReview送りとなりました。対象トラック: {', '.join(audio_warned_tracks)}"
+                )
             artifact_issues = self._validate_archive_artifacts(
                 app_id,
                 temp_output,
@@ -539,6 +575,7 @@ class LocalProcessor:
                 "app_id": app_id, 
                 "album_name": steam_meta.name, 
                 "status": status, 
+                "processing_route": processing_route,
                 "message": message,
                 "confidence_score": score, 
                 "album_confidence": score,

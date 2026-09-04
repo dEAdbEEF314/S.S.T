@@ -255,11 +255,50 @@ def fetch_album_artwork(
             except Exception as e:
                 logger.debug(f"MBZアートワークの取得に失敗しました: {e}")
 
-    # 3. Steam (Store Header)
-    # 3. STEAM (Header Image)
-    if steam_meta.header_image_url:
-        logger.info("STEAMソースからアルバムアートワークを採用しました")
-        return mbz_client.download_artwork(steam_meta.header_image_url)
+    # 3. STEAM (Header & Capsule Images)
+    # 契約:
+    # A. 親ゲーム(parent_app_id)が存在し、かつ同一親に紐づくサントラが1つだけの場合:
+    #    ゲーム音楽DJ実運用上の識別性向上のため、親ゲームの看板(parent_header_image_url)を最優先採用。
+    # B. 親ゲームが存在しない、または同一親に紐づくサントラが複数存在する場合(Vol.1/Vol.2、Remix等):
+    #    サントラごとに異なる看板を維持するため、サントラ自身の看板(header_image_url)を採用。
+    # C. 失敗時は代替アセット(capsule_image_url, CDN固定URL, 親ゲーム画像)へ安全にフォールバック。
+
+    def _fetch_image(image_url: Optional[str], label: str) -> Optional[bytes]:
+        if not image_url:
+            return None
+        try:
+            r = requests.get(image_url, timeout=15)
+            if r.status_code == 200 and len(r.content) > 0:
+                logger.info(f"STEAMソースからアルバムアートワークを採用しました ({label}: {image_url})")
+                return r.content
+        except Exception as e:
+            logger.debug(f"Steam画像のダウンロードに失敗しました ({label}): {e}")
+        return None
+
+    # Determine candidate URLs based on policy
+    prefer_parent = bool(steam_meta.parent_app_id and not getattr(steam_meta, "has_sibling_soundtracks", False))
+    
+    steam_candidates = []
+    if prefer_parent and steam_meta.parent_header_image_url:
+        steam_candidates.append((steam_meta.parent_header_image_url, "親ゲーム公式ヘッダー"))
+        if steam_meta.header_image_url:
+            steam_candidates.append((steam_meta.header_image_url, "サントラ公式ヘッダー"))
+    else:
+        if steam_meta.header_image_url:
+            label = "サントラ公式ヘッダー(複数サントラ排他)" if getattr(steam_meta, "has_sibling_soundtracks", False) else "サントラ公式ヘッダー"
+            steam_candidates.append((steam_meta.header_image_url, label))
+        if steam_meta.parent_header_image_url:
+            steam_candidates.append((steam_meta.parent_header_image_url, "親ゲーム公式ヘッダー(フォールバック)"))
+
+    # Fallback to capsule image or CDN fixed URL
+    if getattr(steam_meta, "capsule_image_url", None):
+        steam_candidates.append((steam_meta.capsule_image_url, "サントラ公式カプセル"))
+    steam_candidates.append((f"https://cdn.akamai.steamstatic.com/steam/apps/{steam_meta.app_id}/header.jpg", "Steam CDN固定ヘッダー"))
+
+    for img_url, label in steam_candidates:
+        art = _fetch_image(img_url, label)
+        if art:
+            return art
 
     logger.warning("全ソースから有効なアルバムアートワークを取得できませんでした")
     return None
@@ -385,16 +424,24 @@ def send_notifications(
     ratio = p1_res.get("archive_vs_review_ratio", {"archive": 0, "review": 0})
     is_fast = llm_log.get("fast_track", False)
 
+    route = llm_log.get("processing_route") or ("FAST_TRACK" if is_fast else "LLM_ONE_SHOT")
+    route_display_map = {
+        "FAST_TRACK": "⚡ FAST_TRACK (決定論的即時確定 / LLMバイパス)",
+        "LLM_ONE_SHOT": "🧠 LLM_ONE_SHOT (オンデマンド信号収集 + 1-Shot推論)",
+        "LLM_CHUNKED": "🧩 LLM_CHUNKED (分割チャンク推論)",
+        "SKIP_NO_AUDIO": "⏩ SKIP_NO_AUDIO (音源なしスキップ)",
+        "ERROR": "❌ ERROR (処理エラー)",
+    }
+    route_display = route_display_map.get(route, f"🛣️ {route}")
+
     fields = [
         {"name": "AppID", "value": f"[{app_id}](https://store.steampowered.com/app/{app_id})", "inline": True},
         {"name": "Status", "value": f"**{status.upper()}**", "inline": True},
         {"name": "Tracks", "value": str(track_count), "inline": True},
+        {"name": "🛣️ 処理経路 (Route)", "value": f"**{route_display}**", "inline": False},
         {"name": "Album / Mapping / Data", "value": f"Alb: {id_conf}% / Map: {mapping_conf}% / Data: {quality}%", "inline": True},
         {"name": "Decision Ratio", "value": f"Arch {ratio.get('archive', 0)}% : Rev {ratio.get('review', 0)}%", "inline": True},
     ]
-
-    if is_fast:
-        fields.append({"name": "🛡️ Processing Mode", "value": "**DETERMINISTIC FAST-TRACK** (LLM Bypassed)", "inline": True})
 
     if mbz_candidates:
         top_mbz = mbz_candidates[0]
@@ -407,6 +454,16 @@ def send_notifications(
     if len(llm_reason) > 1000:
         llm_reason = llm_reason[:997] + "..."
     fields.append({"name": "🧠 LLM Judgment Reason", "value": llm_reason, "inline": False})
+
+    diagnostics = llm_log.get("diagnostics") or {}
+    audio_warned_tracks = diagnostics.get("audio_warned_tracks") or []
+    if audio_warned_tracks:
+        warn_tracks_str = ", ".join(str(t) for t in audio_warned_tracks)
+        fields.append({
+            "name": "⚠️ 音声品質警告（本来Archive相当 / 微小異常あり）",
+            "value": f"構造・タグは完全一致していますが、微小な音声フレーム警告が発生したためReview送りとしました（対象: `{warn_tracks_str}`）",
+            "inline": False,
+        })
 
     if any_audio_failures:
         fields.append({"name": "🚨 CRITICAL ALERT", "value": "One or more tracks failed to encode correctly.", "inline": False})
@@ -488,13 +545,16 @@ def resolve_duplicate_mappings(
 
             # 4重AND条件による厳格なバリアント統合判定
             # 1. 異なるフォーマットであること
-            # 2. 再生時間差が 1.0s 未満であること
-            # 3. 正規化タイトル/Stemが一致または高度に類似していること
+            # 2. 再生時間差が 3.0s 以内であること（エンコーダ遅延・無音差を吸収）
+            # 3. 正規化タイトル/Stemが一致、または同一スロットで再生時間差 1.5s 以内であること
             is_diff_fmt = (best_fmt != this_fmt) and bool(best_fmt and this_fmt)
-            dur_diff_ok = abs(best_dur - this_dur) < 1.0 if (best_dur > 0 and this_dur > 0) else True
-            title_match = (best_norm_title == this_norm_title) or (best_norm_title.startswith(this_norm_title) or this_norm_title.startswith(best_norm_title))
+            dur_diff_ok = abs(best_dur - this_dur) <= 3.0 if (best_dur > 0 and this_dur > 0) else True
+            title_match = (best_norm_title == this_norm_title) or (bool(best_norm_title and this_norm_title) and (best_norm_title in this_norm_title or this_norm_title in best_norm_title))
+            slot_dur_match = abs(best_dur - this_dur) <= 1.5 if (best_dur > 0 and this_dur > 0) else False
 
-            if is_diff_fmt and dur_diff_ok and title_match:
+            can_merge = is_diff_fmt and dur_diff_ok and (title_match or slot_dur_match)
+
+            if can_merge:
                 best_group_key = get_group_key(best_tid)
                 group_key = get_group_key(tid)
                 if group_key in track_groups and best_group_key in track_groups:

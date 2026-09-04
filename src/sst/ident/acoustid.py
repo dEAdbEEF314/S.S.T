@@ -41,11 +41,12 @@ class AcoustIDIdentifier:
             logger.debug(f"Generating fingerprint for {file_path.name}...")
             # Generate fingerprint using fpcalc via the acoustid library
             duration, fingerprint = acoustid.fingerprint_file(str(file_path))
+            fingerprint_key = fingerprint.decode("utf-8", errors="ignore") if isinstance(fingerprint, bytes) else str(fingerprint)
             
             # Check DB Cache
             results = None
             if self.db:
-                cached_res = self.db.get_api_cache("acoustid", fingerprint)
+                cached_res = self.db.get_api_cache("acoustid", fingerprint_key)
                 if cached_res:
                     results = cached_res
                     logger.debug(f"AcoustID cache hit for {file_path.name}.")
@@ -62,7 +63,7 @@ class AcoustIDIdentifier:
                 logger.debug(f"AcoustID lookup completed for {file_path.name}.")
                 
                 if self.db and results.get("status") == "ok":
-                    self.db.set_api_cache("acoustid", fingerprint, results)
+                    self.db.set_api_cache("acoustid", fingerprint_key, results)
 
             candidates = []
             if results.get("status") == "ok":

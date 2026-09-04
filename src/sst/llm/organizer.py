@@ -1,5 +1,6 @@
 import logging
 import json
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Optional, Tuple, Callable
 
@@ -267,19 +268,54 @@ class LLMOrganizer:
         if not full_ref_steam:
             return None
 
+        def _norm_key(k: Any) -> str:
+            s = str(k).strip()
+            return s.lstrip('0') or '0'
+
         normalized_slot_key = str(slot_key).strip()
-        direct_matches = [track.get("v_idx") for track in full_ref_steam if str(track.get("n")) == normalized_slot_key]
+        norm_key = _norm_key(normalized_slot_key)
+        direct_matches = [
+            track.get("v_idx") for track in full_ref_steam
+            if _norm_key(track.get("n", "")) == norm_key
+        ]
         direct_matches = [match for match in direct_matches if match is not None]
         if len(direct_matches) == 1:
             return int(direct_matches[0])
 
+        # プレフィックス除去 / 数字抽出 (例: "STEAM_SLOT_0" -> "0", "SLOT_1" -> "1", "Track 2" -> "2")
+        extracted_digits = None
+        digits_match = re.search(r'\d+', normalized_slot_key)
+        if digits_match:
+            extracted_digits = digits_match.group(0)
+            norm_extracted = _norm_key(extracted_digits)
+            direct_matches_ext = [
+                track.get("v_idx") for track in full_ref_steam
+                if _norm_key(track.get("n", "")) == norm_extracted
+            ]
+            direct_matches_ext = [m for m in direct_matches_ext if m is not None]
+            if len(direct_matches_ext) == 1:
+                return int(direct_matches_ext[0])
+
+        # 数値インデックスとしてのフォールバック解決
+        num_str = extracted_digits if extracted_digits is not None else normalized_slot_key
         try:
-            fallback_index = int(normalized_slot_key) - 1
+            val = int(num_str)
         except (TypeError, ValueError):
             return None
 
+        # 0-indexed キー（"0"〜）: 0 は先頭スロット（インデックス 0）
+        if val == 0 and len(full_ref_steam) > 0:
+            return int(full_ref_steam[0].get("v_idx", 0))
+
+        # 1-indexed キー（"1"〜）: fallback_index = val - 1
+        fallback_index = val - 1
         if 0 <= fallback_index < len(full_ref_steam):
             return int(full_ref_steam[fallback_index].get("v_idx", fallback_index))
+
+        # 0-indexed で直接範囲内にある場合
+        if 0 <= val < len(full_ref_steam):
+            return int(full_ref_steam[val].get("v_idx", val))
+
         return None
 
     @classmethod
@@ -844,44 +880,43 @@ class LLMOrganizer:
 
         # 1. 確定済みスロットの抽出 (Deterministic Pre-resolution)
         deterministic_instructions: Dict[str, Dict[str, Any]] = {}
-        resolved_slot_keys: set[str] = set()
+        resolved_v_indices: set[int] = set()
         resolved_local_indices: set[int] = set()
-
-        slot_to_fids: Dict[str, List[str]] = {}
-        for fid_str, pm in prematch_map.items():
-            if pm and pm.is_deterministic and pm.deterministic_steam_slot is not None:
-                slot_key = str(pm.deterministic_steam_slot)
-                slot_to_fids.setdefault(slot_key, []).append(fid_str)
 
         fid_to_track_idx = {}
         for idx, track in enumerate(local_tracks):
             for fid in track.get("file_ids", []):
                 fid_to_track_idx[str(fid)] = idx
 
-        for slot_key, fids in slot_to_fids.items():
-            matched_v_idx = self._resolve_slot_key_to_v_idx(slot_key, full_ref_steam)
-            if matched_v_idx is not None:
-                resolved_slot_keys.add(slot_key)
-                for fid in fids:
-                    pm = prematch_map.get(fid)
-                    track_idx = fid_to_track_idx.get(fid)
-                    if track_idx is not None:
-                        resolved_local_indices.add(track_idx)
-                        matching_track = local_tracks[track_idx]
-                        tid = f"{matching_track['local_key'][0]}_{matching_track['local_key'][1]}"
-                        tags = global_res.get("global_tags", {}) if isinstance(global_res.get("global_tags"), dict) else {}
-                        deterministic_instructions[tid] = {
-                            "matched_v_idx": matched_v_idx,
-                            "mbz_track_index": pm.mbz_track_index if pm else None,
-                            "override_title": None,
-                            "override_track": str(slot_key),
-                            "override_disc": None,
-                            "reason": f"SYSTEM: Deterministic match ({pm.evidence[0] if pm and pm.evidence else 'exact'})",
-                            "TPE2": tags.get("canonical_album_artist"),
-                            "TCON": tags.get("canonical_genre"),
-                            "TDRC": tags.get("canonical_year"),
-                            "TPUB": tags.get("canonical_label"),
-                        }
+        for fid_str, pm in prematch_map.items():
+            if not pm or not pm.is_deterministic:
+                continue
+            matched_v_idx = pm.target_v_idx
+            if matched_v_idx is None and pm.deterministic_steam_slot is not None:
+                matched_v_idx = self._resolve_slot_key_to_v_idx(str(pm.deterministic_steam_slot), full_ref_steam)
+
+            if matched_v_idx is not None and 0 <= matched_v_idx < len(full_ref_steam):
+                resolved_v_indices.add(matched_v_idx)
+                track_idx = fid_to_track_idx.get(fid_str)
+                if track_idx is not None:
+                    resolved_local_indices.add(track_idx)
+                    matching_track = local_tracks[track_idx]
+                    tid = f"{matching_track['local_key'][0]}_{matching_track['local_key'][1]}"
+                    tags = global_res.get("global_tags", {}) if isinstance(global_res.get("global_tags"), dict) else {}
+                    steam_slot = full_ref_steam[matched_v_idx]
+                    slot_n = steam_slot.get("n") or pm.override_track or (matched_v_idx + 1)
+                    deterministic_instructions[tid] = {
+                        "matched_v_idx": matched_v_idx,
+                        "mbz_track_index": pm.mbz_track_index,
+                        "override_title": None,
+                        "override_track": str(slot_n),
+                        "override_disc": str(steam_slot.get("d") or steam_slot.get("disc") or 1),
+                        "reason": f"SYSTEM: Deterministic match ({pm.evidence[0] if pm.evidence else 'exact'})",
+                        "TPE2": tags.get("canonical_album_artist"),
+                        "TCON": tags.get("canonical_genre"),
+                        "TDRC": tags.get("canonical_year"),
+                        "TPUB": tags.get("canonical_label"),
+                    }
 
         # 2. 未確定トラックと空きスロットの抽出 (Unresolved Differential)
         unmatched_local_tracks = [
@@ -890,11 +925,11 @@ class LLMOrganizer:
         ]
         unfilled_steam_slots = [
             slot for slot in full_ref_steam
-            if str(slot.get("n", slot.get("v_idx", 0) + 1)) not in resolved_slot_keys
+            if slot.get("v_idx") not in resolved_v_indices
         ]
 
         logger.info(
-            f"[{app_id}] 差分推論アライメント: 確定済みスロット={len(resolved_slot_keys)}/{len(full_ref_steam)}, "
+            f"[{app_id}] 差分推論アライメント: 確定済みスロット={len(resolved_v_indices)}/{len(full_ref_steam)}, "
             f"未確定ローカルトラック={len(unmatched_local_tracks)}/{len(local_tracks)}, "
             f"空きSteamスロット={len(unfilled_steam_slots)}"
         )

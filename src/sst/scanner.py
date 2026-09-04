@@ -127,11 +127,22 @@ class SteamScanner:
                     "store_credits": enriched.get("store_credits", ""),
                     "url": f"https://store.steampowered.com/app/{current_id}",
                     "header_image_url": enriched.get("header_image_url"),
+                    "parent_header_image_url": enriched.get("parent_header_image_url"),
+                    "capsule_image_url": enriched.get("capsule_image_url"),
+                    "has_sibling_soundtracks": enriched.get("has_sibling_soundtracks", False),
                     "acf_path": str(acf_file),
                     "last_updated_acf": last_updated
                 })
             except Exception as e:
                 logger.error(f"ACF {acf_file} の処理中にエラーが発生しました: {e}")
+
+        # Re-check sibling soundtracks across the actually scanned collection
+        from collections import Counter
+        parent_counts = Counter(s.get("parent_app_id") for s in soundtracks if s.get("parent_app_id"))
+        for s in soundtracks:
+            pid = s.get("parent_app_id")
+            if pid and parent_counts[pid] > 1:
+                s["has_sibling_soundtracks"] = True
 
         logger.info(f"スキャンが完了しました。処理対象のサウンドトラックが {len(soundtracks)} 個見つかりました。")
         return soundtracks
@@ -153,6 +164,9 @@ class SteamScanner:
             "release_date": None,
             "label": extended.get("publisher"),
             "header_image_url": None,
+            "parent_header_image_url": None,
+            "capsule_image_url": None,
+            "has_sibling_soundtracks": False,
             "store_tracklist": [],
             "store_tracklist_source": None,
             "store_tracklist_language": None,
@@ -177,9 +191,7 @@ class SteamScanner:
             if web_data:
                 metadata.update(web_data)
                 # Update cache too for basic fields
-                
                 self.cache_manager.set_enriched(cache_key, web_data)
-
 
         # Fallback to local genre if web failed
         if not metadata.get("genres"):
@@ -193,12 +205,14 @@ class SteamScanner:
             rt = common.get("release_date")
             if rt: metadata["release_date"] = str(rt)
         if not metadata.get("header_image_url"):
-            if common.get("logo"):
-                metadata["header_image_url"] = f"https://cdn.akamai.steamstatic.com/steam/apps/{app_id}/header.jpg"
+            metadata["header_image_url"] = f"https://cdn.akamai.steamstatic.com/steam/apps/{app_id}/header.jpg"
+        if not metadata.get("capsule_image_url"):
+            metadata["capsule_image_url"] = f"https://cdn.akamai.steamstatic.com/steam/apps/{app_id}/capsule_616x353.jpg"
 
         # 4. Handle Parent Enrichment
         if metadata.get("parent_app_id"):
             pid = int(metadata["parent_app_id"])
+            metadata["has_sibling_soundtracks"] = self._has_sibling_soundtracks(app_id, pid)
             p_cache_key = str(pid)
             
             # Try local appinfo for parent tags first (much faster)
@@ -206,6 +220,7 @@ class SteamScanner:
             if "store_tags" in p_appinfo:
                 metadata["parent_tags"] = self._resolve_tags(pid, p_appinfo["store_tags"])
 
+            p_header = None
             if not force and p_cache_key in self.cache_manager.cache.get("enriched", {}):
                 p_enriched = self.cache_manager.cache["enriched"][p_cache_key]
                 metadata["parent_name"] = p_enriched.get("name")
@@ -213,6 +228,7 @@ class SteamScanner:
                     metadata["parent_tags"] = p_enriched.get("tags", [])
                 metadata["parent_genres"] = p_enriched.get("genres", [])
                 metadata["parent_genre"] = metadata["parent_genres"][0] if metadata["parent_genres"] else None
+                p_header = p_enriched.get("header_image_url")
             else:
                 p_web = self.web_client.fetch_web_enrichment(pid, force=force)
                 if p_web:
@@ -221,15 +237,34 @@ class SteamScanner:
                         metadata["parent_tags"] = p_web.get("tags", [])
                     metadata["parent_genres"] = p_web.get("genres", [])
                     metadata["parent_genre"] = metadata["parent_genres"][0] if metadata["parent_genres"] else None
-                    
+                    p_header = p_web.get("header_image_url")
                     self.cache_manager.set_enriched(p_cache_key, p_web)
-                    
                 else:
                     # Local fallback for parent
                     if not metadata.get("parent_name"):
                         metadata["parent_name"] = p_appinfo.get("name")
 
+            if not p_header:
+                p_header = f"https://cdn.akamai.steamstatic.com/steam/apps/{pid}/header.jpg"
+            metadata["parent_header_image_url"] = p_header
+
         return metadata
+
+    def _has_sibling_soundtracks(self, app_id: int, parent_app_id: Optional[int]) -> bool:
+        """Determines if there are other soundtrack albums associated with the same parent game."""
+        if not parent_app_id:
+            return False
+        count = 0
+        for aid, data in self.appinfo_dict.items():
+            common = data.get("common", {})
+            p = common.get("parent") or common.get("fullgameid")
+            if p and int(p) == int(parent_app_id):
+                app_type = str(common.get("type", "")).lower()
+                if app_type in ("music", "soundtrack", "dlc", "config"):
+                    count += 1
+                    if count > 1:
+                        return True
+        return False
 
     def _resolve_tags(self, app_id: int, raw_tag_ids: Any) -> List[str]:
         tag_ids = list(raw_tag_ids.values()) if isinstance(raw_tag_ids, dict) else list(raw_tag_ids or [])

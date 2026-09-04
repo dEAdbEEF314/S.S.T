@@ -1,6 +1,6 @@
 import re
 import logging
-from typing import Tuple, List, Dict, Any
+from typing import Tuple, List, Dict, Any, Optional
 
 from .models import SteamMetadata
 
@@ -8,7 +8,17 @@ logger = logging.getLogger("sst.validator")
 
 class ResultValidator:
     @staticmethod
-    def validate(app_id: int, tracks: List[Dict[str, Any]], llm_log: Dict[str, Any], mbz_candidates: List[Dict[str, Any]], steam_meta: SteamMetadata, audio_fail: bool, audio_warn: bool) -> Tuple[str, str, int, int, str]:
+    def validate(
+        app_id: int,
+        tracks: List[Dict[str, Any]],
+        llm_log: Dict[str, Any],
+        mbz_candidates: List[Dict[str, Any]],
+        steam_meta: SteamMetadata,
+        audio_fail: bool,
+        audio_warn: bool,
+        unassigned_manifest: Optional[List[Any]] = None,
+        audio_warned_tracks: Optional[List[str]] = None,
+    ) -> Tuple[str, str, int, int, str]:
         p1_res = llm_log.get("phase1_res", {})
         id_conf = int(p1_res.get("identity_confidence", 0))
         quality = int(p1_res.get("integrity_quality", 0))
@@ -47,17 +57,22 @@ class ResultValidator:
         status = "archive"
         issues = []
 
+        def _norm_slot(disc: Any, num: Any) -> Tuple[str, str]:
+            d = str(disc or "1").split("/")[0].strip().lstrip("0") or "1"
+            n = str(num or "0").split("/")[0].strip().lstrip("0") or "0"
+            return d, n
+
         if not steam_meta.store_tracklist:
             issues.append("Steam Tracklist Missing")
         else:
             expected_keys = {
-                (str(track.get("disc", 1)), str(track.get("number", "0")).split("/")[0])
+                _norm_slot(track.get("disc", 1), track.get("number", "0"))
                 for track in steam_meta.store_tracklist
             }
             final_keys = {
-                (
-                    str(track.get("tags", {}).get("disc_number", "1")).split("/")[0],
-                    str(track.get("tags", {}).get("track_number", "0")).split("/")[0],
+                _norm_slot(
+                    track.get("tags", {}).get("disc_number", "1"),
+                    track.get("tags", {}).get("track_number", "0"),
                 )
                 for track in tracks
             }
@@ -68,9 +83,10 @@ class ResultValidator:
             if unexpected_count:
                 issues.append(f"Steam Slots Unexpected ({unexpected_count})")
 
-        unassigned_files = alignment_res.get("unassigned_files") or []
-        if unassigned_files:
-            issues.append(f"Unassigned Files ({len(unassigned_files)})")
+        # 未割当ファイルの検証: バリアント統合・残差確定後の真の未割当リストを優先
+        actual_unassigned = unassigned_manifest if unassigned_manifest is not None else (alignment_res.get("unassigned_files") or [])
+        if actual_unassigned:
+            issues.append(f"Unassigned Files ({len(actual_unassigned)})")
 
         # 提案3: LLM矛盾の拒否を明示（自動修正で隠さない）
         rejected_slot_keys = alignment_res.get("rejected_slot_keys") or []
@@ -85,20 +101,14 @@ class ResultValidator:
         # anomaly merely because the rendered title contains "Unknown".
         z_count = sum(1 for t in tracks if str(t["tags"].get("track_number")) == "0")
         steam_titles_by_key = {
-            (
-                str(item.get("disc", 1)).split("/")[0],
-                str(item.get("number", "0")).split("/")[0],
-            ): str(item.get("title") or item.get("name") or "")
+            _norm_slot(item.get("disc", 1), item.get("number", "0")): str(item.get("title") or item.get("name") or "")
             for item in (steam_meta.store_tracklist or [])
         }
         legitimate_unknown_count = 0
         anomalous_unknown_count = 0
         for track in tracks:
             tags = track.get("tags", {})
-            key = (
-                str(tags.get("disc_number", "1")).split("/")[0],
-                str(tags.get("track_number", "0")).split("/")[0],
-            )
+            key = _norm_slot(tags.get("disc_number", "1"), tags.get("track_number", "0"))
             title = str(tags.get("title") or "Unknown").strip()
             if title.casefold().startswith("unknown"):
                 steam_title = steam_titles_by_key.get(key, "").strip()
@@ -145,7 +155,7 @@ class ResultValidator:
         track_keys = []
         duplicate_pairs = []
         for t in tracks:
-            key = (str(t["tags"].get("disc_number", "1")).split('/')[0], str(t["tags"].get("track_number", "0")).split('/')[0])
+            key = _norm_slot(t["tags"].get("disc_number", "1"), t["tags"].get("track_number", "0"))
             if key in track_keys:
                 duplicate_pairs.append(f"{key}")
             track_keys.append(key)
@@ -165,11 +175,13 @@ class ResultValidator:
         if audio_fail:
             issues.append("CRITICAL: Audio Source Error")
         elif audio_warn:
-            issues.append("Audio quality warning")
+            warn_detail = f" (Tracks: {', '.join(audio_warned_tracks)})" if audio_warned_tracks else ""
+            issues.append(f"Audio quality warning{warn_detail}")
 
         diagnostics = llm_log.setdefault("diagnostics", {})
         diagnostics["audio_quality_warnings"] = bool(audio_warn)
         diagnostics["audio_source_failures"] = bool(audio_fail)
+        diagnostics["audio_warned_tracks"] = audio_warned_tracks or []
 
         # --- 3. Confidence & Quality Thresholds ---
         llm_archive_path = album_confidence >= 90 and mapping_confidence >= 80 and data_quality >= 70

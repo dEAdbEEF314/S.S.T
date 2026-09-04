@@ -75,7 +75,7 @@ def build_mapping_prompt(
         {json.dumps(s_chunk, ensure_ascii=False)}
 
       ### RULES:
-      1. STEAM defines the canonical slot structure. Assign local files (file_id) to STEAM slots (STEAM_SLOT_NUMBER).
+      1. STEAM defines the canonical slot structure. Assign local files (file_id) to STEAM slots using the exact slot number string from the STEAM slots above (e.g. "1", "2").
       2. Each local file must belong to at most one STEAM slot.
       3. Multiple format variants of the same song (e.g. WAV and MP3) must be assigned to the SAME slot.
       4. If a file does not match any STEAM slot, list it in `unassigned_files`.
@@ -89,14 +89,14 @@ def build_mapping_prompt(
 ```json
 {{
   "slots": {{
-    "STEAM_SLOT_NUMBER": {{
-      "files": ["FILE_ID"],
+    "1": {{
+      "files": ["0"],
       "confidence": 0.95,
       "reason": "Brief reason (max 20 chars)"
     }}
   }},
-  "unassigned_files": ["FILE_ID"],
-  "unassigned_reason": "Brief reason if any"
+  "unassigned_files": [],
+  "unassigned_reason": ""
 }}
 ```
 """
