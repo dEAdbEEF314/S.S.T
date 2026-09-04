@@ -48,6 +48,61 @@ def test_validator_zero_pad_normalization():
     assert "Steam Slots Unexpected" not in message
 
 
+def test_validate_archive_artifacts_zero_pad_normalization(tmp_path):
+    """_validate_archive_artifacts でSteamが'1'でタグが'01'でもSlot Mismatchにならないことを検証"""
+    from sst.processor import LocalProcessor
+
+    steam_meta = SteamMetadata(
+        app_id=1568690,
+        name="DJMAX Test",
+        store_tracklist=[
+            {"disc": 1, "number": "1", "title": "Track 1"},
+            {"disc": 1, "number": "2", "title": "Track 2"},
+        ]
+    )
+
+    # 実ファイルを作成
+    disc_dir = tmp_path / "disc_1"
+    disc_dir.mkdir(parents=True, exist_ok=True)
+    f1 = disc_dir / "01. Track 1.aif"
+    f2 = disc_dir / "02. Track 2.aif"
+    f1.write_bytes(b"dummy audio data 1")
+    f2.write_bytes(b"dummy audio data 2")
+
+    tracks = [
+        {
+            "file_path": "disc_1/01. Track 1.aif",
+            "tags": {
+                "disc_number": "1",
+                "track_number": "01",
+                "title": "Track 1",
+                "artist": "Test Artist",
+                "album_artist": "Test Dev",
+            },
+        },
+        {
+            "file_path": "disc_1/02. Track 2.aif",
+            "tags": {
+                "disc_number": "1",
+                "track_number": "02",
+                "title": "Track 2",
+                "artist": "Test Artist",
+                "album_artist": "Test Dev",
+            },
+        },
+    ]
+
+    issues = LocalProcessor._validate_archive_artifacts(
+        app_id=1568690,
+        artifact_dir=tmp_path,
+        tracks=tracks,
+        steam_meta=steam_meta,
+    )
+
+    assert "Archive Artifact Steam Slot Mismatch" not in issues
+    assert issues == []
+
+
 def test_organizer_slot_key_prefix_and_zero_pad():
     """LLMがプレフィックス付きキーやゼロ埋めを出力しても安全に解決されることを検証"""
     full_ref_steam = [

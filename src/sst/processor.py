@@ -682,20 +682,21 @@ class LocalProcessor:
     ) -> List[str]:
         """Re-scan physical outputs immediately before packaging an archive."""
         issues: List[str] = []
+        def _norm_slot_key(disc_val: Any, num_val: Any) -> Tuple[str, str]:
+            d = str(disc_val if disc_val is not None else 1).split("/")[0].strip()
+            n = str(num_val if num_val is not None else "0").split("/")[0].strip()
+            norm_d = d.lstrip('0') or '1'
+            norm_n = n.lstrip('0') or '0'
+            return (norm_d, norm_n)
+
         expected_keys = {
-            (
-                str(item.get("disc", 1)).split("/")[0],
-                str(item.get("number", "0")).split("/")[0],
-            )
+            _norm_slot_key(item.get("disc", 1), item.get("number", "0"))
             for item in (steam_meta.store_tracklist or [])
         }
         actual_keys = set()
         for track in tracks:
             tags = track.get("tags") or {}
-            key = (
-                str(tags.get("disc_number", "1")).split("/")[0],
-                str(tags.get("track_number", "0")).split("/")[0],
-            )
+            key = _norm_slot_key(tags.get("disc_number", "1"), tags.get("track_number", "0"))
             actual_keys.add(key)
             relative_path = track.get("file_path")
             if not relative_path:

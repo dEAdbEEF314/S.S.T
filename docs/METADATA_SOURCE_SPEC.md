@@ -609,10 +609,10 @@ STEAMスロットN に対してフィールドF のEMBEDデータが必要:
 
 ### 11.2.1 トラック番号・ディスク番号のゼロ埋め正規化契約 (Zero-padding Normalization)
 
-Steamストアトラックリストとローカルタグのトラック番号照合、および重複（Duplicates）検査において、以下の正規化を適用する：
-- **前置ゼロの除去**: トラック番号文字列は前置ゼロを除去した数値表現（`str(track_number).split('/')[0].lstrip('0') or '0'`）に正規化して `(disc, track)` キーを構築する（ディスク番号も同様に `lstrip('0') or '1'`）。
-- **目的**: Steam側が非ゼロ埋め（`"1"`）、ローカルタグ側がゼロ埋め（`"01"`）であることによる、偽の `Steam Slots Missing` / `Steam Slots Unexpected` の発生を防止し、物理構造が完全に一致しているアルバムを確実に Archive 判定へ導く。
-- **安全境界**: この正規化はスロット照合キーのみに適用され、音声ファイルに出力されるタグ値やファイル名には干渉しない。
+Steamストアトラックリストとローカルタグのトラック番号照合、重複（Duplicates）検査、および**アーカイブ出力直前の最終事前検証（Archive Artifact Preflight 検査: `_validate_archive_artifacts`）**において、以下の正規化を一貫して適用する：
+- **前置ゼロの除去**: トラック番号文字列は前置ゼロを除去した数値表現（`str(track_number).split('/')[0].lstrip('0') or '0'`）に正規化して `(disc, track)` キーを構築する（ディスク番号も同様に `str(disc_number).split('/')[0].lstrip('0') or '1'`）。
+- **目的**: Steam側が非ゼロ埋め（`"1"`）、ローカルタグ側がゼロ埋め（`"01"`）であることによる、バリデーション時の偽の `Steam Slots Missing` / `Steam Slots Unexpected` や、事前検証時の偽の `Archive Artifact Steam Slot Mismatch` の発生を防止し、物理構造が完全に一致している健全なアルバム（DJMAX、Evertried 等）を確実に Archive 判定へ導く。
+- **安全境界**: この正規化はスロット照合キーおよび事前検証キーの整合判定のみに適用され、音声ファイルに出力されるタグ値（ID3フレーム）や物理ファイル名には一切干渉しない。
 
 ### 11.3 決定論的 album_confidence の算出（ファストトラック時）
 
