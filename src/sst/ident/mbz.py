@@ -32,7 +32,8 @@ class MusicBrainzIdentifier:
 
     def _safe_year(self, date_str: Any) -> Optional[int]:
         """Safely extracts a 4-digit year from any string."""
-        if not date_str: return None
+        if not date_str:
+            return None
         match = re.search(r'(\d{4})', str(date_str))
         return int(match.group(1)) if match else None
 
@@ -42,7 +43,8 @@ class MusicBrainzIdentifier:
         
         if self.db:
             cached = self.db.get_api_cache("mbz", cache_key)
-            if cached is not None: return cached
+            if cached is not None:
+                return cached
             
         try:
             time.sleep(1.1)
@@ -61,7 +63,8 @@ class MusicBrainzIdentifier:
         
         if self.db:
             cached = self.db.get_api_cache("mbz", cache_key)
-            if cached is not None: return cached
+            if cached is not None:
+                return cached
             
         try:
             time.sleep(1.1)
@@ -88,7 +91,8 @@ class MusicBrainzIdentifier:
         """
         Calculates a set similarity score between local and MB tracks based on name and duration.
         """
-        if not local_tracks or not mb_tracks: return 0.0
+        if not local_tracks or not mb_tracks:
+            return 0.0
         
         matched_count = 0
         used_mb_indices = set()
@@ -98,7 +102,8 @@ class MusicBrainzIdentifier:
             best_sim = 0.0
             
             for m_idx, (m_name, m_dur) in enumerate(mb_tracks):
-                if m_idx in used_mb_indices: continue
+                if m_idx in used_mb_indices:
+                    continue
                 
                 time_match = True
                 if l_dur and m_dur:
@@ -167,7 +172,8 @@ class MusicBrainzIdentifier:
                         if release:
                             all_raw_releases.append(release)
                             log_data["attempts"].append({"query": f"AcoustID Release {rid}", "count": 1})
-                    except Exception: pass
+                    except Exception:
+                        pass
 
         # 3. Tertiary: Fallback to recording-based search if still empty
         if not all_raw_releases and acoustid_mbids:
@@ -175,7 +181,8 @@ class MusicBrainzIdentifier:
                 rec_data = self._fetch_recording(acoustid_mbids[0], includes=["releases"])
                 all_raw_releases = rec_data.get("release-list", []) if rec_data else []
                 log_data["attempts"].append({"query": f"AcoustID Recording {acoustid_mbids[0]}", "count": len(all_raw_releases)})
-            except Exception: pass
+            except Exception:
+                pass
 
         if not all_raw_releases:
             return [], log_data
@@ -188,7 +195,8 @@ class MusicBrainzIdentifier:
             logger.debug(f"[{i+1}/{len(all_raw_releases)}] Fetching details for MBZ Release: {title_text} ({mbid})...")
             try:
                 release_data = self._fetch_release(mbid, includes=["url-rels", "recordings", "artist-credits", "labels"])
-                if not release_data: continue
+                if not release_data:
+                    continue
             except Exception as e:
                 logger.warning(f"Failed to fetch details for {mbid}: {e}")
                 continue
@@ -208,7 +216,8 @@ class MusicBrainzIdentifier:
                 for m in release_data.get('medium-list', []):
                     for t in m.get('track-list', []):
                         rid = t.get('recording', {}).get('id')
-                        if rid: mb_rec_ids.append(rid)
+                        if rid:
+                            mb_rec_ids.append(rid)
                 
                 intersection = set(acoustid_mbids) & set(mb_rec_ids)
                 if intersection:
@@ -269,8 +278,10 @@ class MusicBrainzIdentifier:
                     lname = l_entry.get('label', {}).get('name')
                     if lname:
                         mb_labels.append(lname.lower())
-                        if canonical_label == "Unknown": canonical_label = lname
-            except Exception: pass
+                        if canonical_label == "Unknown":
+                            canonical_label = lname
+            except Exception:
+                pass
             
             # Steam Publisher matching
             if local_baseline and local_baseline.get("publisher"):
@@ -305,7 +316,8 @@ class MusicBrainzIdentifier:
                         t_name = t.get('recording', {}).get('title') or t.get('title', 'Unknown')
                         try:
                             t_len = int(t.get('length') or t.get('recording', {}).get('length') or 0)
-                        except Exception: t_len = 0
+                        except Exception:
+                            t_len = 0
                         mb_tracks_data.append((t_name, t_len))
                 
                 # local_baseline["tracks"] now contains (name, duration_ms) tuples
@@ -378,6 +390,8 @@ class MusicBrainzIdentifier:
         try:
             images = musicbrainzngs.get_image_list(mbid)
             for img in images.get('images', []):
-                if img.get('front') and img.get('image'): return img.get('image')
-        except Exception: pass
+                if img.get('front') and img.get('image'):
+                    return img.get('image')
+        except Exception:
+            pass
         return None

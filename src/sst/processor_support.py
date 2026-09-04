@@ -228,6 +228,29 @@ def merge_embedded_tags_for_slot(slot_variants: List[Dict[str, Any]]) -> Dict[st
     return merged_tags
 
 
+def safe_download_image(url: Optional[str], timeout: float = 15.0, max_bytes: int = 25 * 1024 * 1024) -> Optional[bytes]:
+    """Downloads an image securely with URL scheme validation and a strict size limit."""
+    if not url:
+        return None
+    parsed = str(url).strip()
+    if not (parsed.startswith("http://") or parsed.startswith("https://")):
+        logger.warning(f"安全ガード: 不正なURLスキームを拒否しました: {url}")
+        return None
+    try:
+        r = requests.get(parsed, timeout=timeout)
+        if r.status_code == 200:
+            content = r.content
+            if content and isinstance(content, (bytes, bytearray)):
+                if len(content) > max_bytes:
+                    logger.warning(f"画像サイズが上限（{max_bytes} bytes）を超過したためダウンロードを中止しました: {url}")
+                    return None
+                if len(content) > 0:
+                    return bytes(content)
+    except Exception as e:
+        logger.debug(f"画像のダウンロードに失敗しました ({url}): {e}")
+    return None
+
+
 def fetch_album_artwork(
     config: Any,
     mbz_client: Any,
@@ -247,32 +270,16 @@ def fetch_album_artwork(
     if mbz_candidates:
         url = mbz_client.get_release_artwork_url(mbz_candidates[0]["mbid"])
         if url:
-            try:
-                r = requests.get(url, timeout=15)
-                if r.status_code == 200:
-                    logger.info("MBZソースからアルバムアートワークを採用しました")
-                    return r.content
-            except Exception as e:
-                logger.debug(f"MBZアートワークの取得に失敗しました: {e}")
-
-    # 3. STEAM (Header & Capsule Images)
-    # 契約:
-    # A. 親ゲーム(parent_app_id)が存在し、かつ同一親に紐づくサントラが1つだけの場合:
-    #    ゲーム音楽DJ実運用上の識別性向上のため、親ゲームの看板(parent_header_image_url)を最優先採用。
-    # B. 親ゲームが存在しない、または同一親に紐づくサントラが複数存在する場合(Vol.1/Vol.2、Remix等):
-    #    サントラごとに異なる看板を維持するため、サントラ自身の看板(header_image_url)を採用。
-    # C. 失敗時は代替アセット(capsule_image_url, CDN固定URL, 親ゲーム画像)へ安全にフォールバック。
+            art = safe_download_image(url)
+            if art:
+                logger.info("MBZソースからアルバムアートワークを採用しました")
+                return art
 
     def _fetch_image(image_url: Optional[str], label: str) -> Optional[bytes]:
-        if not image_url:
-            return None
-        try:
-            r = requests.get(image_url, timeout=15)
-            if r.status_code == 200 and len(r.content) > 0:
-                logger.info(f"STEAMソースからアルバムアートワークを採用しました ({label}: {image_url})")
-                return r.content
-        except Exception as e:
-            logger.debug(f"Steam画像のダウンロードに失敗しました ({label}): {e}")
+        art = safe_download_image(image_url)
+        if art:
+            logger.info(f"STEAMソースからアルバムアートワークを採用しました ({label}: {image_url})")
+            return art
         return None
 
     # Determine candidate URLs based on policy
@@ -302,6 +309,70 @@ def fetch_album_artwork(
 
     logger.warning("全ソースから有効なアルバムアートワークを取得できませんでした")
     return None
+
+
+def _find_candidate_unassigned_matches(
+    s_disc: int,
+    s_num: str,
+    s_title: str,
+    unassigned_group_keys: List[Any],
+    track_groups: Dict,
+    final_metadata: Dict[str, Any],
+) -> List[tuple[Any, str, List[Dict[str, Any]]]]:
+    matching_groups = []
+    for group_key in unassigned_group_keys:
+        tid = f"{group_key[0]}_{group_key[1]}"
+        if tid in final_metadata:
+            continue
+        variants = track_groups.get(group_key, [])
+        t_disc = int(group_key[0])
+        t_num_val = variants[0].get("t_num_val") if variants else None
+        t_num = str(t_num_val or "0").split("/")[0].lstrip("0") or "0"
+
+        raw_title = group_key[1].split("::")[0] if "::" in group_key[1] else group_key[1]
+        t_title = TrackManager.normalize_title(raw_title)
+
+        num_match = (s_disc == t_disc and s_num == t_num and s_num != "0")
+        title_match = bool(s_title and t_title and (s_title == t_title or s_title.startswith(t_title) or t_title.startswith(s_title)))
+
+        if num_match or title_match:
+            matching_groups.append((group_key, "number_match" if num_match else "title_match", variants))
+    return matching_groups
+
+
+def _apply_reconciled_slot(
+    tid: str,
+    idx: int,
+    steam_slot: Dict[str, Any],
+    match_rule: str,
+    s_num: str,
+    s_title: str,
+    global_identity: Dict[str, Any],
+    final_metadata: Dict[str, Any],
+) -> Dict[str, Any]:
+    final_metadata[tid] = {
+        "matched_v_idx": idx,
+        "mbz_track_index": None,
+        "override_title": None,
+        "override_track": str(steam_slot.get("number") or steam_slot.get("n")),
+        "override_disc": None,
+        "composer": None,
+        "lyricist": None,
+        "arranger": None,
+        "reason": f"SYSTEM: 決定論的残差確定 (Steam Slot #{s_num}: '{s_title}')",
+        "TPE2": global_identity.get("canonical_album_artist"),
+        "TCON": global_identity.get("canonical_genre"),
+        "TDRC": global_identity.get("canonical_year"),
+        "TPUB": global_identity.get("canonical_label"),
+    }
+    logger.info(f"決定論的残差確定: {tid} -> Steam Slot {s_num} ('{s_title}') by {match_rule}")
+    return {
+        "tid": tid,
+        "matched_v_idx": idx,
+        "steam_slot": s_num,
+        "steam_title": s_title,
+        "rule": match_rule,
+    }
 
 
 def reconcile_deterministic_unassigned_slots(
@@ -339,67 +410,31 @@ def reconcile_deterministic_unassigned_slots(
     if not missing_steam or not unassigned_group_keys:
         return reconciled_logs
 
-    # Find unique 1:1 deterministic matches (number match or strict title match)
     for idx, steam_slot in missing_steam:
         s_disc = int(steam_slot.get("disc", 1))
         s_num = str(steam_slot.get("number") or steam_slot.get("n", "0")).split("/")[0].lstrip("0") or "0"
         s_title = TrackManager.normalize_title(str(steam_slot.get("title") or steam_slot.get("name") or ""))
 
-        matching_groups = []
-        for group_key in unassigned_group_keys:
-            tid = f"{group_key[0]}_{group_key[1]}"
-            if tid in final_metadata:
-                continue
-            variants = track_groups.get(group_key, [])
-            t_disc = int(group_key[0])
-            t_num_val = variants[0].get("t_num_val") if variants else None
-            t_num = str(t_num_val or "0").split("/")[0].lstrip("0") or "0"
+        matching_groups = _find_candidate_unassigned_matches(
+            s_disc, s_num, s_title, unassigned_group_keys, track_groups, final_metadata
+        )
+        if not matching_groups:
+            continue
 
-            raw_title = group_key[1].split("::")[0] if "::" in group_key[1] else group_key[1]
-            t_title = TrackManager.normalize_title(raw_title)
+        durations = [float(v.get("duration", 0.0) or 0.0) for _, _, vars in matching_groups for v in vars]
+        is_same_variant_set = (
+            len({TrackManager.normalize_title(gk[1].split("::")[0] if "::" in gk[1] else gk[1]) for gk, _, _ in matching_groups}) <= 1
+            and (not durations or max(durations) - min(durations) < 1.0)
+        )
 
-            num_match = (s_disc == t_disc and s_num == t_num and s_num != "0")
-            title_match = bool(s_title and t_title and (s_title == t_title or s_title.startswith(t_title) or t_title.startswith(s_title)))
-
-            if num_match or title_match:
-                matching_groups.append((group_key, "number_match" if num_match else "title_match", variants))
-
-        # Apply when exactly one match or all matches are multi-format variants of the same track
-        if matching_groups:
-            durations = [float(v.get("duration", 0.0) or 0.0) for _, _, vars in matching_groups for v in vars]
-            is_same_variant_set = (
-                len({TrackManager.normalize_title(gk[1].split("::")[0] if "::" in gk[1] else gk[1]) for gk, _, _ in matching_groups}) <= 1
-                and (not durations or max(durations) - min(durations) < 1.0)
-            )
-
-            if len(matching_groups) == 1 or is_same_variant_set:
-                for group_key, match_rule, _ in matching_groups:
-                    tid = f"{group_key[0]}_{group_key[1]}"
-                    final_metadata[tid] = {
-                        "matched_v_idx": idx,
-                        "mbz_track_index": None,
-                        "override_title": None,
-                        "override_track": str(steam_slot.get("number") or steam_slot.get("n")),
-                        "override_disc": None,
-                        "composer": None,
-                        "lyricist": None,
-                        "arranger": None,
-                        "reason": f"SYSTEM: 決定論的残差確定 (Steam Slot #{s_num}: '{s_title}')",
-                        "TPE2": global_identity.get("canonical_album_artist"),
-                        "TCON": global_identity.get("canonical_genre"),
-                        "TDRC": global_identity.get("canonical_year"),
-                        "TPUB": global_identity.get("canonical_label"),
-                    }
-                    log_entry = {
-                        "tid": tid,
-                        "matched_v_idx": idx,
-                        "steam_slot": s_num,
-                        "steam_title": s_title,
-                        "rule": match_rule,
-                    }
-                    reconciled_logs.append(log_entry)
-                    logger.info(f"決定論的残差確定: {tid} -> Steam Slot {s_num} ('{s_title}') by {match_rule}")
-                assigned_v_indices.add(idx)
+        if len(matching_groups) == 1 or is_same_variant_set:
+            for group_key, match_rule, _ in matching_groups:
+                tid = f"{group_key[0]}_{group_key[1]}"
+                log_entry = _apply_reconciled_slot(
+                    tid, idx, steam_slot, match_rule, s_num, s_title, global_identity, final_metadata
+                )
+                reconciled_logs.append(log_entry)
+            assigned_v_indices.add(idx)
 
     return reconciled_logs
 
@@ -479,6 +514,187 @@ def send_notifications(
     return "\n".join(md_lines)
 
 
+def _parse_tid_group_key(tid: str) -> Optional[tuple[int, str]]:
+    try:
+        disc, clean_title = tid.split("_", 1)
+        return int(disc), clean_title
+    except (TypeError, ValueError):
+        return None
+
+
+def _get_tid_priority(tid: str, track_groups: Dict, priorities: List[str]) -> int:
+    group_key = _parse_tid_group_key(tid)
+    if group_key in track_groups and track_groups[group_key]:
+        fmt = track_groups[group_key][0]["format"].lower()
+        try:
+            return priorities.index(fmt)
+        except ValueError:
+            return 999
+    return 999
+
+
+def _get_tid_stem_and_duration(tid: str, track_groups: Dict) -> tuple[str, float, str]:
+    group_key = _parse_tid_group_key(tid)
+    if group_key not in track_groups or not track_groups[group_key]:
+        return "", 0.0, ""
+    variants = track_groups[group_key]
+    raw_title = group_key[1].split("::")[0] if "::" in group_key[1] else group_key[1]
+    norm_title = TrackManager.normalize_title(raw_title)
+    fmt = str(variants[0].get("format", "")).lower()
+    dur = float(variants[0].get("duration", 0.0) or 0.0)
+    return norm_title, dur, fmt
+
+
+def _deduplicate_format_variants_for_slot(
+    app_id: int,
+    tids: List[str],
+    track_groups: Dict,
+    final_metadata: Dict[str, Any],
+    priorities: List[str],
+) -> List[str]:
+    tids_sorted = sorted(tids, key=lambda tid: _get_tid_priority(tid, track_groups, priorities))
+    best_tid = tids_sorted[0]
+    best_norm_title, best_dur, best_fmt = _get_tid_stem_and_duration(best_tid, track_groups)
+
+    merged_any = False
+    tids_to_remove = []
+    for tid in tids_sorted[1:]:
+        this_norm_title, this_dur, this_fmt = _get_tid_stem_and_duration(tid, track_groups)
+
+        is_diff_fmt = (best_fmt != this_fmt) and bool(best_fmt and this_fmt)
+        dur_diff_ok = abs(best_dur - this_dur) <= 3.0 if (best_dur > 0 and this_dur > 0) else True
+        title_match = (best_norm_title == this_norm_title) or (bool(best_norm_title and this_norm_title) and (best_norm_title in this_norm_title or this_norm_title in best_norm_title))
+        slot_dur_match = abs(best_dur - this_dur) <= 1.5 if (best_dur > 0 and this_dur > 0) else False
+
+        can_merge = is_diff_fmt and dur_diff_ok and (title_match or slot_dur_match)
+
+        if can_merge:
+            best_group_key = _parse_tid_group_key(best_tid)
+            group_key = _parse_tid_group_key(tid)
+            if group_key in track_groups and best_group_key in track_groups:
+                for v in track_groups[group_key]:
+                    if v not in track_groups[best_group_key]:
+                        track_groups[best_group_key].append(v)
+                del track_groups[group_key]
+            if tid in final_metadata:
+                del final_metadata[tid]
+            tids_to_remove.append(tid)
+            merged_any = True
+            logger.info(f"[{app_id}] フォーマット重複を解決: {tid} ({this_fmt}) を最高品質の {best_tid} ({best_fmt}) に統合しました (再生時間差: {abs(best_dur - this_dur):.2f}s)。")
+
+    if merged_any:
+        best_group_key = _parse_tid_group_key(best_tid)
+        if best_group_key in track_groups:
+            track_groups[best_group_key].sort(key=lambda v: priorities.index(v["format"].lower()) if v["format"].lower() in priorities else 999)
+        return [t for t in tids if t not in tids_to_remove]
+    return tids
+
+
+def _resolve_multidisc_index_conflicts(
+    app_id: int,
+    v_idx: int,
+    tids: List[str],
+    store_tracks: List[Dict[str, Any]],
+    final_metadata: Dict[str, Any],
+) -> bool:
+    local_discs = set(int(tid.split("_", 1)[0]) for tid in tids)
+    if len(local_discs) <= 1:
+        return False
+
+    logger.info(f"[{app_id}] v_idx {v_idx} のマルチディスクインデックスの衝突を検出しました。ローカルのディスク番号に基づいて再配置を試みます。")
+    for tid in tids:
+        l_disc, l_title = tid.split("_", 1)
+        l_disc_int = int(l_disc)
+
+        best_match_idx = -1
+        for s_idx, st in enumerate(store_tracks):
+            if int(st.get("disc", 1)) == l_disc_int:
+                st_name = (st.get("title") or st.get("name", "")).lower()
+                if st_name == l_title.lower() or st_name.startswith(l_title.lower()) or l_title.lower().startswith(st_name):
+                    best_match_idx = s_idx
+                    break
+
+        if best_match_idx != -1:
+            final_metadata[tid]["matched_v_idx"] = best_match_idx
+            final_metadata[tid]["reason"] = f"SYSTEM: ローカル構造に基づきDisc {l_disc_int} Track {store_tracks[best_match_idx].get('track')}に再配置しました"
+    return True
+
+
+def _resolve_disc_title_matches(
+    tids: List[str],
+    store_tracks: List[Dict[str, Any]],
+    v_idx: int,
+    final_metadata: Dict[str, Any],
+) -> List[str]:
+    l_disc = int(tids[0].split("_", 1)[0])
+
+    candidates_in_disc = []
+    for s_idx, st in enumerate(store_tracks):
+        if int(st.get("disc", 1)) == l_disc:
+            candidates_in_disc.append((s_idx, (st.get("title") or st.get("name", "")).lower()))
+
+    resolved_tids = set()
+    for tid in tids:
+        l_title_clean = tid.split("_", 1)[1].lower()
+        for s_idx, st_name in candidates_in_disc:
+            if st_name == l_title_clean or st_name.startswith(l_title_clean) or l_title_clean.startswith(st_name):
+                if s_idx != v_idx:
+                    final_metadata[tid]["matched_v_idx"] = s_idx
+                    final_metadata[tid]["reason"] = f"SYSTEM: 曲名の一致により正しいインデックスを復元しました ('{st_name}')"
+                    resolved_tids.add(tid)
+                    break
+            else:
+                similarity = SequenceMatcher(None, l_title_clean, st_name).ratio()
+                if similarity >= 0.80:
+                    if s_idx != v_idx:
+                        final_metadata[tid]["matched_v_idx"] = s_idx
+                        final_metadata[tid]["reason"] = f"SYSTEM: ファジーマッチにより正しいインデックスを復元しました ('{st_name}', 類似度: {similarity:.2f})"
+                        resolved_tids.add(tid)
+                        break
+
+    return [t for t in tids if t not in resolved_tids]
+
+
+def _resolve_sequential_track_duplicates(
+    app_id: int,
+    remaining_tids: List[str],
+    store_tracks: List[Dict[str, Any]],
+    v_idx: int,
+    track_groups: Dict,
+    final_metadata: Dict[str, Any],
+) -> None:
+    base_track = store_tracks[v_idx] if v_idx < len(store_tracks) else None
+    if not base_track:
+        return
+    base_name = (base_track.get("title") or base_track.get("name", "")).lower()
+
+    sequence_indices = [v_idx]
+    for next_idx in range(v_idx + 1, len(store_tracks)):
+        nt = store_tracks[next_idx]
+        nt_name = (nt.get("title") or nt.get("name", "")).lower()
+        if nt_name == base_name or nt_name.startswith(base_name) or base_name.startswith(nt_name):
+            sequence_indices.append(next_idx)
+        else:
+            break
+
+    if len(sequence_indices) >= len(remaining_tids):
+        logger.info(f"[{app_id}] インデックス {v_idx} から始まるシーケンスを使用して '{base_name}' ({len(remaining_tids)} トラック) の重複マッピングを解決しています")
+
+        def get_sort_key(tid_str: str):
+            parts = tid_str.split("_", 1)
+            try:
+                k = (int(parts[0]), parts[1])
+                return list(track_groups.keys()).index(k)
+            except (ValueError, IndexError):
+                return 999
+
+        sorted_tids = sorted(remaining_tids, key=get_sort_key)
+        for i, tid in enumerate(sorted_tids):
+            new_idx = sequence_indices[i]
+            final_metadata[tid]["matched_v_idx"] = new_idx
+            final_metadata[tid]["reason"] = f"SYSTEM: '{base_name}' の重複シーケンスを解決しました (インデックス {new_idx} を割り当て)"
+
+
 def resolve_duplicate_mappings(
     app_id: int,
     final_metadata: Dict[str, Any],
@@ -495,169 +711,26 @@ def resolve_duplicate_mappings(
         if v_idx is not None:
             idx_map[v_idx].append(tid)
 
-    store_tracks = steam_meta.store_tracklist
+    store_tracks = steam_meta.store_tracklist or []
+    priorities = TrackManager.get_audio_format_priority()
+
     for v_idx, tids in idx_map.items():
         if len(tids) <= 1:
             continue
 
-        # --- FORMAT DEDUPLICATION ---
-        # ユーザーの「フォーマットごとの仮想アルバム処理」に基づき、
-        # 同一のSTEAMトラックにマッピングされた異なるフォーマットのトラックを統合する。
-        from .track_grouper import TrackManager
-        priorities = TrackManager.get_audio_format_priority()
-
-        def get_group_key(tid):
-            try:
-                disc, clean_title = tid.split("_", 1)
-                return int(disc), clean_title
-            except (TypeError, ValueError):
-                return None
-        
-        def get_priority(tid):
-            group_key = get_group_key(tid)
-            if group_key in track_groups and track_groups[group_key]:
-                fmt = track_groups[group_key][0]["format"].lower()
-                try:
-                    return priorities.index(fmt)
-                except ValueError:
-                    return 999
-            return 999
-
-        def get_stem_and_duration(tid):
-            group_key = get_group_key(tid)
-            if group_key not in track_groups or not track_groups[group_key]:
-                return "", 0.0, ""
-            variants = track_groups[group_key]
-            raw_title = group_key[1].split("::")[0] if "::" in group_key[1] else group_key[1]
-            norm_title = TrackManager.normalize_title(raw_title)
-            fmt = str(variants[0].get("format", "")).lower()
-            dur = float(variants[0].get("duration", 0.0) or 0.0)
-            return norm_title, dur, fmt
-
-        tids_sorted = sorted(tids, key=get_priority)
-        best_tid = tids_sorted[0]
-        best_norm_title, best_dur, best_fmt = get_stem_and_duration(best_tid)
-        
-        merged_any = False
-        tids_to_remove = []
-        for tid in tids_sorted[1:]:
-            this_norm_title, this_dur, this_fmt = get_stem_and_duration(tid)
-
-            # 4重AND条件による厳格なバリアント統合判定
-            # 1. 異なるフォーマットであること
-            # 2. 再生時間差が 3.0s 以内であること（エンコーダ遅延・無音差を吸収）
-            # 3. 正規化タイトル/Stemが一致、または同一スロットで再生時間差 1.5s 以内であること
-            is_diff_fmt = (best_fmt != this_fmt) and bool(best_fmt and this_fmt)
-            dur_diff_ok = abs(best_dur - this_dur) <= 3.0 if (best_dur > 0 and this_dur > 0) else True
-            title_match = (best_norm_title == this_norm_title) or (bool(best_norm_title and this_norm_title) and (best_norm_title in this_norm_title or this_norm_title in best_norm_title))
-            slot_dur_match = abs(best_dur - this_dur) <= 1.5 if (best_dur > 0 and this_dur > 0) else False
-
-            can_merge = is_diff_fmt and dur_diff_ok and (title_match or slot_dur_match)
-
-            if can_merge:
-                best_group_key = get_group_key(best_tid)
-                group_key = get_group_key(tid)
-                if group_key in track_groups and best_group_key in track_groups:
-                    for v in track_groups[group_key]:
-                        if v not in track_groups[best_group_key]:
-                            track_groups[best_group_key].append(v)
-                    del track_groups[group_key]
-                if tid in final_metadata:
-                    del final_metadata[tid]
-                tids_to_remove.append(tid)
-                merged_any = True
-                logger.info(f"[{app_id}] フォーマット重複を解決: {tid} ({this_fmt}) を最高品質の {best_tid} ({best_fmt}) に統合しました (再生時間差: {abs(best_dur - this_dur):.2f}s)。")
-
-        if merged_any:
-            best_group_key = get_group_key(best_tid)
-            if best_group_key in track_groups:
-                track_groups[best_group_key].sort(key=lambda v: priorities.index(v["format"].lower()) if v["format"].lower() in priorities else 999)
-            tids = [t for t in tids if t not in tids_to_remove]
-            if len(tids) <= 1:
-                continue
-
-        local_discs = set(int(tid.split("_", 1)[0]) for tid in tids)
-        if len(local_discs) > 1:
-            logger.info(f"[{app_id}] v_idx {v_idx} のマルチディスクインデックスの衝突を検出しました。ローカルのディスク番号に基づいて再配置を試みます。")
-            for tid in tids:
-                l_disc, l_title = tid.split("_", 1)
-                l_disc = int(l_disc)
-
-                best_match_idx = -1
-                for s_idx, st in enumerate(store_tracks):
-                    if int(st.get("disc", 1)) == l_disc:
-                        st_name = (st.get("title") or st.get("name", "")).lower()
-                        if st_name == l_title.lower() or st_name.startswith(l_title.lower()) or l_title.lower().startswith(st_name):
-                            best_match_idx = s_idx
-                            break
-
-                if best_match_idx != -1:
-                    final_metadata[tid]["matched_v_idx"] = best_match_idx
-                    final_metadata[tid]["action"] = "use_steam"
-                    final_metadata[tid]["reason"] = f"SYSTEM: ローカル構造に基づきDisc {l_disc} Track {store_tracks[best_match_idx].get('track')}に再配置しました"
+        tids = _deduplicate_format_variants_for_slot(
+            app_id, tids, track_groups, final_metadata, priorities
+        )
+        if len(tids) <= 1:
             continue
 
-        l_disc = int(tids[0].split("_", 1)[0])
+        if _resolve_multidisc_index_conflicts(app_id, v_idx, tids, store_tracks, final_metadata):
+            continue
 
-        candidates_in_disc = []
-        for s_idx, st in enumerate(store_tracks):
-            if int(st.get("disc", 1)) == l_disc:
-                candidates_in_disc.append((s_idx, (st.get("title") or st.get("name", "")).lower()))
-
-        resolved_tids = set()
-        for tid in tids:
-            l_title_clean = tid.split("_", 1)[1].lower()
-            for s_idx, st_name in candidates_in_disc:
-                if st_name == l_title_clean or st_name.startswith(l_title_clean) or l_title_clean.startswith(st_name):
-                    if s_idx != v_idx:
-                        final_metadata[tid]["matched_v_idx"] = s_idx
-                        final_metadata[tid]["action"] = "use_steam"
-                        final_metadata[tid]["reason"] = f"SYSTEM: 曲名の一致により正しいインデックスを復元しました ('{st_name}')"
-                        resolved_tids.add(tid)
-                        break
-                else:
-                    # Fuzzy matching fallback (LOGIC.md §5.1 Heuristic 2)
-                    similarity = SequenceMatcher(None, l_title_clean, st_name).ratio()
-                    if similarity >= 0.80:
-                        if s_idx != v_idx:
-                            final_metadata[tid]["matched_v_idx"] = s_idx
-                            final_metadata[tid]["action"] = "use_steam"
-                            final_metadata[tid]["reason"] = f"SYSTEM: ファジーマッチにより正しいインデックスを復元しました ('{st_name}', 類似度: {similarity:.2f})"
-                            resolved_tids.add(tid)
-                            break
-
-        remaining_tids = [t for t in tids if t not in resolved_tids]
+        remaining_tids = _resolve_disc_title_matches(tids, store_tracks, v_idx, final_metadata)
         if len(remaining_tids) <= 1:
             continue
 
-        base_track = store_tracks[v_idx] if v_idx < len(store_tracks) else None
-        if not base_track:
-            continue
-        base_name = (base_track.get("title") or base_track.get("name", "")).lower()
-
-        sequence_indices = [v_idx]
-        for next_idx in range(v_idx + 1, len(store_tracks)):
-            nt = store_tracks[next_idx]
-            nt_name = (nt.get("title") or nt.get("name", "")).lower()
-            if nt_name == base_name or nt_name.startswith(base_name) or base_name.startswith(nt_name):
-                sequence_indices.append(next_idx)
-            else:
-                break
-
-        if len(sequence_indices) >= len(remaining_tids):
-            logger.info(f"[{app_id}] インデックス {v_idx} から始まるシーケンスを使用して '{base_name}' ({len(remaining_tids)} トラック) の重複マッピングを解決しています")
-
-            def get_sort_key(tid_str: str):
-                parts = tid_str.split("_", 1)
-                try:
-                    k = (int(parts[0]), parts[1])
-                    return list(track_groups.keys()).index(k)
-                except (ValueError, IndexError):
-                    return 999
-
-            sorted_tids = sorted(remaining_tids, key=get_sort_key)
-            for i, tid in enumerate(sorted_tids):
-                new_idx = sequence_indices[i]
-                final_metadata[tid]["matched_v_idx"] = new_idx
-                final_metadata[tid]["action"] = "use_steam"
-                final_metadata[tid]["reason"] = f"SYSTEM: '{base_name}' の重複シーケンスを解決しました (インデックス {new_idx} を割り当て)"
+        _resolve_sequential_track_duplicates(
+            app_id, remaining_tids, store_tracks, v_idx, track_groups, final_metadata
+        )

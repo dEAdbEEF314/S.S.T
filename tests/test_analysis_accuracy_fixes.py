@@ -1,6 +1,4 @@
-import pytest
 from unittest.mock import MagicMock, patch
-from pathlib import Path
 
 from sst.processor_support import fetch_album_artwork
 from sst.models import SteamMetadata

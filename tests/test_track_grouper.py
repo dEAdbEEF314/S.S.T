@@ -1,6 +1,6 @@
 import pytest
 from types import SimpleNamespace
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from pathlib import Path
 from sst.track_grouper import TrackManager
 
@@ -93,13 +93,6 @@ def test_audio_quality_tiers_are_fixed():
 
 def test_audio_quality_tier_ignores_configurable_format_priority(monkeypatch):
     monkeypatch.setenv("AUDIO_QUALITY_TIER_PRIORITY", "mp3,wav")
-    groups = {
-        (1, "main theme"): [
-            {"path": Path("track.mp3"), "format": "mp3", "filename_track": 1},
-            {"path": Path("track.wav"), "format": "wav", "filename_track": 1},
-        ],
-    }
-
     assert TrackManager.get_audio_format_priority()[0] == "wav"
     assert TrackManager.get_quality_tier("wav") == 0
 

@@ -88,9 +88,123 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
 """
 
     @staticmethod
+    def _esc(value: Any) -> str:
+        """Strict HTML escaping for untrusted input strings."""
+        return html.escape(str(value if value is not None else ""), quote=True)
+
+    @staticmethod
+    def _render_source_matrix_rows(
+        priority_str: str,
+        steam_meta: SteamMetadata,
+        mbz_candidates: List[Dict[str, Any]],
+        chosen_idx: Optional[int],
+        chosen_id: Optional[str]
+    ) -> str:
+        esc = ReportGenerator._esc
+        matrix_rows = ""
+        priority_list = [p.strip().upper() for p in priority_str.split(',')]
+        for source in priority_list:
+            if source == "STEAM_PICS":
+                matrix_rows += f"<tr><td>{esc(source)}</td><td>{esc(steam_meta.name)}</td><td>{esc(steam_meta.developer or 'N/A')}</td><td>N/A</td><td>N/A</td></tr>"
+            elif source == "STEAM_STORE":
+                store_track_count = len(steam_meta.store_tracklist) if steam_meta.store_tracklist else 0
+                matrix_rows += f"<tr><td>{esc(source)}</td><td>{esc(steam_meta.name)}</td><td>{esc(steam_meta.developer or 'N/A')}</td><td>{store_track_count}</td><td>{esc(steam_meta.release_date or 'N/A')}</td></tr>"
+            elif source == "MBZ":
+                if not mbz_candidates:
+                    matrix_rows += f"<tr><td>{esc(source)}</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td></tr>"
+                else:
+                    for i, c in enumerate(mbz_candidates[:5]):
+                        is_chosen = (i == chosen_idx) or (c.get('mbid') == chosen_id)
+                        row_style = ' style="background-color: #1a2332; font-weight: bold; border-left: 4px solid var(--accent-green);"' if is_chosen else ''
+                        matrix_rows += f"<tr{row_style}><td>{esc(source)} (Candidate {i} - Score: {esc(c.get('score'))})</td><td>{esc(c.get('album'))}</td><td>{esc(c.get('artist'))}</td><td>{esc(c.get('track_count'))}</td><td>{esc(c.get('year'))}</td></tr>"
+            elif source in ["STEAM_TAGS", "EMBEDDED"]:
+                matrix_rows += f"<tr><td>{esc(source)}</td><td>(Per-track data)</td><td>N/A</td><td>N/A</td><td>N/A</td></tr>"
+        return matrix_rows
+
+    @staticmethod
+    def _render_track_rows(processed_tracks: List[Dict[str, Any]]) -> str:
+        esc = ReportGenerator._esc
+
+        def safe_sort_key(t):
+            tags = t.get("tags", {})
+            try:
+                d = int(tags.get("disc_number") or 1)
+                n = int(tags.get("track_number") or 0)
+                return (d, n)
+            except (TypeError, ValueError):
+                return (99, 99)
+
+        sorted_tracks = sorted(processed_tracks, key=safe_sort_key)
+        tag_rows = ""
+        for t in sorted_tracks:
+            tg = t.get("tags", {})
+            tag_rows += f"""<tr>
+                <td>{esc(tg.get('disc_number', '1'))}</td>
+                <td>{esc(tg.get('track_number', ''))}</td>
+                <td><strong>{esc(tg.get('title', 'Unknown'))}</strong></td>
+                <td>{esc(tg.get('artist', ''))}</td>
+                <td>{esc(tg.get('album_artist', ''))}</td>
+                <td>{esc(tg.get('genre', ''))}</td>
+                <td>{esc(tg.get('year', ''))}</td>
+                <td style="font-weight: 500; color: var(--accent-blue);">{esc(t.get('title_source', 'UNKNOWN'))}</td>
+                <td style="font-size: 0.75rem; color: #8b949e;">{esc(t.get('source', ''))}</td>
+            </tr>"""
+        return tag_rows
+
+    @staticmethod
+    def _render_alignment_inputs_html(alignment_inputs: Optional[Dict[str, Any]]) -> str:
+        if not alignment_inputs:
+            return ""
+        esc = ReportGenerator._esc
+        html_out = '<div class="card" style="margin-top: 20px;"><h3>Alignment Inputs (LLM Prompt Data)</h3>'
+        html_out += '<div style="display: flex; flex-direction: column; gap: 20px;">'
+        for source_name, va in alignment_inputs.items():
+            if not va:
+                html_out += f'<div><h4 style="color: var(--accent-blue); margin-bottom: 5px;">{esc(source_name)}</h4><p style="color: #8b949e; font-size: 0.85rem; margin-top: 0;">Not available</p></div>'
+                continue
+
+            album_name = esc(va.get("album_name", "N/A"))
+            artist = esc(va.get("artist", "N/A"))
+
+            html_table = f'<div><h4 style="margin-bottom: 5px; color: var(--accent-blue);">{esc(source_name)}</h4>'
+            html_table += f'<div style="font-size: 0.85rem; margin-bottom: 10px; color: #8b949e;">Album: <strong>{album_name}</strong> | Artist: <strong>{artist}</strong></div>'
+            html_table += '<table class="tag-table" style="font-size: 0.8rem;"><thead><tr>'
+            html_table += '<th>Disc</th><th>#</th><th>Title</th><th>Duration</th>'
+
+            if source_name in ["ACOUSTID_MBID", "MBZ_SEARCH", "VERIFIED_MBZ"]:
+                html_table += '<th>MBID</th><th>Credits</th>'
+            elif source_name == "LOCAL_SIGNALS":
+                html_table += '<th>Local Key</th>'
+
+            html_table += '</tr></thead><tbody>'
+
+            for t in va.get("tracks", []):
+                disc = esc(t.get("disc", "-") if t.get("disc") is not None else "-")
+                num = esc(t.get("track_num", "-") if t.get("track_num") is not None else "-")
+                title = esc(t.get("title", "-")) if t.get("title") else "-"
+                dur_ms = t.get("duration_ms")
+                dur_str = esc(f"{int(dur_ms)/1000:.1f}s") if dur_ms else "-"
+
+                html_table += f'<tr><td>{disc}</td><td>{num}</td><td><strong>{title}</strong></td><td>{dur_str}</td>'
+
+                if source_name in ["ACOUSTID_MBID", "MBZ_SEARCH", "VERIFIED_MBZ"]:
+                    mbid = esc(t.get("mbid", "-")) if t.get("mbid") else "-"
+                    credits = esc(t.get("credits", "-")) if t.get("credits") else "-"
+                    html_table += f'<td><code style="font-size:0.75rem;">{mbid}</code></td><td><span style="font-size:0.75rem;">{credits}</span></td>'
+                elif source_name == "LOCAL_SIGNALS":
+                    l_key = esc(t.get("local_key", "-")) if t.get("local_key") else "-"
+                    html_table += f'<td><code style="font-size:0.75rem;">{l_key}</code></td>'
+
+                html_table += '</tr>'
+
+            html_table += '</tbody></table></div>'
+            html_out += html_table
+        html_out += '</div></div>'
+        return html_out
+
+    @staticmethod
     def generate_html_report(app_id: int, steam_meta: SteamMetadata, status: str, message: str, score: int, reason: str, processed_tracks: List[Dict[str, Any]], llm_log: Dict[str, Any], mbz_candidates: List[Dict[str, Any]], localized_now_str: str, priority_str: str, quality: Optional[int] = None, alignment_inputs: Optional[Dict[str, Any]] = None) -> str:
-        def esc(value: Any) -> str:
-            return html.escape(str(value if value is not None else ""), quote=True)
+        esc = ReportGenerator._esc
 
         is_fast = llm_log.get("fast_track", False)
         status_class = "status-archive" if status == "archive" else "status-review"
@@ -141,52 +255,10 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
         else:
             mbz_html = "<p>No matching MusicBrainz candidates found.</p>"
 
-        matrix_rows = ""
-        priority_list = [p.strip().upper() for p in priority_str.split(',')]
-        for source in priority_list:
-            if source == "STEAM_PICS":
-                matrix_rows += f"<tr><td>{esc(source)}</td><td>{esc(steam_meta.name)}</td><td>{esc(steam_meta.developer or 'N/A')}</td><td>N/A</td><td>N/A</td></tr>"
-            elif source == "STEAM_STORE":
-                store_track_count = len(steam_meta.store_tracklist) if steam_meta.store_tracklist else 0
-                matrix_rows += f"<tr><td>{esc(source)}</td><td>{esc(steam_meta.name)}</td><td>{esc(steam_meta.developer or 'N/A')}</td><td>{store_track_count}</td><td>{esc(steam_meta.release_date or 'N/A')}</td></tr>"
-            elif source == "MBZ":
-                if not mbz_candidates:
-                    matrix_rows += f"<tr><td>{esc(source)}</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td></tr>"
-                else:
-                    for i, c in enumerate(mbz_candidates[:5]):
-                        is_chosen = (i == chosen_idx) or (c.get('mbid') == chosen_id)
-                        row_style = ' style="background-color: #1a2332; font-weight: bold; border-left: 4px solid var(--accent-green);"' if is_chosen else ''
-                        matrix_rows += f"<tr{row_style}><td>{esc(source)} (Candidate {i} - Score: {esc(c.get('score'))})</td><td>{esc(c.get('album'))}</td><td>{esc(c.get('artist'))}</td><td>{esc(c.get('track_count'))}</td><td>{esc(c.get('year'))}</td></tr>"
-            elif source in ["STEAM_TAGS", "EMBEDDED"]:
-                matrix_rows += f"<tr><td>{esc(source)}</td><td>(Per-track data)</td><td>N/A</td><td>N/A</td><td>N/A</td></tr>"
-            
-        # --- Detailed Tag Table ---
-        def safe_sort_key(t):
-            tags = t.get("tags", {})
-            try:
-                d = int(tags.get("disc_number") or 1)
-                n = int(tags.get("track_number") or 0)
-                return (d, n)
-            except (TypeError, ValueError):
-                return (99, 99)
+        matrix_rows = ReportGenerator._render_source_matrix_rows(priority_str, steam_meta, mbz_candidates, chosen_idx, chosen_id)
+        tag_rows = ReportGenerator._render_track_rows(processed_tracks)
 
-        sorted_tracks = sorted(processed_tracks, key=safe_sort_key)
-        tag_rows = ""
-        for t in sorted_tracks:
-            tg = t.get("tags", {})
-            tag_rows += f"""<tr>
-                <td>{esc(tg.get('disc_number', '1'))}</td>
-                <td>{esc(tg.get('track_number', ''))}</td>
-                <td><strong>{esc(tg.get('title', 'Unknown'))}</strong></td>
-                <td>{esc(tg.get('artist', ''))}</td>
-                <td>{esc(tg.get('album_artist', ''))}</td>
-                <td>{esc(tg.get('genre', ''))}</td>
-                <td>{esc(tg.get('year', ''))}</td>
-                <td style="font-weight: 500; color: var(--accent-blue);">{esc(t.get('title_source', 'UNKNOWN'))}</td>
-                <td style="font-size: 0.75rem; color: #8b949e;">{esc(t.get('source', ''))}</td>
-            </tr>"""
-
-        alignment_inputs_html = ""
+        alignment_inputs_html = ReportGenerator._render_alignment_inputs_html(alignment_inputs)
         unassigned_warning_html = ""
         audio_warn_html = ""
         diagnostics = (llm_log or {}).get("diagnostics", {}) if isinstance(llm_log, dict) else {}
@@ -218,52 +290,6 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
         </ul>
     </div>
 """
-
-        if alignment_inputs:
-            alignment_inputs_html += '<div class="card" style="margin-top: 20px;"><h3>Alignment Inputs (LLM Prompt Data)</h3>'
-            alignment_inputs_html += '<div style="display: flex; flex-direction: column; gap: 20px;">'
-            for source_name, va in alignment_inputs.items():
-                if not va:
-                    alignment_inputs_html += f'<div><h4 style="color: var(--accent-blue); margin-bottom: 5px;">{source_name}</h4><p style="color: #8b949e; font-size: 0.85rem; margin-top: 0;">Not available</p></div>'
-                    continue
-                
-                album_name = str(va.get("album_name", "N/A")).replace("<", "&lt;").replace(">", "&gt;")
-                artist = str(va.get("artist", "N/A")).replace("<", "&lt;").replace(">", "&gt;")
-                
-                html_table = f'<div><h4 style="margin-bottom: 5px; color: var(--accent-blue);">{source_name}</h4>'
-                html_table += f'<div style="font-size: 0.85rem; margin-bottom: 10px; color: #8b949e;">Album: <strong>{album_name}</strong> | Artist: <strong>{artist}</strong></div>'
-                html_table += '<table class="tag-table" style="font-size: 0.8rem;"><thead><tr>'
-                html_table += '<th>Disc</th><th>#</th><th>Title</th><th>Duration</th>'
-                
-                if source_name in ["ACOUSTID_MBID", "MBZ_SEARCH", "VERIFIED_MBZ"]:
-                    html_table += '<th>MBID</th><th>Credits</th>'
-                elif source_name == "LOCAL_SIGNALS":
-                    html_table += '<th>Local Key</th>'
-                    
-                html_table += '</tr></thead><tbody>'
-                
-                for t in va.get("tracks", []):
-                    disc = t.get("disc", "-") if t.get("disc") is not None else "-"
-                    num = t.get("track_num", "-") if t.get("track_num") is not None else "-"
-                    title = str(t.get("title", "-")).replace("<", "&lt;").replace(">", "&gt;") if t.get("title") else "-"
-                    dur_ms = t.get("duration_ms")
-                    dur_str = f"{int(dur_ms)/1000:.1f}s" if dur_ms else "-"
-                    
-                    html_table += f'<tr><td>{disc}</td><td>{num}</td><td><strong>{title}</strong></td><td>{dur_str}</td>'
-                    
-                    if source_name in ["ACOUSTID_MBID", "MBZ_SEARCH", "VERIFIED_MBZ"]:
-                        mbid = t.get("mbid", "-") if t.get("mbid") else "-"
-                        credits = str(t.get("credits", "-")).replace("<", "&lt;").replace(">", "&gt;") if t.get("credits") else "-"
-                        html_table += f'<td><code style="font-size:0.75rem;">{mbid}</code></td><td><span style="font-size:0.75rem;">{credits}</span></td>'
-                    elif source_name == "LOCAL_SIGNALS":
-                        l_key = t.get("local_key", "-") if t.get("local_key") else "-"
-                        html_table += f'<td><code style="font-size:0.75rem;">{l_key}</code></td>'
-                        
-                    html_table += '</tr>'
-                
-                html_table += '</tbody></table></div>'
-                alignment_inputs_html += html_table
-            alignment_inputs_html += '</div></div>'
 
         return f"""<!DOCTYPE html>
 <html lang="ja">
@@ -397,6 +423,69 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
 
         return f"# {status_emoji} Archive Audit Report: {steam_meta.name}\n\n## 📊 Quick Summary\n- **AppID**: {app_id}\n- **Status**: **{status.upper()}**\n- **Confidence Gates**:\n  - Album Confidence: `{id_conf}/100`\n  - Mapping Confidence: `{mapping_conf}/100`\n  - Data Quality: `{quality}/100`\n- **Judgment Ratio**: Archive `{ratio.get('archive', 0)}%` / Review `{ratio.get('review', 0)}%`\n- **System Decision Reason**: {md_escape(message)}\n- **Tracks Processed**: {count}\n{action_required}\n## 🔍 LLM Reasoning & Strategy\n{md_blockquote(display_reason)}\n\n## 🔗 External References\n- **Steam Store**: https://store.steampowered.com/app/{app_id}\n- **Parent Game**: {md_escape(steam_meta.parent_name) or 'N/A'} (AppID: {steam_meta.parent_app_id or 'N/A'})\n\n## 🎼 MusicBrainz Candidates (Top 5)\n{candidate_md}\n\n---\n*Report generated by S.S.T (Steam Soundtrack Tagger) at {localized_now_str}*\n"
 
+
+
+    @staticmethod
+    def _render_batch_row(r: Any) -> str:
+        esc = ReportGenerator._esc
+        status_raw = str(r.status if r.status else "")
+        status_class = f"status-{esc(status_raw)}"
+        score = esc(r.confidence_score if r.confidence_score is not None else "-")
+        metadata = getattr(r, "metadata", {}) or {}
+        diagnostics = metadata.get("diagnostics", {}) if isinstance(metadata, dict) else {}
+        audit = metadata.get("audit", {}) if isinstance(metadata, dict) else {}
+        primary_cause = esc(diagnostics.get("primary_review_cause") or "-")
+        raw_secondaries = diagnostics.get("secondary_review_causes", [])
+        secondary_causes = esc(", ".join(str(s) for s in raw_secondaries) if raw_secondaries else "-")
+
+        # Badge generation from message keywords
+        badges = []
+        m_lower = str(r.message or "").lower()
+        if "acoustid" in m_lower:
+            badges.append('<span class="badge badge-acoustid">AcoustID</span>')
+        if "fallback" in m_lower:
+            badges.append('<span class="badge badge-fallback">Fallback</span>')
+        if "mbz" in m_lower:
+            badges.append('<span class="badge badge-mbz">MBZ Match</span>')
+        if "trust" in m_lower:
+            badges.append('<span class="badge badge-trust">Trust Tier</span>')
+        if "duplicate titles" in m_lower:
+            badges.append('<span class="badge badge-duplicate">Duplicate Titles</span>')
+
+        badge_str = "".join(badges)
+        app_id_str = esc(r.app_id)
+        album_name_str = esc(r.album_name)
+        status_text = esc(status_raw.upper())
+        message_str = esc(r.message)
+        confidence_reason_str = esc(r.confidence_reason)
+
+        steam_expected = esc(audit.get("steam_expected_slots", "-"))
+        final_adopted = esc(audit.get("final_adopted_slots", "-"))
+        legit_unknown = esc(audit.get("steam_legitimate_unknown", "-"))
+        anom_unknown = esc(audit.get("anomalous_unknown", "-"))
+        input_count = esc(audit.get("input_file_count", "-"))
+        adopted_count = esc(audit.get("adopted_file_count", "-"))
+        unassigned_count = esc(audit.get("unassigned_file_count", "-"))
+
+        audit_text = (
+            f"Steam: {steam_expected} → {final_adopted}<br>"
+            f"Unknown: {legit_unknown} legitimate / {anom_unknown} anomalous<br>"
+            f"Input: {input_count} / Adopted: {adopted_count} / Unassigned: {unassigned_count}"
+        )
+
+        return f"""
+                    <tr>
+                        <td>{app_id_str}</td>
+                        <td>{album_name_str}</td>
+                        <td class="{status_class}">{status_text}</td>
+                        <td>{score}</td>
+                        <td class="reason-box">{badge_str}<br>{message_str}</td>
+                        <td class="reason-box"><strong>{primary_cause}</strong><br>{secondary_causes}</td>
+                        <td class="reason-box">{audit_text}</td>
+                        <td class="reason-box">{confidence_reason_str}</td>
+                    </tr>
+        """
+
     @staticmethod
     def generate_batch_report(results: List[Any], output_path: Path):
         """Generates a summary HTML report (Result.html) for a batch of results."""
@@ -461,42 +550,7 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
         """
 
         for r in results:
-            status_class = f"status-{r.status}"
-            score = r.confidence_score if r.confidence_score is not None else "-"
-            metadata = getattr(r, "metadata", {}) or {}
-            diagnostics = metadata.get("diagnostics", {}) if isinstance(metadata, dict) else {}
-            audit = metadata.get("audit", {}) if isinstance(metadata, dict) else {}
-            primary_cause = diagnostics.get("primary_review_cause") or "-"
-            secondary_causes = ", ".join(diagnostics.get("secondary_review_causes", [])) or "-"
-            
-            # Badge generation from message keywords
-            badges = []
-            m_lower = r.message.lower()
-            if "acoustid" in m_lower:
-                badges.append('<span class="badge badge-acoustid">AcoustID</span>')
-            if "fallback" in m_lower:
-                badges.append('<span class="badge badge-fallback">Fallback</span>')
-            if "mbz" in m_lower:
-                badges.append('<span class="badge badge-mbz">MBZ Match</span>')
-            if "trust" in m_lower:
-                badges.append('<span class="badge badge-trust">Trust Tier</span>')
-            if "duplicate titles" in m_lower:
-                badges.append('<span class="badge badge-duplicate">Duplicate Titles</span>')
-            
-            badge_str = "".join(badges)
-            
-            html += f"""
-                    <tr>
-                        <td>{r.app_id}</td>
-                        <td>{r.album_name}</td>
-                        <td class="{status_class}">{r.status.upper()}</td>
-                        <td>{score}</td>
-                        <td class="reason-box">{badge_str}<br>{r.message}</td>
-                        <td class="reason-box"><strong>{primary_cause}</strong><br>{secondary_causes}</td>
-                        <td class="reason-box">Steam: {audit.get("steam_expected_slots", "-")} → {audit.get("final_adopted_slots", "-")}<br>Unknown: {audit.get("steam_legitimate_unknown", "-")} legitimate / {audit.get("anomalous_unknown", "-")} anomalous<br>Input: {audit.get("input_file_count", "-")} / Adopted: {audit.get("adopted_file_count", "-")} / Unassigned: {audit.get("unassigned_file_count", "-")}</td>
-                        <td class="reason-box">{r.confidence_reason}</td>
-                    </tr>
-            """
+            html += ReportGenerator._render_batch_row(r)
 
         html += """
                 </tbody>

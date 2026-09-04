@@ -129,7 +129,15 @@ def process_single_track(
             subdir=disc_subdir,
         )
         if local_source_path.exists():
-            local_source_path.unlink()
+            resolved_tmp = local_source_path.resolve()
+            resolved_orig = adopted_info["path"].resolve()
+            resolved_buffer = buffer_dir.resolve()
+            if resolved_tmp != resolved_orig and resolved_tmp.is_relative_to(resolved_buffer):
+                local_source_path.unlink()
+            else:
+                logger.critical(
+                    f"安全ガード発動: 元音源保護のため削除を中止しました (tmp={resolved_tmp}, orig={resolved_orig})"
+                )
 
         track_art = TrackManager.get_best_artwork(slot_variants)
         final_art = tagger.process_artwork(track_art) if track_art else album_artwork
