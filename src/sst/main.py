@@ -268,13 +268,12 @@ def main():
                 )
                 return
 
-        # --- Signal Gathering & Caching ---
-        from .prefetcher import DataGatherer
-
-        gatherer = DataGatherer(config, processor.acoustid, processor.mbz, console)
-        gatherer.run(soundtracks)
-
+        # --- Signal Gathering & Caching (prefetch-only モード時のみ明示実行) ---
         if args.prefetch_only:
+            from .prefetcher import DataGatherer
+
+            gatherer = DataGatherer(config, processor.acoustid, processor.mbz, console)
+            gatherer.run(soundtracks)
             logger.info(
                 "signal gathering 専用モードのため、LLM整列へ進まずに終了します。"
             )

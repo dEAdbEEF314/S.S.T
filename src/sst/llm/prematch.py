@@ -13,6 +13,7 @@ class PrematchResult:
     mbz_track_index: Optional[int] = None
     mbz_search_steam_slot: Optional[int] = None
     deterministic_steam_slot: Optional[int] = None
+    target_v_idx: Optional[int] = None
     is_deterministic: bool = False
     override_track: Optional[str] = None
     evidence: List[str] = field(default_factory=list)
@@ -24,6 +25,7 @@ class PrematchResult:
             "mbz_track_index": self.mbz_track_index,
             "mbz_search_steam_slot": self.mbz_search_steam_slot,
             "deterministic_steam_slot": self.deterministic_steam_slot,
+            "target_v_idx": self.target_v_idx,
             "is_deterministic": self.is_deterministic,
             "override_track": self.override_track,
             "evidence": list(self.evidence),
@@ -50,6 +52,10 @@ def resolve_prematch_signals(
     mbz_search_by_v_idx: Dict[int, Dict[str, Any]] = {
         t.get("v_idx"): t for t in full_ref_mbz_search if t.get("v_idx") is not None
     }
+    steam_by_disc_and_track: Dict[tuple[int, str], Dict[str, Any]] = {
+        (int(t.get("d") or t.get("disc") or 1), str(t.get("n"))): t
+        for t in full_ref_steam if t.get("n") is not None
+    }
     steam_by_slot_num: Dict[str, Dict[str, Any]] = {
         str(t.get("n")): t for t in full_ref_steam if t.get("n") is not None
     }
@@ -57,6 +63,7 @@ def resolve_prematch_signals(
     for track in local_tracks:
         file_ids = [str(fid) for fid in track.get("file_ids", [])]
         track_num = track.get("track_num") or track.get("filename_track")
+        disc_val = int(track.get("disc") or 1)
 
         # AcoustID/MBZ_RELEASE からのシグナル解決
         # ローカルのトラック番号やインデックスに対応する fingerprint を探す
@@ -92,6 +99,7 @@ def resolve_prematch_signals(
                 if target_slot_num in steam_by_slot_num:
                     steam_slot = steam_by_slot_num[target_slot_num]
                     res.acoustid_steam_slot = int(steam_slot.get("n", target_slot_num)) if str(steam_slot.get("n", "")).isdigit() else None
+                    res.target_v_idx = steam_slot.get("v_idx")
                     res.evidence.append("acoustid_match")
 
             if mbz_search_candidate:
@@ -103,27 +111,37 @@ def resolve_prematch_signals(
                 if target_slot_num in steam_by_slot_num:
                     steam_slot = steam_by_slot_num[target_slot_num]
                     res.mbz_search_steam_slot = int(steam_slot.get("n", target_slot_num)) if str(steam_slot.get("n", "")).isdigit() else None
+                    if res.target_v_idx is None:
+                        res.target_v_idx = steam_slot.get("v_idx")
                     res.evidence.append("mbz_search_match")
 
             # 確定的一致（Deterministic 1:1 match）の判定
             # 番号が有効な Steam スロットを指しており、タイトルが一致（または AcoustID が一致）する場合
             det_slot = None
+            target_v = None
             if res.acoustid_steam_slot is not None:
                 det_slot = res.acoustid_steam_slot
+                target_v = res.target_v_idx
                 res.evidence.append("deterministic_acoustid")
-            elif track_num is not None and str(track_num) in steam_by_slot_num:
-                steam_slot = steam_by_slot_num[str(track_num)]
-                # タイトル照合
-                from ..track_grouper import TrackManager
-                s_title = TrackManager.normalize_title(str(steam_slot.get("t") or steam_slot.get("title") or ""))
-                l_title = TrackManager.normalize_title(str(track.get("title") or track.get("norm_stem") or ""))
-                if not s_title or not l_title or s_title == l_title or s_title in l_title or l_title in s_title:
-                    slot_n = steam_slot.get("n", track_num)
-                    det_slot = int(slot_n) if str(slot_n).isdigit() else None
-                    res.evidence.append("deterministic_number_and_title")
+            elif track_num is not None:
+                steam_slot = steam_by_disc_and_track.get((disc_val, str(track_num)))
+                if not steam_slot and str(track_num) in steam_by_slot_num:
+                    steam_slot = steam_by_slot_num[str(track_num)]
+
+                if steam_slot:
+                    # タイトル照合
+                    from ..track_grouper import TrackManager
+                    s_title = TrackManager.normalize_title(str(steam_slot.get("t") or steam_slot.get("title") or ""))
+                    l_title = TrackManager.normalize_title(str(track.get("title") or track.get("norm_stem") or ""))
+                    if not s_title or not l_title or s_title == l_title or s_title in l_title or l_title in s_title:
+                        slot_n = steam_slot.get("n", track_num)
+                        det_slot = int(slot_n) if str(slot_n).isdigit() else None
+                        target_v = steam_slot.get("v_idx")
+                        res.evidence.append("deterministic_number_and_title")
 
             if det_slot is not None:
                 res.deterministic_steam_slot = det_slot
+                res.target_v_idx = target_v
                 res.is_deterministic = True
                 if res.override_track is None:
                     res.override_track = str(det_slot)

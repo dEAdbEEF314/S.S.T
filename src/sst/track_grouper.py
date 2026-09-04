@@ -73,7 +73,6 @@ class TrackManager:
         raw_tracks = []
         for f in files:
             meta = EmbeddedMetadataExtractor.extract(f)
-            t_num = re.match(r'^(\d+)', f.stem)
             disc = 1
             if meta.get("disc_number"):
                 try:
@@ -90,6 +89,20 @@ class TrackManager:
                         disc = int(d_match.group(1))
                         break
 
+            # Check for multi-disc compound pattern in filename: e.g. "1_1", "1-01", "02_05"
+            disc_track_match = re.match(r'^(\d+)[-_](\d+)', f.stem)
+            if disc_track_match:
+                file_disc = int(disc_track_match.group(1))
+                file_track = int(disc_track_match.group(2))
+                if disc == 1 and file_disc > 0:
+                    disc = file_disc
+                filename_track_val = file_track
+                t_num_str = str(file_track)
+            else:
+                t_num = re.match(r'^(\d+)', f.stem)
+                filename_track_val = int(t_num.group(1)) if t_num else None
+                t_num_str = t_num.group(1) if t_num else None
+
             stem = f.stem
             # Remove album name if present (case-insensitive)
             if album_name:
@@ -104,8 +117,8 @@ class TrackManager:
             norm_stem = TrackManager.normalize_title(stem)
             
             t_num_val = None
-            if t_num:
-                t_num_val = t_num.group(1).lstrip('0') or '0'
+            if t_num_str:
+                t_num_val = t_num_str.lstrip('0') or '0'
             elif meta.get("track_number"):
                 try:
                     t_str = str(meta.get("track_number")).split('/')[0].strip()
@@ -118,7 +131,7 @@ class TrackManager:
                 "file_id": hashlib.sha1(str(f.resolve()).encode("utf-8")).hexdigest()[:16],
                 "path": f, "meta": meta, "duration": TrackManager.get_duration(f), 
                 "format": f.suffix.lower().lstrip('.'),
-                "filename_track": int(t_num.group(1)) if t_num else None,
+                "filename_track": filename_track_val,
                 "t_num_val": t_num_val,
                 "norm_stem": norm_stem,
                 "disc": disc

@@ -40,6 +40,17 @@ body {
 }
 .status-archive { background-color: var(--accent-green); color: white; }
 .status-review { background-color: var(--accent-yellow); color: black; }
+.route-badge {
+    display: inline-block;
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-weight: bold;
+    margin-bottom: 10px;
+    margin-left: 10px;
+}
+.route-fast { background-color: #1f6feb; color: white; border: 1px solid #388bfd; }
+.route-llm { background-color: #8957e5; color: white; border: 1px solid #a371f7; }
+.route-chunk { background-color: #d29922; color: black; }
 .grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
@@ -85,6 +96,20 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
         status_class = "status-archive" if status == "archive" else "status-review"
         status_label = "🛡️ ARCHIVE SUCCESS" if status == "archive" else "🔍 REVIEW REQUIRED"
         count = len(processed_tracks)
+
+        route = llm_log.get("processing_route") or ("FAST_TRACK" if is_fast else "LLM_ONE_SHOT")
+        if route == "FAST_TRACK":
+            route_class = "route-fast"
+            route_label = "⚡ FAST_TRACK (LLMバイパス)"
+        elif route == "LLM_ONE_SHOT":
+            route_class = "route-llm"
+            route_label = "🧠 LLM_ONE_SHOT (オンデマンド整列)"
+        elif route == "LLM_CHUNKED":
+            route_class = "route-chunk"
+            route_label = "🧩 LLM_CHUNKED (分割チャンク整列)"
+        else:
+            route_class = "route-fast"
+            route_label = f"🛣️ {route}"
         
         display_reason = esc(reason)
         if status == "archive" and is_fast:
@@ -163,6 +188,23 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
 
         alignment_inputs_html = ""
         unassigned_warning_html = ""
+        audio_warn_html = ""
+        diagnostics = (llm_log or {}).get("diagnostics", {}) if isinstance(llm_log, dict) else {}
+        audio_warned_tracks = diagnostics.get("audio_warned_tracks") or []
+        if audio_warned_tracks:
+            warn_list_str = esc(", ".join(str(t) for t in audio_warned_tracks))
+            audio_warn_html = f"""
+    <div class="card" style="border: 2px solid #d29922; background: #261f0d; margin-bottom: 20px;">
+        <h3 style="color: #f0883e; margin-top: 0;">⚠️ 音声品質警告（本来Archive相当 / 微小異常あり: {len(audio_warned_tracks)}曲）</h3>
+        <p style="font-size: 0.85rem; margin-top: 0; color: #c9d1d9;">
+            本アルバムはSteamスロット構造およびタグ情報が完全に充足しており本来はArchive相当ですが、音声デコード・エンコード処理中に一部トラックで微細フレーム異常（Rice符号化異常等の警告）が検出されたため、念のためReview判定とされています。
+        </p>
+        <p style="font-size: 0.85rem; margin-bottom: 0; color: #e3b341;">
+            <strong>該当トラック:</strong> <code>{warn_list_str}</code>
+        </p>
+    </div>
+"""
+
         alignment_res = (llm_log or {}).get("alignment_res", {}) if isinstance(llm_log, dict) else {}
         unassigned_list = alignment_res.get("unassigned_files", []) if isinstance(alignment_res, dict) else []
         if unassigned_list:
@@ -239,11 +281,13 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
     </div>
 
     <div class="status-badge {status_class}">{status_label}</div>
+    <div class="route-badge {route_class}">{route_label}</div>
 
     <div class="grid">
         <div class="card">
             <h3>Decision Summary</h3>
             <p><strong>Status:</strong> {status.upper()}<br>
+            <strong>Route:</strong> {route_label}<br>
             <strong>Score:</strong> {score}/100<br>
             <strong>Message:</strong> {esc(message)}<br>
             <strong>Tracks:</strong> {count}</p>
@@ -257,6 +301,7 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
         </div>
     </div>
     {unassigned_warning_html}
+    {audio_warn_html}
 
     <div class="card">
         <h3>Judgment Reasoning & Strategy</h3>

@@ -81,9 +81,16 @@ def process_single_track(
     (disc, clean_title), adopted_info = track_data
 
     try:
-        instr = final_metadata.get(f"{disc}_{clean_title}") or {"action": "use_local_tag"}
         track_id = f"{disc}_{clean_title}"
         slot_key = track_to_slot_index.get(track_id, (disc, clean_title))
+        instr = final_metadata.get(track_id)
+        if not instr:
+            instr = final_metadata.get(f"{slot_key[0]}_{slot_key[1]}")
+        if not instr:
+            instr = final_metadata.get(clean_title)
+        if not instr:
+            instr = {"action": "use_local_tag"}
+
         slot_variants = slot_variant_index.get(slot_key)
         if slot_variants is None:
             slot_variants = track_groups[(disc, clean_title)]
@@ -128,6 +135,18 @@ def process_single_track(
         final_art = tagger.process_artwork(track_art) if track_art else album_artwork
         tagger.write_tags(processed_path, tag_map, final_art)
 
+        warned_track_label = None
+        if has_warnings:
+            track_val = tag_map.get("track") or (slot_key[1] if len(slot_key) > 1 else None) or clean_title
+            if track_val:
+                t_str = str(track_val).split("/")[0].strip()
+                if t_str.isdigit():
+                    warned_track_label = f"Track {int(t_str):02d}"
+                else:
+                    warned_track_label = f"Track {t_str}"
+            else:
+                warned_track_label = f"Track {clean_title}"
+
         if on_track_complete:
             on_track_complete()
 
@@ -142,6 +161,7 @@ def process_single_track(
                 "tier_rank": adopted_info.get("tier_rank", 999),
             },
             "had_warning": bool(has_warnings),
+            "warned_track_label": warned_track_label,
             "failed": False,
             "io_retry_log": io_retry_log,
         }
@@ -152,6 +172,7 @@ def process_single_track(
         return {
             "track_meta": None,
             "had_warning": False,
+            "warned_track_label": None,
             "failed": True,
             "io_retry_log": io_retry_log,
         }
