@@ -6,6 +6,7 @@ You MUST strictly follow these rules for seamless autonomous coding:
 2. **No Placeholders:** NEVER use `...`, `pass`, or `// existing code`. Output complete, exact changes for perfect diffs.
 3. **Think Step-by-Step:** Briefly outline implementation plans in a few bullet points for complex changes.
 4. **Agentic Autonomy:** If you encounter errors, read logs and self-correct before asking the human.
+5. **Execution Command:** Always use `uv run <command>` (e.g., `uv run pytest`, `uv run ruff check`).
 
 # Project Overview & Architecture
 SST is a **high-precision, standalone CLI tool** for automatically tagging Steam soundtrack files.
@@ -13,7 +14,7 @@ SST is a **high-precision, standalone CLI tool** for automatically tagging Steam
 - **Core Pipeline:**
   1. **Scan:** Steam library analysis using `scout/`.
   2. **Enrich:** Metadata fetching from Steam Store and MusicBrainz.
-  3. **Consolidate (2-Step LLM):** 
+  3. **Consolidate (2-Step LLM):**
      - *Summary Pass:* Set global rules for the album.
      - *Iterative Pass:* Tag tracks using global rules to save TPM (Tokens Per Minute).
   4. **Process:** Audio conversion (AIFF/MP3) and strict ID3v2.3 tagging.
@@ -26,7 +27,7 @@ SST is a **high-precision, standalone CLI tool** for automatically tagging Steam
 - **Metadata Consolidation:** LLM (OpenAI-compatible API, e.g., Gemini 1.5 Pro).
 - **Audio Processing:** `ffmpeg` (conversion), `mutagen` (ID3v2.3 tagging).
 - **State Management:** Local SQLite (`sst_local_state.db`).
-- **Testing:** `pytest`.
+- **Testing:** `pytest` (Run via `uv run pytest`).
 
 # System-Specific Constraints (STRICT "DO NOT"s)
 1. **NO S3/Distributed Logic:** The system is LOCAL ONLY. Do not use SeaweedFS or Prefect.
@@ -36,10 +37,15 @@ SST is a **high-precision, standalone CLI tool** for automatically tagging Steam
 5. **MBZ Tie-breaking:** Strictly prioritize Digital Media and exclude "Bandcamp" sources from MusicBrainz results.
 6. **NO Sensitive Test Fixtures:** Public tests must not contain real logs, caches, databases, audio/artwork files, credentials, or environment-identifying values. Sanitize hostnames, usernames, process IDs, timestamps, task IDs, and local paths in log fixtures; mock external services and use synthetic data instead.
 
-# Documentation Source of Truth
-- Refer to `docs/` for current specifications.
-- Authority Hierarchy:
+# Documentation & Source of Truth
+- Refer to `docs/` for current specifications:
+  - **Tagging Specification:** `docs/TAGGING_RULE.md`
+  - **Metadata Fetching & Rules:** `docs/METADATA_SOURCE_SPEC.md`
+  - **Core Pipeline Logic:** `docs/LOGIC.md`
+  - **Configuration Settings:** `docs/configuration.md`
+  - **Error Handling:** `docs/error_handling.md`
+- **Authority Hierarchy:**
   - Structure (Titles/Track#): Steam Store (Absolute Truth)
   - Metadata (Artist/Year/Label): MusicBrainz
   - Artwork (APIC): Audio Embedded Tags > MusicBrainz > Steam
-- Tagging Specification: Refer to `docs/TAGGING_RULE.md`.
+
