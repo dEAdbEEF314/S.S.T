@@ -5,8 +5,10 @@
 # ==============================================================================
 
 # --- Configuration ---
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR" || exit 1
 MAIN_MODULE="sst.main"
-export PYTHONPATH="src"
+export PYTHONPATH="$SCRIPT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 
 # --- Colors ---
 RED='\033[0;31m'
@@ -132,24 +134,15 @@ run_uv() {
 # --- Exclusive Maintenance Modes ---
 
 if [ "$STATS_MODE" = true ]; then
-    echo -e "${BLUE}📊 S.S.T Processing Statistics${NC}"
-    # Use grep to find DB path from .env if exists, otherwise default
-    DB_PATH=$(grep "^SST_DB_PATH=" .env | cut -d'=' -f2)
-    DB_PATH=${DB_PATH:-data/sst_local_state.db}
-    
-    if [ -f "$DB_PATH" ] && command -v sqlite3 &> /dev/null; then
-        echo "--------------------------------"
-        sqlite3 "$DB_PATH" "SELECT status, count(*) FROM processed_albums GROUP BY status;"
-        echo "--------------------------------"
-    else
-        echo "No database found at $DB_PATH or sqlite3 not found."
-    fi
-    exit 0
+    run_uv -m sst.log_browser --stats
+    exit $?
 fi
 
 if [ "$LOGS_MODE" = true ]; then
-    run_uv -m sst.log_browser $LOGS_APPID
-    exit 0
+    LOGS_ARGS=()
+    if [ -n "$LOGS_APPID" ]; then LOGS_ARGS=("$LOGS_APPID"); fi
+    run_uv -m sst.log_browser "${LOGS_ARGS[@]}"
+    exit $?
 fi
 
 if [ "$TAIL_MODE" = true ]; then
@@ -170,7 +163,7 @@ fi
 stty sane
 
 echo -e "${GREEN}🚀 Starting S.S.T System (via uv)...${NC}"
-run_uv -m $MAIN_MODULE "${CMD_ARGS[@]}"
+run_uv -m "$MAIN_MODULE" "${CMD_ARGS[@]}"
 
 # Restoration of terminal echo
 stty echo

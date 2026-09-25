@@ -2,6 +2,7 @@ import re
 import json
 import hashlib
 import logging
+import litellm
 import requests
 import time
 from typing import cast, Dict, Any, Optional, Tuple, Callable
@@ -72,6 +73,13 @@ class LLMClient:
                 else:
                     logger.error(f"Ollamaサーバーから予期せぬ応答がありました: HTTP {response.status_code}")
                     return False
+
+            elif self.llm_backend == "LITELLM":
+                if not self.model:
+                    logger.error("LITELLM のモデルが設定されていません。.env ファイルを確認してください。")
+                    return False
+                logger.info("LiteLLM SDKを使用します。接続先と認証情報は最初のリクエスト時に検証されます。")
+                return True
 
             elif self.llm_backend in ["GEMINI", "OPENAI_COMPATIBLE"]:
                 if not self.api_key or self.api_key == "your_api_key":
@@ -170,7 +178,7 @@ class LLMClient:
                 if self.draft_model:
                     payload["draft_model"] = self.draft_model
                 headers = {"Content-Type": "application/json"}
-            else:
+            elif self.llm_backend != "LITELLM":
                 url = f"{self.base_url}/v1beta/openai/chat/completions" if self.llm_backend == "GEMINI" else f"{self.base_url}/v1/chat/completions"
                 payload = {
                     "model": self.model,
@@ -192,18 +200,48 @@ class LLMClient:
                     num_ctx=effective_num_ctx,
                 )
                 try:
-                    response = requests.post(url, headers=headers, json=payload, timeout=self.request_timeout)
-                    if response.status_code == 200:
-                        res_json = response.json()
+                    if self.llm_backend == "LITELLM":
+                        sdk_response = litellm.completion(
+                            model=self.model,
+                            messages=messages,
+                            api_key=self.api_key or None,
+                            api_base=None if self.base_url.lower() == "auto" else self.base_url,
+                            timeout=self.request_timeout,
+                            temperature=0.0,
+                            max_tokens=self.llm_cloud_max_tokens,
+                            response_format={"type": "json_object"},
+                            drop_params=True,
+                            num_retries=0,
+                        )
+                        res_json = sdk_response.model_dump() if hasattr(sdk_response, "model_dump") else dict(sdk_response)
+                        status_code = 200
+                        response_text = ""
+                    else:
+                        response = requests.post(url, headers=headers, json=payload, timeout=self.request_timeout)
+                        res_json = response.json() if response.status_code == 200 else {}
+                        status_code = response.status_code
+                        response_text = getattr(response, "text", "")
+
+                    if status_code == 200:
                         message = res_json.get("message", {})
                         content = message.get("content", "")
                         thinking = message.get("thinking", "")
+                        choices = res_json.get("choices", [{}])
+                        choice = choices[0] if choices else {}
                         done_reason = res_json.get("done_reason")
+                        if self.llm_backend == "LITELLM":
+                            done_reason = done_reason or choice.get("finish_reason")
+                            usage = res_json.get("usage") or {}
+                            prompt_eval_count = usage.get("prompt_tokens")
+                            eval_count = usage.get("completion_tokens")
+                        else:
+                            prompt_eval_count = res_json.get("prompt_eval_count")
+                            eval_count = res_json.get("eval_count")
                         log_entry["meta"] = {
                             "done": res_json.get("done"),
                             "done_reason": done_reason,
-                            "prompt_eval_count": res_json.get("prompt_eval_count"),
-                            "eval_count": res_json.get("eval_count"),
+                            "prompt_eval_count": prompt_eval_count,
+                            "eval_count": eval_count,
                             "load_duration_ns": res_json.get("load_duration"),
                             "prompt_eval_duration_ns": res_json.get("prompt_eval_duration"),
                             "eval_duration_ns": res_json.get("eval_duration"),
@@ -317,8 +355,8 @@ class LLMClient:
                             log_entry["error_code"] = "json_parse_error"
                             raise
 
-                    log_entry["error"] = f"HTTP {response.status_code}"
-                    logger.warning(f"[{app_id}] LLM {self.llm_backend} attempt {attempt+1} failed with HTTP {response.status_code}: {response.text}")
+                    log_entry["error"] = f"HTTP {status_code}"
+                    logger.warning(f"[{app_id}] LLM {self.llm_backend} attempt {attempt+1} failed with HTTP {status_code}: {response_text}")
                     if attempt < max_retries:
                         self._notify_progress(
                             progress_callback,

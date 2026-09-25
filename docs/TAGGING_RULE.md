@@ -124,8 +124,9 @@
 
 - 正ソース: EMBED
 - 異常検知: 同一スロット内の全フォーマットに画像なし
-- フォールバック: MBZ_RELEASE Cover Art Archive -> STEAM ヘッダー画像
+- フォールバック: MBZ_RELEASE / MBZ_SEARCH Cover Art Archive -> STEAM ヘッダー画像
 - トラック固有アート保護のため、EMBED スロット横断ピックアップを優先する
+- FAST-TRACK で埋め込み画像がない場合も、アート専用 MBZ_SEARCH を実行して同じ優先順を維持する。検索候補はカバーアート取得にのみ使い、タグ用 MBZ メタデータへ流用しない。
 
 ## 5. 廃止フィールド
 

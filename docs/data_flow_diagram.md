@@ -27,7 +27,7 @@ flowchart TD
     E3 --> G
     
     G --> H[スロットごとに最高Tier音源を機械的選定]
-    H --> I[EMBED 横断ピックアップ & ID3v2.3タグ構築]
+    H --> I[EMBED→MBZ→STEAMのAPIC取得<br/>& ID3v2.3タグ構築]
     I --> J[並列音声変換 & 音声品質診断<br/>audio_warn vs audio_fail]
     
     %% Validation & STEAM-TRUST
@@ -47,6 +47,8 @@ flowchart TD
     ARCH --> REP[監査レポート & DB記録]
     REV_OUT --> REP
 ```
+
+FAST-TRACK では、ローカル埋め込み画像がない場合にだけアート専用 MBZ_SEARCH を遅延実行する。AcoustID と LLM は呼び出さず、検索結果は APIC 取得専用でタグメタデータには流用しない。MBZ 画像が得られない場合は Steam 画像候補へ進む。
 
 ## 2. 5つの処理経路 (Processing Routes)
 

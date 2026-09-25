@@ -217,13 +217,56 @@ def test_process_album_skips_llm_when_fast_track_matches(monkeypatch, tmp_path):
     monkeypatch.setattr(processor_module, "process_single_track", fake_process_single_track)
     monkeypatch.setattr(processor_module.PackageManager, "save_local_package", lambda *args, **kwargs: None)
     monkeypatch.setattr(processor, "_validate_archive_artifacts", lambda *args, **kwargs: [])
-    monkeypatch.setattr(processor, "_fetch_album_artwork", lambda *args, **kwargs: None)
+    artwork_options = []
+    monkeypatch.setattr(
+        processor,
+        "_fetch_album_artwork",
+        lambda *args, **kwargs: artwork_options.append(kwargs.get("allow_mbz_artwork_search")),
+    )
     monkeypatch.setattr(processor, "_send_notifications", lambda *args, **kwargs: None)
 
     result = processor.process_album(1, tmp_path, steam_meta)
 
     assert result.status == "archive"
     assert result.confidence_score == 100
+    assert artwork_options == [True]
+
+
+def test_fast_track_artwork_mbz_search_is_lazy_and_uses_local_baseline(monkeypatch):
+    processor = make_processor()
+    steam_meta = make_steam_meta()
+    local_baseline = {"publisher": "Pub", "year": "2024", "tracks": [("main theme", 180000)]}
+    mbz_candidate = {"source": "MBZ_SEARCH", "mbid": "release-id"}
+    search_calls = []
+    provider_calls = []
+
+    processor.alignment_input_builder.build_local_album = lambda groups: {
+        "tracks": [{"title": "main theme", "duration_ms": 180000}]
+    }
+
+    def build_mbz_search_album(*args):
+        search_calls.append(args)
+        return mbz_candidate
+
+    processor.alignment_input_builder.build_mbz_search_album = build_mbz_search_album
+
+    def fake_fetch_album_artwork(*args, **kwargs):
+        provider = kwargs["mbz_artwork_candidate_provider"]
+        assert search_calls == []
+        provider_calls.append(provider())
+        return None
+
+    monkeypatch.setattr(processor_module, "fetch_album_artwork", fake_fetch_album_artwork)
+
+    processor._fetch_album_artwork(
+        steam_meta,
+        [],
+        {(1, "main theme"): []},
+        allow_mbz_artwork_search=True,
+    )
+
+    assert provider_calls == [mbz_candidate]
+    assert search_calls == [(1, "Test OST", 2, steam_meta, local_baseline)]
 
 
 def test_build_fast_track_alignment_res_uses_local_track_order():

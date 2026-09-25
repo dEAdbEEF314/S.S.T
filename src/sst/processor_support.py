@@ -1,7 +1,7 @@
 import logging
 from collections import defaultdict
 from difflib import SequenceMatcher
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import requests
 
@@ -257,6 +257,7 @@ def fetch_album_artwork(
     steam_meta: SteamMetadata,
     mbz_candidates: List[Dict[str, Any]],
     track_groups: Optional[Dict] = None,
+    mbz_artwork_candidate_provider: Optional[Callable[[], Optional[Dict[str, Any]]]] = None,
 ) -> Optional[bytes]:
     # 1. EMBED (Local File)
     if track_groups:
@@ -267,8 +268,11 @@ def fetch_album_artwork(
                 return art
 
     # 2. MBZ (High Quality Cover)
-    if mbz_candidates:
-        url = mbz_client.get_release_artwork_url(mbz_candidates[0]["mbid"])
+    mbz_candidate = mbz_candidates[0] if mbz_candidates else None
+    if mbz_candidate is None and mbz_artwork_candidate_provider:
+        mbz_candidate = mbz_artwork_candidate_provider()
+    if mbz_candidate and mbz_candidate.get("mbid"):
+        url = mbz_client.get_release_artwork_url(mbz_candidate["mbid"])
         if url:
             art = safe_download_image(url)
             if art:
