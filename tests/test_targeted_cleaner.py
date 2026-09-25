@@ -15,6 +15,7 @@ class FakeConfig:
         self.sst_db_path = str(root / "state.db")
         self.sst_output_dir = str(root / "output")
         self.sst_working_dir = str(root / "sst-work")
+        self.sst_llm_cache_path = str(root / "data" / "llm_cache.json")
 
 
 def test_targeted_cleaner_preserves_other_appid_data(monkeypatch, tmp_path: Path):
@@ -76,3 +77,23 @@ def test_force_cleanup_removes_only_requested_appids(tmp_path: Path):
     assert not (working_dir / "buffer_1_old").exists()
     assert (working_dir / "final_2_old").exists()
     assert (working_dir / "buffer_2_old").exists()
+
+
+def test_full_cleanup_removes_all_runtime_caches(monkeypatch, tmp_path: Path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    cache_paths = [
+        data_dir / "llm_cache.json",
+        data_dir / "llm_cache.json.tmp",
+        data_dir / "sst_cache.json",
+        data_dir / "scout_cache.json",
+        data_dir / "steam_tags.json",
+    ]
+    for cache_path in cache_paths:
+        cache_path.write_text("{}", encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(clean_system, "Config", lambda: FakeConfig(tmp_path))
+    clean_system.clean(keep_cache=False)
+
+    assert all(not cache_path.exists() for cache_path in cache_paths)

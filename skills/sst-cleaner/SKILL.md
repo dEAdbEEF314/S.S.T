@@ -10,7 +10,7 @@ description: データベース、中間生成物、一時ファイル、キャ�
 ## 🛠 削除対象
 以下のディレクトリおよびファイルが削除されます：
 - **データベース**: `data/sst_local_state.db*`
-- **スキャナ／スキルキャッシュ**: `data/sst_cache.json`, `data/scout_cache.json`（`--clear-all-cache`時）
+- **キャッシュ**: DB内キャッシュ、`data/llm_cache.json`、`data/sst_cache.json`、`data/scout_cache.json`、`data/steam_tags.json`（`--clear-all-cache`時。LLMキャッシュの一時ファイルも削除）
 
 - **ログ**: `logs/*.log`
 - **中間生成物**: `output/` 配下の全ファイル（※出力されたZIPアーカイブ等もテスト環境リセットのため削除対象となります）
