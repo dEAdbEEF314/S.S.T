@@ -44,6 +44,8 @@ uv sync
 - LLM バックエンドへ疎通できること
 - Steam PICS Bridge へアクセスできること
 
+LiteLLM SDKを使う場合は、`LLM_BACKEND=LITELLM` とし、`LLM_MODEL` にLiteLLM形式のプロバイダーモデル（例: `gemini/gemini-2.5-flash`）を指定します。標準プロバイダーでは `LLM_BASE_URL=auto`、LiteLLM Proxyなどでは接続URLを設定します。認証には `LLM_API_KEY` またはLiteLLMが認識するプロバイダー環境変数を利用できます。起動時チェックはSDK経路の設定を確認し、実際の疎通・認証は最初のLLMリクエストで確認されます。
+
 ## 3. 安全なマウントと実行プロファイル
 
 S.S.Tはローカル単一ユーザー運用を前提とします。Steamライブラリの元音源は読み取り専用で扱い、出力先、`SST_WORKING_DIR`、ログ、DBは別領域に配置してください。Linuxでは、Steamライブラリを可能な限り読み取り専用マウント（`ro`）で提供してください。これはアプリケーションのパス検証を置き換えるものではなく、誤操作時の最終安全弁です。

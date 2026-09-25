@@ -43,8 +43,17 @@
 
 - LLM_BACKEND
 - LLM_BASE_URL
-- LLM_API_KEY
+- LLM_API_KEY（LiteLLMではプロバイダー標準の環境変数で代替可能）
 - LLM_MODEL
+
+対応バックエンド:
+
+- `OLLAMA`: Ollamaのネイティブ `/api/chat` API。
+- `GEMINI`: GeminiのOpenAI互換API。
+- `OPENAI_COMPATIBLE`: OpenAI互換HTTP API。
+- `LITELLM`: LiteLLM Python SDK経由。`LLM_MODEL`にはLiteLLM形式のモデル名（例: `gemini/gemini-2.5-flash`、`openai/gpt-4o-mini`）を指定します。
+
+`LITELLM`で標準プロバイダーのエンドポイントを使う場合、`LLM_BASE_URL=auto` とします。LiteLLM Proxyや独自のOpenAI互換サーバーを使う場合はURLを指定してください。認証は `LLM_API_KEY` をSDKへ渡し、未指定時はLiteLLMが各プロバイダー標準の環境変数を参照します。接続と認証は最初の実リクエスト時に検証されます。
 
 ### 3.2 並列・容量制御
 

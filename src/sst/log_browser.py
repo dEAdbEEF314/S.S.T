@@ -1,12 +1,51 @@
 import sqlite3
 import json
 import argparse
+import os
 from pathlib import Path
+from dotenv import dotenv_values
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 
 console = Console()
+
+def resolve_db_path(db_path: str | None = None) -> Path:
+    if db_path is not None:
+        return Path(db_path)
+
+    dotenv_settings = {
+        key.upper(): value for key, value in dotenv_values(".env").items()
+    }
+    configured_path = os.getenv("SST_DB_PATH") or dotenv_settings.get("SST_DB_PATH")
+    return Path(configured_path or "data/sst_local_state.db")
+
+
+def show_stats(db_path: Path):
+    if not db_path.exists():
+        console.print(f"[yellow]データベースが見つかりません: {db_path}[/yellow]")
+        return
+
+    try:
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT status, count(*) FROM processed_albums GROUP BY status"
+            ).fetchall()
+    except sqlite3.Error as error:
+        console.print(f"[red]統計を読み込めませんでした: {error}[/red]")
+        return
+
+    if not rows:
+        console.print("[yellow]処理履歴が見つかりません。[/yellow]")
+        return
+
+    table = Table(title="S.S.T 処理統計", title_style="bold blue")
+    table.add_column("判定", style="bold")
+    table.add_column("件数", justify="right")
+    for status, count in rows:
+        table.add_row(str(status), str(count))
+    console.print(table)
+
 
 def load_history(db_path: Path, limit: int = 20):
     if not db_path.exists():
@@ -95,12 +134,15 @@ def main():
     parser = argparse.ArgumentParser(description="SST Log Browser")
     parser.add_argument("appid", type=int, nargs="?", help="Show details for a specific AppID")
     parser.add_argument("--limit", "-n", type=int, default=20, help="Number of items to show")
-    parser.add_argument("--db", type=str, default="data/sst_local_state.db", help="Path to database")
+    parser.add_argument("--db", type=str, help="Path to database")
+    parser.add_argument("--stats", action="store_true", help="Show processing statistics")
     
     args = parser.parse_args()
-    db_path = Path(args.db)
+    db_path = resolve_db_path(args.db)
     
-    if args.appid:
+    if args.stats:
+        show_stats(db_path)
+    elif args.appid:
         show_detail(db_path, args.appid)
     else:
         show_list(db_path, args.limit)

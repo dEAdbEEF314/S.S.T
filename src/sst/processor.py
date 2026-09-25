@@ -476,7 +476,12 @@ class LocalProcessor:
         int,
     ]:
         tagger = AudioTagger(temp_output)
-        raw_album_artwork = self._fetch_album_artwork(steam_meta, mbz_candidates, track_groups)
+        raw_album_artwork = self._fetch_album_artwork(
+            steam_meta,
+            mbz_candidates,
+            track_groups,
+            allow_mbz_artwork_search=llm_log.get("processing_route") == "FAST_TRACK",
+        )
         album_artwork_path = tagger.process_artwork(raw_album_artwork) if raw_album_artwork else None
 
         track_sources = TrackManager.prepare_llm_track_context(track_groups)
@@ -851,8 +856,38 @@ class LocalProcessor:
         steam_meta: SteamMetadata,
         mbz_candidates: List[Dict[str, Any]],
         track_groups: Optional[Dict] = None,
+        allow_mbz_artwork_search: bool = False,
     ) -> Optional[bytes]:
-        return fetch_album_artwork(self.config, self.mbz, steam_meta, mbz_candidates, track_groups)
+        mbz_artwork_candidate_provider = None
+        if allow_mbz_artwork_search and not mbz_candidates:
+            def search_mbz_artwork_candidate() -> Optional[Dict[str, Any]]:
+                local_album = self.alignment_input_builder.build_local_album(track_groups or {})
+                local_baseline = {
+                    "publisher": steam_meta.publisher,
+                    "year": steam_meta.release_date[:4] if steam_meta.release_date else None,
+                    "tracks": [
+                        (track.get("title", ""), track.get("duration_ms", 0))
+                        for track in local_album["tracks"]
+                    ],
+                }
+                return self.alignment_input_builder.build_mbz_search_album(
+                    steam_meta.app_id,
+                    steam_meta.name,
+                    len(steam_meta.store_tracklist),
+                    steam_meta,
+                    local_baseline,
+                )
+
+            mbz_artwork_candidate_provider = search_mbz_artwork_candidate
+
+        return fetch_album_artwork(
+            self.config,
+            self.mbz,
+            steam_meta,
+            mbz_candidates,
+            track_groups,
+            mbz_artwork_candidate_provider=mbz_artwork_candidate_provider,
+        )
 
     @staticmethod
     def _validate_archive_artifacts(

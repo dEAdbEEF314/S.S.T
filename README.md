@@ -48,7 +48,7 @@ S.S.T は **Steam を構造の絶対的な正本（Ground Truth）とするロ�
 S.S.T は `.env` ファイルを通じて、システムの並列性能やAPIの安全性を極限までチューニングできます。
 
 ### LLM チャンク制御およびモデル設定
-- **`LLM_BACKEND`**: `OLLAMA`（ローカル）または `GEMINI`（クラウドAPI）を選択。
+- **`LLM_BACKEND`**: `OLLAMA`（ローカル）、`GEMINI`、`OPENAI_COMPATIBLE`、または `LITELLM`（LiteLLM SDK経由）を選択。
 - **`LLM_MODEL`**: 推奨ローカルモデルは `ornith:9b`。
 - **`LLM_OLLAMA_NUM_CTX` / `LLM_OLLAMA_NUM_PREDICT`**: Ollama利用時のコンテキスト長（32768推奨）と出力上限（8192推奨）。
 - **`LLM_ALBUM_TIER_*`**: アルバムの曲数帯（Small / Medium / Large）に応じて `num_ctx` 上限や Phase 2 並列ワーカー数を自動切り替え。
