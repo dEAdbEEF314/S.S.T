@@ -118,17 +118,24 @@ def clean(keep_cache=True, app_ids=None):
             except Exception as e:
                 errors.append(f"Failed to remove log file {p}: {e}")
 
-    # 4. Scanner/skill cache cleanup. The CLI currently passes data/sst_cache.json
-    # as the ScannerCacheManager path, so this is a runtime cache, not disposable output.
+    # 4. Runtime cache cleanup.
     if not keep_cache:
-        for cache_path in (Path("data/sst_cache.json"), Path("data/scout_cache.json")):
+        llm_cache_path = Path(config.sst_llm_cache_path)
+        cache_paths = (
+            Path("data/sst_cache.json"),
+            Path("data/scout_cache.json"),
+            Path("data/steam_tags.json"),
+            llm_cache_path,
+            llm_cache_path.with_suffix(llm_cache_path.suffix + ".tmp"),
+        )
+        for cache_path in cache_paths:
             try:
                 if cache_path.is_file():
                     cache_path.unlink()
-                    print(f"Removed scanner cache: {cache_path}")
+                    print(f"Removed cache: {cache_path}")
                     deleted_count += 1
             except Exception as e:
-                errors.append(f"Failed to remove scanner cache {cache_path}: {e}")
+                errors.append(f"Failed to remove cache {cache_path}: {e}")
 
     # 5. 出力先ディレクトリ (SST_OUTPUT_DIR) 配下のクリーンアップ
     output_dir = ensure_path(config.sst_output_dir)
