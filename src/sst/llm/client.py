@@ -24,6 +24,7 @@ class LLMClient:
                  llm_cloud_max_tokens: int = 8192,
                  ollama_num_ctx: int = 32768,
                  ollama_num_predict: int = 4096,
+                 ollama_think: bool = False,
                  llm_vram_scheduling_enabled: bool = True,
                  request_timeout: int = 3600,
                  chunk_output_tokens_per_track: int = 180):
@@ -35,6 +36,7 @@ class LLMClient:
         self.llm_limit_tpm = tpm
         self.ollama_num_ctx = ollama_num_ctx
         self.ollama_num_predict = ollama_num_predict
+        self.ollama_think = ollama_think
         self.llm_vram_scheduling_enabled = llm_vram_scheduling_enabled
         self.request_timeout = request_timeout
         self.chunk_output_tokens_per_track = max(1, chunk_output_tokens_per_track)
@@ -173,7 +175,7 @@ class LLMClient:
                     options["num_ctx"] = effective_num_ctx
                 payload = {
                     "model": self.model, "messages": messages, "stream": False, "format": "json",
-                    "options": options
+                    "options": options, "think": self.ollama_think
                 }
                 if self.draft_model:
                     payload["draft_model"] = self.draft_model
@@ -209,7 +211,7 @@ class LLMClient:
                             timeout=self.request_timeout,
                             temperature=0.0,
                             max_tokens=self.llm_cloud_max_tokens,
-                            response_format={"type": "json_object"},
+                            extra_body={"think": self.ollama_think},
                             drop_params=True,
                             num_retries=0,
                         )
@@ -247,6 +249,39 @@ class LLMClient:
                             "eval_duration_ns": res_json.get("eval_duration"),
                             "total_duration_ns": res_json.get("total_duration"),
                         }
+
+                        if self.llm_backend == "LITELLM":
+                            response_message = choice.get("message")
+                            if not isinstance(response_message, dict):
+                                response_message = {}
+                            response_content = response_message.get("content")
+                            reasoning_content = response_message.get("reasoning_content")
+                            tool_calls = response_message.get("tool_calls")
+                            response_shape = {
+                                "choice_count": len(choices) if isinstance(choices, list) else None,
+                                "message_keys": sorted(str(key) for key in response_message),
+                                "content_type": type(response_content).__name__,
+                                "content_length": len(response_content) if isinstance(response_content, (str, list)) else None,
+                                "content_empty": not response_content if isinstance(response_content, (str, list)) else response_content is None,
+                                "reasoning_content_present": reasoning_content is not None,
+                                "reasoning_content_length": len(reasoning_content) if isinstance(reasoning_content, str) else None,
+                                "tool_calls_count": len(tool_calls) if isinstance(tool_calls, list) else None,
+                                "refusal_present": response_message.get("refusal") is not None,
+                                "finish_reason": done_reason,
+                                "prompt_tokens": prompt_eval_count,
+                                "completion_tokens": eval_count,
+                            }
+                            log_entry["meta"]["response_shape"] = response_shape
+                            logger.info(
+                                "LLM_RESPONSE_SHAPE %s",
+                                json.dumps({
+                                    "app_id": app_id,
+                                    "request_id": log_entry["request_id"],
+                                    "request_kind": request_kind,
+                                    "attempt": attempt + 1,
+                                    **response_shape,
+                                }, ensure_ascii=False),
+                            )
 
                         if done_reason in {"length", "max_tokens"}:
                             if self.llm_backend == "OLLAMA" and attempt < max_retries:
