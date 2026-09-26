@@ -1,4 +1,5 @@
 from sst.config import Config, DEFAULT_METADATA_SOURCE_PRIORITY
+from sst.llm.organizer import LLMOrganizer
 from sst.track_grouper import TrackManager
 
 
@@ -18,6 +19,17 @@ def test_ollama_thinking_is_disabled_by_default_and_passed_to_llm_client():
 
     assert config.llm_ollama_think is False
     assert config.build_llm_organizer_kwargs()["ollama_think"] is False
+
+
+def test_organizer_forwards_ollama_think_to_client(tmp_path):
+    config = Config(
+        steam_install_path="/tmp",
+        sst_llm_cache_path=str(tmp_path / "llm_cache.json"),
+    )
+
+    organizer = LLMOrganizer(**config.build_llm_organizer_kwargs())
+
+    assert organizer.client.ollama_think is False
 
 
 def test_track_manager_uses_spec_audio_format_priority(monkeypatch):
