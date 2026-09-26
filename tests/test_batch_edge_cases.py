@@ -1,4 +1,6 @@
 from pathlib import Path
+import logging
+from unittest.mock import MagicMock, call, patch
 
 from sst.processor import LocalProcessor
 from sst.processor_support import (
@@ -39,6 +41,60 @@ def test_steam_metadata_preserves_tracklist_source():
     )
 
     assert metadata.store_tracklist_source == "STEAM_TEXT_TRACKLIST"
+
+
+def test_store_api_debug_log_classifies_http_200_failure_without_final_backoff(caplog):
+    app_id = 424242
+    db = MagicMock()
+    db.get_store_data.return_value = None
+    session = MagicMock()
+
+    unsuccessful_store_response = MagicMock(status_code=200)
+    unsuccessful_store_response.json.return_value = {str(app_id): {"success": False}}
+    pics_response = MagicMock(status_code=200)
+    pics_response.json.return_value = {
+        "data": {str(app_id): {"albummetadata": {}}}
+    }
+    session.get.side_effect = [
+        unsuccessful_store_response,
+        unsuccessful_store_response,
+        unsuccessful_store_response,
+        pics_response,
+    ]
+
+    client = SteamWebClient(db, "http://bridge/", language="english")
+    with patch("sst.steam_web_api.requests.Session", return_value=session), patch(
+        "sst.steam_web_api.time.sleep"
+    ) as sleep, patch("random.random", return_value=0.5), caplog.at_level(
+        logging.DEBUG, logger="sst.steam_web_api"
+    ):
+        result = client.fetch_web_enrichment(app_id)
+
+    assert result is not None
+    assert session.get.call_count == 4
+    assert sleep.call_args_list == [call(2.5), call(2), call(4)]
+    tier1_logs = [record.getMessage() for record in caplog.records if "tier=1" in record.getMessage()]
+    failure_logs = [message for message in tier1_logs if "outcome=retryable_failure" in message]
+    assert len(failure_logs) == 3
+    assert all(f"app_id={app_id}" in message for message in tier1_logs)
+    assert all("reason=success_false" in message for message in failure_logs)
+    assert "retry_delay_seconds=0" in failure_logs[-1]
+
+
+def test_processor_debug_logs_pipeline_stages_without_local_paths(tmp_path, caplog):
+    processor = LocalProcessor.__new__(LocalProcessor)
+    processor.preserve_working_files = False
+    steam_meta = SteamMetadata(app_id=424243, name="Synthetic OST")
+
+    with caplog.at_level(logging.DEBUG, logger="sst.processor"):
+        result = processor.process_album(steam_meta.app_id, tmp_path, steam_meta)
+
+    assert result.status == "skip"
+    pipeline_logs = [record.getMessage() for record in caplog.records if "PIPELINE_EVENT" in record.getMessage()]
+    assert any("stage=PROCESS_START" in message for message in pipeline_logs)
+    assert any("stage=SKIP_NO_AUDIO" in message for message in pipeline_logs)
+    assert all("elapsed_seconds=" in message for message in pipeline_logs)
+    assert all("install_dir" not in message and str(tmp_path) not in message for message in pipeline_logs)
 
 
 def test_list_audio_files_excludes_macos_artifacts(tmp_path: Path):

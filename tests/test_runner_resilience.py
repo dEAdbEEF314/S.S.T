@@ -2,6 +2,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 from rich.console import Console
 
+from sst.models import LocalProcessResult
 from sst.runner import JobRunner
 from sst.track_grouper import TrackManager
 
@@ -53,6 +54,34 @@ def test_job_runner_resilience_on_host_down_error(tmp_path):
     for r in results:
         assert r.status == "error"
         assert "Host is down" in r.message or "Process returned None" in r.message or r.message != ""
+
+
+def test_job_runner_reuses_scheduling_scan_for_progress_count(tmp_path):
+    config = MagicMock()
+    config.llm_backend = "TEST"
+    config.max_parallel_albums = 1
+    config.llm_limit_rpm = 10
+
+    processor = MagicMock()
+    processor.process_album.return_value = LocalProcessResult(
+        app_id=100,
+        status="skip",
+        album_name="Test OST",
+        message="No work required",
+    )
+    soundtrack = {
+        "app_id": 100,
+        "name": "Test OST",
+        "install_dir": str(tmp_path),
+        "store_tracklist": [],
+    }
+    runner = JobRunner(config=config, processor=processor, console=Console(quiet=True))
+
+    with patch.object(TrackManager, "list_audio_files", return_value=[tmp_path / "01.flac"]) as scan:
+        results = runner.run([soundtrack])
+
+    assert scan.call_count == 1
+    assert len(results) == 1
 
 
 def test_copy_with_retry_records_structured_attempts(tmp_path):
