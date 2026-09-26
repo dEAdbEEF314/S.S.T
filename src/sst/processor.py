@@ -1,5 +1,6 @@
 import logging
 import shutil
+import time
 from pathlib import Path
 from typing import Callable, List, Dict, Any, Optional, Tuple
 from datetime import datetime
@@ -720,6 +721,8 @@ class LocalProcessor:
         llm_progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> LocalProcessResult:
         logger.info(f"[{app_id}] --- 処理中: {steam_meta.name} ---")
+        process_started_at = time.monotonic()
+        previous_stage_at = process_started_at
         diagnostics = {
             "trace": [],
             "review_cause_code": None,
@@ -728,6 +731,23 @@ class LocalProcessor:
         }
 
         def _diag(stage: str, **details: Any):
+            nonlocal previous_stage_at
+            stage_at = time.monotonic()
+            safe_details = {
+                key: value
+                for key, value in details.items()
+                if key not in {"install_dir", "output_root", "error", "message"}
+            }
+            logger.debug(
+                "PIPELINE_EVENT app_id=%s stage=%s stage_elapsed_seconds=%.3f "
+                "elapsed_seconds=%.3f details=%s",
+                app_id,
+                stage,
+                stage_at - previous_stage_at,
+                stage_at - process_started_at,
+                safe_details,
+            )
+            previous_stage_at = stage_at
             diagnostics["trace"].append({
                 "stage": stage,
                 "details": details,

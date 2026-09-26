@@ -128,18 +128,67 @@ class SteamWebClient:
                 # --- Tier 1: Official Store API (Localized name/genres) ---
                 store_url = f"https://store.steampowered.com/api/appdetails?appids={app_id}&l={self.language}"
                 app_data = None
+                tier1_started = time.monotonic()
                 for attempt in range(3):
+                    attempt_started = time.monotonic()
+                    failure_reason = "http_status"
+                    status_code = None
                     try:
                         sr = session.get(store_url, headers=common_headers, timeout=15)
-                        if sr.status_code == 200:
+                        status_code = sr.status_code
+                        if status_code == 200:
                             s_json = sr.json()
-                            if str(app_id) in s_json and s_json[str(app_id)]["success"]:
-                                app_data = s_json[str(app_id)]["data"]
+                            app_entry = s_json.get(str(app_id)) if isinstance(s_json, dict) else None
+                            if not isinstance(app_entry, dict):
+                                failure_reason = "app_id_missing"
+                            elif not app_entry.get("success"):
+                                failure_reason = "success_false"
+                            elif not isinstance(app_entry.get("data"), dict):
+                                failure_reason = "data_missing_or_invalid"
+                            else:
+                                app_data = app_entry["data"]
+                                logger.debug(
+                                    "STORE_API_RESULT tier=1 app_id=%s attempt=%s/3 outcome=success "
+                                    "status_code=%s duration_seconds=%.3f total_seconds=%.3f",
+                                    app_id,
+                                    attempt + 1,
+                                    status_code,
+                                    time.monotonic() - attempt_started,
+                                    time.monotonic() - tier1_started,
+                                )
                                 break
-                        logger.debug(f"Tier 1 の試行 {attempt+1} が失敗しました (ステータス: {sr.status_code})")
+                        delay = 2 ** (attempt + 1) if attempt < 2 else 0
+                        logger.debug(
+                            "STORE_API_RESULT tier=1 app_id=%s attempt=%s/3 outcome=retryable_failure "
+                            "reason=%s status_code=%s duration_seconds=%.3f retry_delay_seconds=%s",
+                            app_id,
+                            attempt + 1,
+                            failure_reason,
+                            status_code,
+                            time.monotonic() - attempt_started,
+                            delay,
+                        )
                     except Exception as e:
-                        logger.debug(f"Tier 1 の試行 {attempt+1} エラー: {e}")
-                    time.sleep(2 ** (attempt + 1))  # 2s, 4s, 8s exponential backoff
+                        delay = 2 ** (attempt + 1) if attempt < 2 else 0
+                        logger.debug(
+                            "STORE_API_RESULT tier=1 app_id=%s attempt=%s/3 outcome=exception "
+                            "error_type=%s status_code=%s duration_seconds=%.3f retry_delay_seconds=%s",
+                            app_id,
+                            attempt + 1,
+                            type(e).__name__,
+                            status_code,
+                            time.monotonic() - attempt_started,
+                            delay,
+                        )
+                    if attempt < 2:
+                        time.sleep(2 ** (attempt + 1))
+
+                if app_data is None:
+                    logger.debug(
+                        "STORE_API_RESULT tier=1 app_id=%s outcome=exhausted attempts=3 total_seconds=%.3f",
+                        app_id,
+                        time.monotonic() - tier1_started,
+                    )
                 
                 if app_data:
                     result["name"] = html.unescape(app_data.get("name")) if app_data.get("name") else None
@@ -162,20 +211,62 @@ class SteamWebClient:
                         pics_headers["X-API-Key"] = self.bridge_api_key
 
                 # Retry logic for Tier 2 (Critical for structured data)
+                tier2_started = time.monotonic()
                 for attempt in range(3):
+                    attempt_started = time.monotonic()
+                    failure_reason = "http_status"
+                    status_code = None
                     try:
                         pr = session.get(pics_url, headers=pics_headers, timeout=30)
-                        if pr.status_code == 200:
+                        status_code = pr.status_code
+                        if status_code == 200:
                             p_json = pr.json()
-                            app_pics = p_json.get("data", {}).get(str(app_id), {})
+                            pics_data = p_json.get("data", {}) if isinstance(p_json, dict) else {}
+                            app_pics = pics_data.get(str(app_id), {}) if isinstance(pics_data, dict) else {}
                             if app_pics:
+                                logger.debug(
+                                    "STORE_API_RESULT tier=2 app_id=%s attempt=%s/3 outcome=success "
+                                    "status_code=%s duration_seconds=%.3f total_seconds=%.3f",
+                                    app_id,
+                                    attempt + 1,
+                                    status_code,
+                                    time.monotonic() - attempt_started,
+                                    time.monotonic() - tier2_started,
+                                )
                                 break  # Success
-                        logger.debug(f"Tier 2 の試行 {attempt+1} が失敗しました (ステータス: {pr.status_code})")
+                            failure_reason = "app_id_missing_or_empty"
+                        delay = 2 ** (attempt + 1) if attempt < 2 else 0
+                        logger.debug(
+                            "STORE_API_RESULT tier=2 app_id=%s attempt=%s/3 outcome=retryable_failure "
+                            "reason=%s status_code=%s duration_seconds=%.3f retry_delay_seconds=%s",
+                            app_id,
+                            attempt + 1,
+                            failure_reason,
+                            status_code,
+                            time.monotonic() - attempt_started,
+                            delay,
+                        )
                     except Exception as e:
-                        logger.debug(f"Tier 2 の試行 {attempt+1} エラー: {e}")
-                    time.sleep(2 ** (attempt + 1))
+                        delay = 2 ** (attempt + 1) if attempt < 2 else 0
+                        logger.debug(
+                            "STORE_API_RESULT tier=2 app_id=%s attempt=%s/3 outcome=exception "
+                            "error_type=%s status_code=%s duration_seconds=%.3f retry_delay_seconds=%s",
+                            app_id,
+                            attempt + 1,
+                            type(e).__name__,
+                            status_code,
+                            time.monotonic() - attempt_started,
+                            delay,
+                        )
+                    if attempt < 2:
+                        time.sleep(2 ** (attempt + 1))
                 else:
                     app_pics = {} # All retries failed
+                    logger.debug(
+                        "STORE_API_RESULT tier=2 app_id=%s outcome=exhausted attempts=3 total_seconds=%.3f",
+                        app_id,
+                        time.monotonic() - tier2_started,
+                    )
 
                 album_meta = app_pics.get("albummetadata", {})
                 

@@ -97,8 +97,7 @@ class JobRunner:
                 # Use dict unpacking to ensure all fields from ost are included in SteamMetadata
                 steam_meta = SteamMetadata(**ost)
 
-                all_files = TrackManager.list_audio_files(install_dir)
-                progress.update(album_task, total=len(all_files))
+                progress.update(album_task, total=ost["_track_count"])
 
                 result = self.processor.process_album(
                     app_id,
