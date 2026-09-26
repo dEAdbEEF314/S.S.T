@@ -32,6 +32,7 @@ class Config(BaseSettings):
     llm_num_ctx: int = 32768
     llm_ollama_num_ctx: int = 32768
     llm_ollama_num_predict: int = 8192
+    llm_ollama_think: bool = False
     # Ollama's llama-server defaults to four concurrent sequence slots in the
     # production service. Keep the client-side album pool no larger than that
     # unless the service is explicitly configured with a different -np value.
@@ -160,6 +161,7 @@ class Config(BaseSettings):
             "llm_cloud_max_tokens": self.llm_cloud_max_tokens,
             "ollama_num_ctx": self.llm_ollama_num_ctx,
             "ollama_num_predict": self.llm_ollama_num_predict,
+            "ollama_think": self.llm_ollama_think,
             "llm_vram_scheduling_enabled": self.llm_vram_scheduling_enabled,
             "llm_request_parallelism_enabled": self.llm_request_parallelism_enabled,
             "llm_request_parallelism_max_workers": self.llm_request_parallelism_max_workers,

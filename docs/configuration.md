@@ -64,6 +64,7 @@
 - LLM_CLOUD_MAX_TOKENS
 - LLM_OLLAMA_NUM_CTX
 - LLM_OLLAMA_NUM_PREDICT
+- LLM_OLLAMA_THINK
 - LLM_OLLAMA_PARALLEL_SLOTS
 - LLM_VRAM_SCHEDULING_ENABLED
 - LLM_REQUEST_PARALLELISM_ENABLED
@@ -82,6 +83,7 @@ Ollama 並列制御の契約:
 - Ollama のアルバム単位 worker 数は、対象アルバム数、VRAM 算出値、`LLM_OLLAMA_PARALLEL_SLOTS` の最小値になる。
 - `MAX_PARALLEL_ALBUMS` やVRAM容量だけを増やしても、サーバーslot数を超えて同時にリクエストしない。
 - `LLM_OLLAMA_NUM_PREDICT` は設定上の出力予算であり、Ollamaへはリクエスト種別・単位数に応じた有限の `num_predict` が送られる。無制限値は使用しない。
+- `LLM_OLLAMA_THINK=false`（既定値）は、Ollama互換の `/api/chat` でthinking出力を無効化し、JSON回答に出力token予算を使えるようにする。LiteLLM Proxy経由の場合も、上流deploymentがOllamaであるときに適用される。
 - `LLM_REQUEST_DONE` の構造化ログには `prompt_eval_count`、`eval_count`、`total_tokens`、`output_budget`、`duration_seconds`、`wait_seconds`（キュー待機実測秒数: `request_started - request_enqueued`）を記録する。
 
 Tier 制御の原則:

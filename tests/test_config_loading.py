@@ -13,6 +13,13 @@ def test_config_uses_new_metadata_fallback_priority_field_for_reports_and_llm():
     assert config.build_llm_organizer_kwargs()["metadata_source_priority"] == DEFAULT_METADATA_SOURCE_PRIORITY
 
 
+def test_ollama_thinking_is_disabled_by_default_and_passed_to_llm_client():
+    config = Config(steam_install_path="/tmp")
+
+    assert config.llm_ollama_think is False
+    assert config.build_llm_organizer_kwargs()["ollama_think"] is False
+
+
 def test_track_manager_uses_spec_audio_format_priority(monkeypatch):
     monkeypatch.setenv("AUDIO_QUALITY_TIER_PRIORITY", "wav,flac,mp3")
     monkeypatch.setenv("AUDIO_FORMAT_PRIORITY", "mp3,wav")
