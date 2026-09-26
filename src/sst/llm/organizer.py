@@ -24,6 +24,7 @@ class LLMOrganizer:
                  llm_cloud_max_tokens: int = 8192,
                  ollama_num_ctx: int = 32768,
                  ollama_num_predict: int = 4096,
+                 ollama_think: bool = False,
                  llm_vram_scheduling_enabled: bool = True,
                  llm_request_parallelism_enabled: bool = True,
                  llm_request_parallelism_max_workers: int = 4,
@@ -60,6 +61,7 @@ class LLMOrganizer:
             api_key=api_key, base_url=base_url, model=model, rpm=rpm, tpm=tpm, rpd=rpd,
             llm_backend=llm_backend, draft_model=draft_model, llm_cloud_max_tokens=llm_cloud_max_tokens,
             ollama_num_ctx=ollama_num_ctx, ollama_num_predict=ollama_num_predict,
+            ollama_think=ollama_think,
             llm_vram_scheduling_enabled=llm_vram_scheduling_enabled,
             request_timeout=request_timeout, chunk_output_tokens_per_track=chunk_output_tokens_per_track
         )
