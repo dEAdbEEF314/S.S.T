@@ -18,7 +18,7 @@ from .alignment_inputs import AlignmentInputBuilder
 from .track_grouper import TrackManager
 from .validator import ResultValidator
 from .report_generator import ReportGenerator
-from .processor_support import adopt_best_file_per_slot, build_slot_variant_index, fetch_album_artwork, send_notifications, resolve_duplicate_mappings, select_best_unassigned_files, reconcile_deterministic_unassigned_slots
+from .processor_support import adopt_best_file_per_slot, apply_mbz_track_artists_to_fast_track, build_slot_variant_index, fetch_album_artwork, send_notifications, resolve_duplicate_mappings, select_best_unassigned_files, reconcile_deterministic_unassigned_slots
 from .processor_tracks import process_single_track
 from .alignment_flow import collect_alignment_inputs, consolidate_alignment_inputs
 from .processor_pipeline import handle_early_review_return
@@ -92,9 +92,8 @@ class LocalProcessor:
         return removed_count
 
     def _get_localized_now(self):
-        from datetime import timezone, timedelta
-        import os
-        return datetime.now(timezone(timedelta(hours=9))) if os.environ.get("TZ") == "Asia/Tokyo" else datetime.now(timezone.utc)
+        # Always use the OS-configured local timezone, matching naive datetime.now() used for log/dir names.
+        return datetime.now().astimezone()
 
     @staticmethod
     def _normalize_slot_key(disc_number: Any, track_number: Any) -> Optional[tuple[int, str]]:
@@ -219,14 +218,11 @@ class LocalProcessor:
         
         final_map = {}
 
-        fingerprint_by_slot = {}
+        fingerprint_by_local_key = {}
         for signal_track in (fingerprint_bundle or {}).get("tracks", []):
-            track_num = signal_track.get("track_num")
-            if track_num in (None, "", 0, "0"):
-                continue
-            signal_key = self._normalize_slot_key(signal_track.get("disc") or 1, track_num)
-            if signal_key is not None and signal_key not in fingerprint_by_slot:
-                fingerprint_by_slot[signal_key] = signal_track
+            local_key = signal_track.get("local_key")
+            if isinstance(local_key, (tuple, list)) and len(local_key) == 2:
+                fingerprint_by_local_key[f"{local_key[0]}_{local_key[1]}"] = signal_track
 
         for track_id, (slot_key, clean_title) in group_map.items():
             slot_idx = slot_map[slot_key]
@@ -237,10 +233,9 @@ class LocalProcessor:
                 "override_disc": str(disc_num),
                 "reason": "Fast-track: STEAM slot mapping resolved by track number and duration",
             }
-            signal_track = fingerprint_by_slot.get(slot_key)
-            if signal_track:
-                instruction["chosen_mbz_index"] = 0
-                instruction["mbz_track_index"] = signal_track.get("mbz_track_index")
+            signal_track = fingerprint_by_local_key.get(track_id)
+            if signal_track and signal_track.get("mbz_track_artist"):
+                instruction["mbz_track_artist"] = signal_track["mbz_track_artist"]
                 instruction["alignment_evidence"] = ["filename_track_number", "duration", "acoustid", "mbz_release"]
             final_map[track_id] = instruction
             
@@ -360,9 +355,9 @@ class LocalProcessor:
             v_steam = self.alignment_input_builder.build_steam_album(steam_meta)
             v_local = self.alignment_input_builder.build_local_album(track_groups)
             v_fingerprint = None
+            mbz_log = {"status": "fast_track_artist_from_lazy_artwork_search"}
             v_mbz_search = None
             mbz_candidates = []
-            mbz_log = {"status": "fast_track_bypassed"}
             final_metadata = fast_track_map or {}
             fast_track_alignment_res = self._build_fast_track_alignment_res(final_metadata, v_local)
             llm_log = {
@@ -477,11 +472,24 @@ class LocalProcessor:
         int,
     ]:
         tagger = AudioTagger(temp_output)
+
+        def _apply_fast_track_mbz_artists(candidate: Optional[Dict[str, Any]]) -> None:
+            if llm_log.get("processing_route") != "FAST_TRACK" or not candidate:
+                return
+
+            applied = apply_mbz_track_artists_to_fast_track(
+                final_metadata,
+                steam_meta.store_tracklist or [],
+                candidate,
+            )
+            _diag("FAST_TRACK_MBZ_ARTISTS_APPLIED", enriched_track_count=applied)
+
         raw_album_artwork = self._fetch_album_artwork(
             steam_meta,
             mbz_candidates,
             track_groups,
             allow_mbz_artwork_search=llm_log.get("processing_route") == "FAST_TRACK",
+            on_mbz_candidate=_apply_fast_track_mbz_artists,
         )
         album_artwork_path = tagger.process_artwork(raw_album_artwork) if raw_album_artwork else None
 
@@ -877,6 +885,7 @@ class LocalProcessor:
         mbz_candidates: List[Dict[str, Any]],
         track_groups: Optional[Dict] = None,
         allow_mbz_artwork_search: bool = False,
+        on_mbz_candidate: Optional[Callable[[Optional[Dict[str, Any]]], None]] = None,
     ) -> Optional[bytes]:
         mbz_artwork_candidate_provider = None
         if allow_mbz_artwork_search and not mbz_candidates:
@@ -907,6 +916,7 @@ class LocalProcessor:
             mbz_candidates,
             track_groups,
             mbz_artwork_candidate_provider=mbz_artwork_candidate_provider,
+            on_mbz_candidate=on_mbz_candidate,
         )
 
     @staticmethod

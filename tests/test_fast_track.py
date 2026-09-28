@@ -3,10 +3,12 @@ from typing import Any
 
 import sst.processor as processor_module
 from sst.db import DatabaseManager
-from sst.processor_support import select_best_unassigned_files
+from sst.processor_support import apply_mbz_track_artists_to_fast_track, select_best_unassigned_files
 from sst.config import Config
+from sst.alignment_inputs import AlignmentInputBuilder
 from sst.models import SteamMetadata
 from sst.processor import LocalProcessor
+from sst.processor_tracks import resolve_steam_track_index
 
 
 class MockDB(DatabaseManager):
@@ -51,6 +53,74 @@ def make_track_groups(duration_gap: float = 0.4):
     }
 
 
+def test_fingerprint_bundle_uses_mbz_artist_credit_for_exact_recording():
+    class FakeAcoustID:
+        def identify_track(self, file_path):
+            return [{"mbid": "recording-id", "release_ids": ["release-id"], "artist": "AcoustID Artist"}]
+
+    class FakeMusicBrainz:
+        def get_release_details(self, release_id):
+            return {
+                "title": "Test OST",
+                "artist-credit-phrase": "Album Artist",
+                "medium-list": [{
+                    "position": 1,
+                    "track-list": [{
+                        "position": 1,
+                        "title": "Original Theme",
+                        "length": "180000",
+                        "recording": {
+                            "id": "recording-id",
+                            "title": "Original Theme",
+                            "artist-credit": [
+                                {"name": "MBZ Performer", "joinphrase": " & "},
+                                {"name": "Guest Artist"},
+                            ],
+                        },
+                    }],
+                }],
+            }
+
+    builder = AlignmentInputBuilder(FakeAcoustID(), FakeMusicBrainz(), fingerprint_all=True)
+    result = builder.build_fingerprint_album({
+        (1, "localized filename"): [{"path": Path("synthetic.wav"), "duration": 180.0}],
+    })
+
+    assert result is not None
+    assert result["tracks"][0]["mbz_track_artist"] == "MBZ Performer & Guest Artist"
+    assert result["tracks"][0]["recording_artist"] == "AcoustID Artist"
+
+
+def test_mbz_search_bundle_preserves_release_track_artist():
+    class FakeMusicBrainz:
+        def search_release(self, **kwargs):
+            return ([{
+                "mbid": "release-id",
+                "album": "Test OST",
+                "artist": "Album Artist",
+                "year": "2024",
+                "label": "Label",
+                "score": 300,
+                "tracks": [{
+                    "position": "1",
+                    "title": "Official Theme",
+                    "recording_artist": "MBZ Artist",
+                }],
+            }], {})
+
+    builder = AlignmentInputBuilder(None, FakeMusicBrainz())
+    bundle = builder.build_mbz_search_album(
+        1,
+        "Test OST",
+        1,
+        make_steam_meta(),
+        {"tracks": [("Official Theme", 180000)]},
+    )
+
+    assert bundle is not None
+    assert bundle["tracks"][0]["recording_artist"] == "MBZ Artist"
+
+
 def test_fast_track_succeeds_with_steam_slot_match():
     processor = make_processor()
 
@@ -73,6 +143,57 @@ def test_fast_track_fails_without_steam_tracklist():
     assert ok is False
     assert final_map is None
     assert global_id is None
+
+
+def test_resolve_steam_track_index_uses_disc_and_normalized_number():
+    tracklist = [
+        {"disc": 1, "number": "01", "title": "First"},
+        {"disc": 2, "number": "1", "title": "Second disc"},
+    ]
+
+    assert resolve_steam_track_index((2, "01"), tracklist) == 1
+    assert resolve_steam_track_index((3, "1"), tracklist) is None
+    assert resolve_steam_track_index((1, "1"), tracklist) == 0
+
+
+def test_resolve_steam_track_index_rejects_ambiguous_slot_number():
+    tracklist = [
+        {"disc": 1, "number": "1", "title": "First"},
+        {"disc": 1, "number": "01", "title": "Duplicate number"},
+    ]
+
+    assert resolve_steam_track_index((1, "1"), tracklist) is None
+
+
+def test_fast_track_applies_artist_from_unique_mbz_title_match_only():
+    final_metadata = {"1_track": {"matched_v_idx": 0}}
+    steam_tracklist = [{"number": 1, "title": "Official Theme"}]
+    candidate = {
+        "tracks": [
+            {"title": "official-theme", "recording_artist": "MBZ Artist"},
+        ]
+    }
+
+    applied = apply_mbz_track_artists_to_fast_track(final_metadata, steam_tracklist, candidate)
+
+    assert applied == 1
+    assert final_metadata["1_track"]["mbz_track_artist"] == "MBZ Artist"
+
+
+def test_fast_track_does_not_apply_ambiguous_mbz_title_match():
+    final_metadata = {"1_track": {"matched_v_idx": 0}}
+    steam_tracklist = [{"number": 1, "title": "Official Theme"}]
+    candidate = {
+        "tracks": [
+            {"title": "Official Theme", "recording_artist": "Artist One"},
+            {"title": "Official Theme", "recording_artist": "Artist Two"},
+        ]
+    }
+
+    applied = apply_mbz_track_artists_to_fast_track(final_metadata, steam_tracklist, candidate)
+
+    assert applied == 0
+    assert "mbz_track_artist" not in final_metadata["1_track"]
 
 def test_select_best_unassigned_files_keeps_only_highest_tier_variant(tmp_path):
     lossless = tmp_path / "unassigned.aif"
@@ -186,6 +307,11 @@ def test_process_album_skips_llm_when_fast_track_matches(monkeypatch, tmp_path):
         None,
         {"status": "signal_alignment_inputs"},
     ))
+    monkeypatch.setattr(
+        processor.alignment_input_builder,
+        "build_fingerprint_album",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("FAST_TRACK must not fingerprint all tracks")),
+    )
 
     def fail_if_called(*args, **kwargs):
         raise AssertionError("LLM consolidation should not run during deterministic fast-track")

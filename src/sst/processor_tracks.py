@@ -12,6 +12,25 @@ from .track_grouper import TrackManager
 logger = logging.getLogger("sst.processor")
 
 
+def resolve_steam_track_index(
+    slot_key: Tuple[int, str],
+    steam_tracklist: List[Dict[str, Any]],
+) -> Optional[int]:
+    target_disc, target_number = slot_key
+    normalized_target_number = str(target_number).split("/")[0].strip().lstrip("0") or "0"
+    matching_indices = []
+    for index, steam_track in enumerate(steam_tracklist):
+        try:
+            steam_disc = int(steam_track.get("disc", 1) or 1)
+        except (TypeError, ValueError):
+            steam_disc = 1
+        steam_number = str(steam_track.get("number") or steam_track.get("track_number") or "0")
+        normalized_steam_number = steam_number.split("/")[0].strip().lstrip("0") or "0"
+        if steam_disc == target_disc and normalized_steam_number == normalized_target_number:
+            matching_indices.append(index)
+    return matching_indices[0] if len(matching_indices) == 1 else None
+
+
 def copy_with_retry(src: Path, dst: Path, retries: int = 3, initial_delay: float = 1.0) -> Dict[str, Any]:
     """Copy a file with retry, returning a structured record of attempts.
 
@@ -90,6 +109,10 @@ def process_single_track(
             instr = final_metadata.get(clean_title)
         if not instr:
             instr = {"action": "use_local_tag"}
+        if instr.get("matched_v_idx") is None:
+            steam_track_index = resolve_steam_track_index(slot_key, steam_meta.store_tracklist or [])
+            if steam_track_index is not None:
+                instr = {**instr, "matched_v_idx": steam_track_index}
 
         slot_variants = slot_variant_index.get(slot_key)
         if slot_variants is None:

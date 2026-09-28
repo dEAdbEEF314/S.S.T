@@ -228,6 +228,46 @@ def merge_embedded_tags_for_slot(slot_variants: List[Dict[str, Any]]) -> Dict[st
     return merged_tags
 
 
+def apply_mbz_track_artists_to_fast_track(
+    final_metadata: Dict[str, Dict[str, Any]],
+    steam_tracklist: List[Dict[str, Any]],
+    mbz_candidate: Optional[Dict[str, Any]],
+) -> int:
+    if not mbz_candidate:
+        return 0
+
+    steam_titles: Dict[str, List[int]] = {}
+    mbz_titles: Dict[str, List[Dict[str, Any]]] = {}
+    for slot_index, steam_track in enumerate(steam_tracklist):
+        title = str(steam_track.get("title") or steam_track.get("name") or "")
+        normalized = TrackManager.normalize_title(title)
+        if normalized:
+            steam_titles.setdefault(normalized, []).append(slot_index)
+    for mbz_track in mbz_candidate.get("tracks", []):
+        title = str(mbz_track.get("title") or "")
+        normalized = TrackManager.normalize_title(title)
+        if normalized and mbz_track.get("recording_artist"):
+            mbz_titles.setdefault(normalized, []).append(mbz_track)
+
+    applied = 0
+    for instruction in final_metadata.values():
+        slot_index = instruction.get("matched_v_idx")
+        if not isinstance(slot_index, int) or not 0 <= slot_index < len(steam_tracklist):
+            continue
+        steam_title = str(
+            steam_tracklist[slot_index].get("title")
+            or steam_tracklist[slot_index].get("name")
+            or ""
+        )
+        normalized = TrackManager.normalize_title(steam_title)
+        matching_slots = steam_titles.get(normalized, [])
+        matching_mbz_tracks = mbz_titles.get(normalized, [])
+        if len(matching_slots) == 1 and len(matching_mbz_tracks) == 1:
+            instruction["mbz_track_artist"] = matching_mbz_tracks[0]["recording_artist"]
+            applied += 1
+    return applied
+
+
 def safe_download_image(url: Optional[str], timeout: float = 15.0, max_bytes: int = 25 * 1024 * 1024) -> Optional[bytes]:
     """Downloads an image securely with URL scheme validation and a strict size limit."""
     if not url:
@@ -258,6 +298,7 @@ def fetch_album_artwork(
     mbz_candidates: List[Dict[str, Any]],
     track_groups: Optional[Dict] = None,
     mbz_artwork_candidate_provider: Optional[Callable[[], Optional[Dict[str, Any]]]] = None,
+    on_mbz_candidate: Optional[Callable[[Optional[Dict[str, Any]]], None]] = None,
 ) -> Optional[bytes]:
     # 1. EMBED (Local File)
     if track_groups:
@@ -271,6 +312,8 @@ def fetch_album_artwork(
     mbz_candidate = mbz_candidates[0] if mbz_candidates else None
     if mbz_candidate is None and mbz_artwork_candidate_provider:
         mbz_candidate = mbz_artwork_candidate_provider()
+    if on_mbz_candidate:
+        on_mbz_candidate(mbz_candidate)
     if mbz_candidate and mbz_candidate.get("mbid"):
         url = mbz_client.get_release_artwork_url(mbz_candidate["mbid"])
         if url:

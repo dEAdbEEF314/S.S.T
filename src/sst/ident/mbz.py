@@ -349,7 +349,8 @@ class MusicBrainzIdentifier:
                     if rec.get('title'):
                         mb_tracks_data.append({
                             "title": rec['title'],
-                            "position": str(t.get('position', '0'))
+                            "position": str(t.get('position', '0')),
+                            "recording_artist": rec.get("artist-credit-phrase"),
                         })
             
             if local_baseline and local_baseline.get("tracks") and mb_tracks_data:

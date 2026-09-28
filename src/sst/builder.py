@@ -145,7 +145,9 @@ class MetadataBuilder:
         # 2.2 TPE1 (Artist)
         # Priority: ACOUSTID recording artist -> MBZ release artist -> Steam Credits -> Developer
         res_artist = None
-        if mbz_track and isinstance(mbz_track, dict) and (mbz_track.get("recording_artist") or mbz_track.get("artist_credit")):
+        if instr.get("mbz_track_artist"):
+            res_artist = instr["mbz_track_artist"]
+        if not res_artist and mbz_track and isinstance(mbz_track, dict) and (mbz_track.get("recording_artist") or mbz_track.get("artist_credit")):
             res_artist = mbz_track.get("recording_artist") or mbz_track.get("artist_credit")
         if mbz_album and mbz_album.get("artist"):
             res_artist = res_artist or mbz_album.get("artist")

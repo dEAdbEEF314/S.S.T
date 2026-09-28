@@ -127,6 +127,7 @@ Generate an audit JSON object for aligning local files to STEAM slots.
 5. IDENTITY ALIASES: Game Developer (Steam) == Artist (MBZ), Publisher (Steam) == Label (MBZ).
    These are NOT contradictions.
 6. JUDGEMENT: prefer review when evidence is incomplete or contradictory.
+7. CONFIDENCE EVIDENCE: Ground album_confidence in the Steam, MBZ, and AcoustID fields actually present. In confidence_reason, state the strongest supporting signal and any material unresolved conflict. Do not lower identity confidence solely because local filenames contain track-number prefixes or format variants when Steam slot mapping independently resolves them. Do not ignore genuine artist, release-year, album-identity, or tracklist conflicts, and do not raise confidence to force Archive.
 
 **NOTE: All reasoning and text values (confidence_reason, semantic_label, global_tags) MUST be output in the language code: {user_language}. If {user_language} is "ja" (Japanese), you MUST write in native Japanese and strictly avoid Chinese characters or vocabulary. Keep confidence_reason EXTREMELY short and concise (under 50 characters) to save tokens.**
 

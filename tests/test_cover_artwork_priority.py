@@ -121,3 +121,25 @@ def test_lazy_mbz_artwork_candidate_precedes_steam_fallback():
     mbz_artwork_candidate_provider.assert_called_once_with()
     mock_mbz.get_release_artwork_url.assert_called_once_with("release-id")
     assert mock_get.call_args_list[0][0][0] == "https://example.com/mbz_cover.jpg"
+
+
+def test_lazy_mbz_candidate_is_also_returned_for_metadata_enrichment():
+    steam_meta = SteamMetadata(app_id=1006, name="MBZ OST")
+    candidate = {"mbid": "release-id", "tracks": [{"title": "Track", "recording_artist": "Artist"}]}
+    candidate_provider = MagicMock(return_value=candidate)
+    candidate_observer = MagicMock()
+    mock_mbz = MagicMock()
+    mock_mbz.get_release_artwork_url.return_value = None
+
+    fetch_album_artwork(
+        MagicMock(),
+        mock_mbz,
+        steam_meta,
+        [],
+        track_groups=None,
+        mbz_artwork_candidate_provider=candidate_provider,
+        on_mbz_candidate=candidate_observer,
+    )
+
+    candidate_provider.assert_called_once_with()
+    candidate_observer.assert_called_once_with(candidate)

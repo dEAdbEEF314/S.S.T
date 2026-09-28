@@ -63,7 +63,10 @@ AcoustID は全ファイル一律ではなく、一次候補フォーマット�
 - この集約はスロット候補の同定にのみ用いられ、変換元音源には最高 Tier のファイルが自動採用されます。
 - **単曲アルバムのトラック番号保持**: 単曲アルバム（曲数=1）において、Steam上のトラック番号がアルバム通番（例: Track 07）である場合、破損と誤判定せず Steam のトラック番号を正本としてそのまま出力タグへ反映します。
 - **監査レポートの理由表示整合性**: Fast-Track を通過したアルバムであっても、後段のバリデーションや音声変換で REVIEW に倒れた場合は、Fast-Track メッセージで上書きせず、実際の REVIEW 原因（音声破損、スロット不一致等）を明示します。
-- **APIC の部分例外**: FAST-TRACK のスロット判定・タグ決定は変えません。埋め込み画像が見つからない場合に限り、AcoustID を使わず MBZ_SEARCH をアート専用に実行し、Cover Art Archive の画像を試します。候補スコアは既存の閾値で判定し、画像を取得できなければ Steam 画像へフォールバックします。この検索結果はタグ用 MBZ 候補や監査上の選択候補には加えません。
+- **TPE1 の部分例外**: FAST-TRACKではAcoustID全曲走査を追加しません。埋め込み画像がないため遅延MBZ_SEARCHを実行したとき、閾値を通過した同一release候補から、正規化後に一意一致するSteam/MBZ trackのartist-creditだけを補完できます。スロット、曲順、アルバムレベルタグは変更しません。
+- **APIC の部分例外**: FAST-TRACK のスロット判定は変えず、埋め込み画像が見つからない場合に限りMBZ_SEARCHを遅延実行してCover Art Archiveを試します。候補スコアは既存閾値で判定し、画像が得られなければSteam画像へフォールバックします。同候補のartist-credit利用は上記TPE1規則に限定します。
+- **TIT2とSteam slot index**: 確定した`matched_v_idx`をタグ生成まで保持します。未設定の場合、Steamのdisc/track番号で一意対応するindexだけを復元し、そのSteam titleをTIT2に使います。曖昧なindexは推定しません。
+- **Identity confidenceの根拠**: LLMは入力されたSTEAM/MBZ/ACOUSTID signalに基づいて支持点と未解決矛盾を監査文へ記録します。filename prefixやformat variantだけによるidentity減点を避けますが、実質的なrelease/artist/year/tracklist矛盾を消さず、validator閾値も変更しません。
 
 ### 2.5 LLM アライメント
 

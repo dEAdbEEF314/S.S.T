@@ -1,4 +1,5 @@
 from sst.llm.organizer import LLMOrganizer
+from sst.llm.prompts import build_identity_prompt
 
 
 def make_organizer() -> LLMOrganizer:
@@ -20,6 +21,15 @@ def test_identity_result_normalization_adds_new_spec_aliases():
     assert normalized["data_quality"] == 73
     assert normalized["mapping_confidence"] == 0
     assert normalized["concerns"] == []
+
+
+def test_identity_prompt_requires_source_grounded_confidence_reasoning():
+    prompt = build_identity_prompt(
+        {"tracks": []}, None, None, {"tracks": []}, "ja"
+    )
+
+    assert "Ground album_confidence in the Steam, MBZ, and AcoustID fields" in prompt
+    assert "do not raise confidence to force Archive" in prompt
 
 
 def test_slot_view_preserves_compatibility_track_instructions():

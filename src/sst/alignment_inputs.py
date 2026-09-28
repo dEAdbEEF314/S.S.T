@@ -128,6 +128,18 @@ class AlignmentInputBuilder:
             m_pos = int(medium.get("position", 1))
             for track in medium.get("track-list", []):
                 recording = track.get("recording", {})
+                recording_artist = recording.get("artist-credit-phrase")
+                if not recording_artist:
+                    artist_parts = []
+                    for credit in recording.get("artist-credit", []):
+                        if isinstance(credit, dict):
+                            artist = credit.get("name") or credit.get("artist", {}).get("name")
+                            if artist:
+                                artist_parts.append(str(artist))
+                            artist_parts.append(str(credit.get("joinphrase") or ""))
+                        elif credit:
+                            artist_parts.append(str(credit))
+                    recording_artist = "".join(artist_parts).strip() or None
                 
                 # Parse relationships (Composer, Lyricist, etc.)
                 credits = {"composer": [], "lyricist": [], "arranger": [], "remixer": []}
@@ -150,6 +162,7 @@ class AlignmentInputBuilder:
                     "title": recording.get("title") or track.get("title"),
                     "duration_ms": int(track.get("length") or recording.get("length") or 0),
                     "mbid": recording.get("id"),
+                    "recording_artist": recording_artist,
                     "credits": {k: ", ".join(v) if v else None for k, v in credits.items()}
                 })
 
@@ -165,6 +178,7 @@ class AlignmentInputBuilder:
             
             best_match = None
             best_score = -1.0
+            acoustid_mbid = top_acoustid.get("mbid")
             
             for i, mb_t in enumerate(mb_all_tracks):
                 if i in used_mb_indices:
@@ -183,6 +197,15 @@ class AlignmentInputBuilder:
             if best_match:
                 used_mb_indices.add(mb_all_tracks.index(best_match))
                 matched_count += 1
+                exact_mbz_match = next(
+                    (mb_t for mb_t in mb_all_tracks if acoustid_mbid and mb_t.get("mbid") == acoustid_mbid),
+                    None,
+                )
+                mbz_track_artist = None
+                if exact_mbz_match:
+                    mbz_track_artist = exact_mbz_match.get("recording_artist")
+                elif best_score >= 0.95:
+                    mbz_track_artist = best_match.get("recording_artist")
                 signal_bundle["tracks"].append({
                     "local_key": key,
                     "disc": best_match["disc"],
@@ -191,6 +214,7 @@ class AlignmentInputBuilder:
                     "duration_ms": best_match["duration_ms"],
                     "mbid": best_match["mbid"],
                     "recording_artist": top_acoustid.get("artist"),
+                    "mbz_track_artist": mbz_track_artist,
                     "credits": best_match["credits"],
                     "mbz_track_index": mb_all_tracks.index(best_match)
                 })
@@ -203,6 +227,7 @@ class AlignmentInputBuilder:
                     "duration_ms": None,
                     "mbid": None,
                     "recording_artist": top_acoustid.get("artist"),
+                    "mbz_track_artist": None,
                     "credits": None,
                     "mbz_track_index": None
                 })
@@ -266,6 +291,7 @@ class AlignmentInputBuilder:
                 "disc": 1, # Simplified, mbz text search tracks don't always retain disc cleanly in the summary list
                 "track_num": track.get("position"),
                 "title": track.get("title"),
+                "recording_artist": track.get("recording_artist"),
                 "duration_ms": None, # Search summary often lacks duration
                 "mbid": None, # Recording ID not available in brief summary
                 "mbz_track_index": idx

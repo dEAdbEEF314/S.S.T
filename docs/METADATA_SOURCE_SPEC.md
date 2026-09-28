@@ -40,9 +40,9 @@
 ┌──────────────────────────┐  ┌────────────────────────────────────────────┐
 │ ⚡ FAST_TRACK 確定        │  │ 4. オンデマンド信号収集 & One-Shot LLM整列 │
 │ ・LLM推論を完全バイパス   │  │    ・CPU並列 fpcalc による波形計算        │
-│ ・AcoustID/タグ用MBZ照会をスキップ│  │    ・未解決トラックのみ AcoustID/MBZ 照会 │
+│ ・artistはAPIC用MBZ_SEARCHから一意補完│  │    ・未解決トラックのみ AcoustID/MBZ 照会 │
 │ ・APIC欠落時のみMBZ画像検索   │  │                                            │
-│ ・所要時間: 0.2秒/アルバム│  │    ・Tesla V100 による One-Shot スロット整列│
+│ ・照会時の所要時間はAPI依存│  │    ・Tesla V100 による One-Shot スロット整列│
 └──────┬───────────────────┘  └──────────────────┬─────────────────────────┘
        │                                         │
        ▼                                         ▼
@@ -71,13 +71,17 @@
 
 | 経路コード | 表示名称 | 判定条件 | 外部API / LLMの挙動 |
 | :--- | :--- | :--- | :--- |
-| `FAST_TRACK` | `⚡ FAST_TRACK` | Steamスロットとローカルファイル名・トラック番号・音源長が1:1完全一致 | **LLM・AcoustID・タグ用MBZ照会をバイパス**。ただし埋め込みAPICがない場合のみ、アート専用MBZ_SEARCHを許可 |
+| `FAST_TRACK` | `⚡ FAST_TRACK` | Steamスロットとローカルファイル名・トラック番号・音源長が1:1完全一致 | **LLM・独立AcoustID照会・通常のMBZ候補選定をバイパス**。埋め込みAPICがない場合のみMBZ_SEARCHを遅延実行し、同じ候補のtrack artistを厳格な一意一致で任意補完 |
 | `LLM_ONE_SHOT` | `🧠 LLM_ONE_SHOT` | Fast-Track不成立（揺れ・バリアントあり）かつ150曲以下 | オンデマンドで信号収集し、**1回のOne-Shot LLM推論**で全曲確定 |
 | `LLM_CHUNKED` | `🧩 LLM_CHUNKED` | 超特大アルバムで分割チャンク処理が発動した場合 | 複数回の分割チャンク推論で段階的整列 |
 | `SKIP_NO_AUDIO` | `⏩ SKIP_NO_AUDIO` | ディレクトリ内に音声ファイルが存在しない場合 | スキップ（DB保存なし） |
 | `ERROR` | `❌ ERROR` | ファイル破損や致命的エラーが発生した場合 | エラー記録 |
 
-FAST_TRACK の APIC 例外では、埋め込み画像を先に検索し、見つからない場合にのみ MBZ_SEARCH を遅延実行する。既存の `min_mbz_search_score_threshold` を適用し、候補の MBID はカバーアート取得にだけ使う。AcoustID フィンガープリントや LLM 整列は実行せず、候補をタグ構築・通常の MBZ 候補一覧へ渡さない。候補または画像を取得できない場合は Steam 画像へフォールバックする。
+FAST_TRACK のTPE1補完では、APIC欠落時にだけ実行される遅延MBZ_SEARCHの選択候補を再利用し、追加のAcoustID全曲走査やMBZ API要求は行わない。Steam slot titleとMBZ recording titleが正規化後に双方で一意一致し、artist-creditが存在する場合だけそのTPE1へ適用する。候補は既存の`min_mbz_search_score_threshold`を通過した場合に限り、候補選定やアルバムレベルメタデータには使わない。埋め込みAPICがある場合、候補が閾値未満の場合、一意一致しない場合、またはartist-creditがない場合はartistを補完しない。検索失敗はFAST_TRACKの成立・検証結果へ影響しない。
+
+FAST_TRACK の APIC 例外では、埋め込み画像を先に検索し、見つからない場合にのみ MBZ_SEARCH を遅延実行する。既存の`min_mbz_search_score_threshold`を適用し、候補MBIDはカバーアート取得に使用する。候補または画像を取得できない場合はSteam画像へフォールバックする。
+
+FAST_TRACKでは、タグ構築時に`matched_v_idx`が未設定の場合、Steamの`(disc, track_number)`と1:1で一意対応するindexだけを補完する。このindexが指すSteam titleをTIT2の正本とする。番号対応が欠落または重複する場合は推定しない。
 
 ---
 
@@ -599,6 +603,8 @@ STEAMスロットN に対してフィールドF のEMBEDデータが必要:
 | **album_confidence** | アルバム同一性の確信度 | LLMアライメント出力 / ファストトラック時はシステム算出 |
 | **mapping_confidence** | トラックマッピングの品質 | LLMが出力した各スロットの信頼度の最小値 × 100 |
 | **data_quality** | メタデータの充足度 | 必須フィールド（TIT2, TRCK, TPE1）の充足率 |
+
+LLMのalbum identity confidenceは、実際に与えられたSTEAM/MBZ/ACOUSTID signalの一致と矛盾に根拠を置く。`confidence_reason`は最も強い支持根拠を、`concerns`は解消していない重要な矛盾を簡潔に記録する。ローカルファイル名の番号prefixや形式バリアントだけでidentity confidenceを下げず、Steam slot対応が解決してもartist・年・作品同一性・トラックリストの実質的矛盾は無視しない。confidenceの加点やArchive目的の閾値緩和は禁止する。
 
 ### 11.2 閾値定義
 

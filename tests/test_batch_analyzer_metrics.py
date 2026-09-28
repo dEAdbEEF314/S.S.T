@@ -59,3 +59,9 @@ def test_parse_llm_log_counts_failures_and_empty_response_attempts(tmp_path):
     assert mapping["count"] == 1
     assert mapping["success_count"] == 1
     assert mapping["failure_count"] == 0
+
+
+def test_album_confidence_review_is_classified_as_low_confidence():
+    module = _load_metrics_module()
+
+    assert module.classify_review_pattern({}, "[Album confidence too low (85%)]") == "LOW_CONFIDENCE"
