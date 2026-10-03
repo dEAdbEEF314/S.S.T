@@ -56,10 +56,24 @@ class LocalProcessor:
             config.mbz_contact,
             scoring_config=config.build_mbz_scoring_config(),
             db=self.db,
+            rate_limit_delay=getattr(config, "mbz_rate_limit_delay", 1.0),
+            search_limit=getattr(config, "mbz_search_limit", 20),
         )
         from .ident.acoustid import AcoustIDIdentifier
-        self.acoustid = AcoustIDIdentifier(config.acoustid_api_key, db=self.db)
-        self.alignment_input_builder = AlignmentInputBuilder(self.acoustid, self.mbz, fingerprint_all=config.fingerprint_all, min_mbz_search_score_threshold=config.min_mbz_search_score_threshold)
+        self.acoustid = AcoustIDIdentifier(
+            config.acoustid_api_key,
+            db=self.db,
+            rate_limit_min=getattr(config, "acoustid_rate_limit_wait_min", 1.5),
+            rate_limit_max=getattr(config, "acoustid_rate_limit_wait_max", 2.0),
+            timeout=getattr(config, "acoustid_timeout", 10.0),
+        )
+        self.alignment_input_builder = AlignmentInputBuilder(
+            self.acoustid,
+            self.mbz,
+            fingerprint_all=config.fingerprint_all,
+            min_mbz_search_score_threshold=config.min_mbz_search_score_threshold,
+            fingerprint_sample_size=getattr(config, "sst_fingerprint_sample_size", 3),
+        )
         self.llm = LLMOrganizer(**config.build_llm_organizer_kwargs())
         self.working_dir = Path(config.sst_working_dir)
         self._deferred_copy_finalizers: Dict[int, Callable[[], LocalProcessResult]] = {}
@@ -809,7 +823,16 @@ class LocalProcessor:
 
         diagnostics["packager_invoked"] = True
         _diag("PACKAGE_SAVE_START", status=status, output_root=self.config.sst_output_dir)
-        PackageManager.save_local_package(app_id, status, steam_meta.name, temp_output, log_bundle, self.config.sst_output_dir)
+        PackageManager.save_local_package(
+            app_id,
+            status,
+            steam_meta.name,
+            temp_output,
+            log_bundle,
+            self.config.sst_output_dir,
+            compression_strategy=getattr(self.config, "zip_compression_strategy", "auto"),
+            deflate_level=getattr(self.config, "zip_deflate_level", 1),
+        )
         _diag("PACKAGE_SAVE_DONE", status=status)
         self.db.record_processed(app_id, status, steam_meta.name, self._get_localized_now().isoformat(), summary_meta)
         return LocalProcessResult(app_id=app_id, status=status, album_name=steam_meta.name, confidence_score=score, confidence_reason=reason, message=message, metadata=summary_meta)

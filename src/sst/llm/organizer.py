@@ -42,7 +42,11 @@ class LLMOrganizer:
                  adaptive_degraded_prompt_enabled: bool = True,
                  llm_cache_enabled: bool = True,
                  llm_cache_ttl_seconds: int = 86400,
-                 llm_cache_path: str = "data/llm_cache.json"):
+                 llm_cache_path: str = "data/llm_cache.json",
+                 retry_delay: float = 5.0,
+                 retry_backoff: float = 1.5,
+                 health_check_timeout: float = 10.0,
+                 **kwargs):
         self.user_language = user_language
         self.llm_backend = llm_backend.upper()
         self.llm_request_parallelism_enabled = llm_request_parallelism_enabled
@@ -70,7 +74,10 @@ class LLMOrganizer:
             request_timeout=request_timeout, chunk_output_tokens_per_track=chunk_output_tokens_per_track,
             max_retries=max_retries,
             output_budget_safety_ratio=output_budget_safety_ratio,
-            adaptive_degraded_prompt_enabled=adaptive_degraded_prompt_enabled
+            adaptive_degraded_prompt_enabled=adaptive_degraded_prompt_enabled,
+            retry_delay=retry_delay,
+            retry_backoff=retry_backoff,
+            health_check_timeout=health_check_timeout,
         )
 
     def set_vram_manager(self, vram_manager: Any):

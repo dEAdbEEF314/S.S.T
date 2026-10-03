@@ -15,12 +15,39 @@ logger = logging.getLogger(__name__)
 MUSIC_EXTENSIONS = {".flac", ".wav", ".mp3", ".aiff", ".aif", ".m4a", ".ogg"}
 
 class SteamScanner:
-    def __init__(self, install_path: str, db: DatabaseManager, bridge_url: str, bridge_api_key: Optional[str] = None, api_key: Optional[str] = None, override_library_path: Optional[str] = None, cache_path: str = "data/scout_cache.json", language: str = "japanese", tag_refresh_days: int = 30, llm_extractor: Any = None):
+    def __init__(
+        self,
+        install_path: str,
+        db: DatabaseManager,
+        bridge_url: str,
+        bridge_api_key: Optional[str] = None,
+        api_key: Optional[str] = None,
+        override_library_path: Optional[str] = None,
+        cache_path: str = "data/scout_cache.json",
+        language: str = "japanese",
+        tag_refresh_days: int = 30,
+        llm_extractor: Any = None,
+        api_timeout: float = 15.0,
+        pics_timeout: float = 30.0,
+        max_retries: int = 3,
+        throttle_delay: float = 2.0,
+    ):
         self.install_path = ensure_path(install_path)
         self.db = db
         
         self.cache_manager = ScannerCacheManager(cache_path, tag_refresh_days=tag_refresh_days)
-        self.web_client = SteamWebClient(db, bridge_url, bridge_api_key, api_key, language, llm_extractor=llm_extractor)
+        self.web_client = SteamWebClient(
+            db,
+            bridge_url,
+            bridge_api_key,
+            api_key,
+            language,
+            llm_extractor=llm_extractor,
+            api_timeout=api_timeout,
+            pics_timeout=pics_timeout,
+            max_retries=max_retries,
+            throttle_delay=throttle_delay,
+        )
         
         # 1. Discover all libraries
         self.library_paths = self._discover_all_libraries(override_library_path)

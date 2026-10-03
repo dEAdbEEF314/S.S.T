@@ -4,23 +4,28 @@ import time
 from typing import Dict, Any, List
 from datetime import datetime
 
+from .utils import sanitize_log_text
+
 logger = logging.getLogger("sst.notify")
 
 class NotificationManager:
     def __init__(self, config: Any):
-        self.enabled = config.notify_enabled
-        self.cooldown = config.notify_cooldown
+        self.config = config
+        self.enabled = getattr(config, "notify_enabled", False)
+        self.cooldown = getattr(config, "notify_cooldown", 60)
+        self.mask_secrets_enabled = getattr(config, "security_mask_secrets_in_logs", True)
         self.webhooks = {
-            "critical": config.discord_webhook_critical,
-            "warning": config.discord_webhook_warning,
-            "info": config.discord_webhook_info,
-            "completion": config.discord_webhook_completion
+            "critical": getattr(config, "discord_webhook_critical", None),
+            "warning": getattr(config, "discord_webhook_warning", None),
+            "info": getattr(config, "discord_webhook_info", None),
+            "completion": getattr(config, "discord_webhook_completion", None),
         }
         self.last_sent: Dict[str, float] = {} # { "key": timestamp }
 
     def notify(self, level: str, title: str, message: str, fields: List[Dict[str, str]] = None, color: int = 0x3498db):
         """
         Sends a Discord notification via Webhook with an Embed.
+        Protects sensitive webhook URLs and secrets from leaking into logs.
         """
         if not self.enabled:
             return
@@ -50,7 +55,8 @@ class NotificationManager:
             embed["fields"] = fields
 
         payload = {"embeds": [embed]}
-
+        
+        known_secrets = [v for v in self.webhooks.values() if v]
         max_retries = 3
         retry_delay = 2
         for attempt in range(max_retries):
@@ -60,14 +66,16 @@ class NotificationManager:
                 self.last_sent[cooldown_key] = now
                 logger.debug(f"Discordへの通知を送信しました: [{level}] {title}")
                 if message:
-                    logger.debug(f"通知内容:\n{message}")
+                    clean_msg = sanitize_log_text(message, known_secrets) if self.mask_secrets_enabled else message
+                    logger.debug(f"通知内容:\n{clean_msg}")
                 break
             except Exception as e:
+                err_msg = sanitize_log_text(str(e), known_secrets) if self.mask_secrets_enabled else str(e)
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay)
                     retry_delay *= 1.5
                 else:
-                    logger.error(f"Discordへの通知送信に失敗しました (3回再試行): {e}")
+                    logger.error(f"Discordへの通知送信に失敗しました (3 回再試行): {err_msg}")
 
     def notify_critical(self, title: str, message: str, fields: List[Dict[str, str]] = None):
         self.notify("critical", f"🚨 {title}", message, fields, color=0xe74c3c) # Red

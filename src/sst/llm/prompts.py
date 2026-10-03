@@ -209,24 +209,24 @@ def build_degraded_prompt(original_prompt: str, request_kind: str, user_language
         marker = "### OUTPUT FORMAT"
         if marker in original_prompt:
             prefix = original_prompt.split(marker)[0].rstrip()
-            return prefix + f"""
+            return prefix + """
 
 ### [EMERGENCY DEGRADED OUTPUT FORMAT - MINIMAL JSON ONLY]
 **PREVIOUS ATTEMPT FAILED OR TRUNCATED. OMIT ALL EXPLANATIONS, REASONS, AND CONCERNS TO FIT BUDGET.**
 Return ONLY this minimal raw JSON object without markdown or reasoning:
-{{
+{
   "album_confidence": 0-100,
   "mapping_confidence": 0-100,
   "data_quality": 0-100,
   "strategy": "ACOUSTID_BASED" | "STEAM_BASED" | "LOCAL_BASED" | "MBZ_SEARCH_BASED" | "HYBRID",
-  "global_tags": {{
+  "global_tags": {
     "canonical_album_artist": "...",
     "canonical_genre": "...",
     "canonical_year": "YYYY",
     "canonical_label": "...",
     "chosen_mbz_id": "..."
-  }}
-}}
+  }
+}
 """
     elif request_kind == "track_mapping":
         marker = "### MANDATORY OUTPUT FORMAT (JSON ONLY):"

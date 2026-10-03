@@ -114,7 +114,7 @@ def process_single_track(
         if instr.get("matched_v_idx") is None:
             steam_track_index = resolve_steam_track_index(slot_key, steam_meta.store_tracklist or [])
             if steam_track_index is not None:
-                instr = {**instr, "matched_v_idx": steam_track_index}
+                instr = {**instr, "matched_v_idx": steam_track_index, "reason": "STEAM_SLOT_MATCH"}
 
         slot_variants = slot_variant_index.get(slot_key)
         if slot_variants is None:
@@ -209,7 +209,7 @@ def process_single_track(
                 "file_path": f"{disc_subdir}/{processed_path.name}",
                 "original_filename": adopted_info["path"].name,
                 "tags": tag_map,
-                "source": instr.get("reason", "Fallback"),
+                "source": instr.get("reason") or ("STEAM" if tag_map.get("title_source") == "STEAM" else "Fallback"),
                 "title_source": tag_map.get("title_source", "UNKNOWN"),
                 "slot_key": f"{slot_key[0]}_{slot_key[1]}",
                 "tier_rank": adopted_info.get("tier_rank", 999),

@@ -12,7 +12,7 @@ class EmbeddedMetadataExtractor:
     @staticmethod
     def extract(file_path: Path) -> Dict[str, Any]:
         """
-        Extracts tags and cover art presence from a file.
+        Extracts tags, duration, and cover art presence from a file.
         Returns a normalized dictionary of tags.
         """
         try:
@@ -20,6 +20,12 @@ class EmbeddedMetadataExtractor:
             if audio is None:
                 logger.warning(f"Could not parse metadata for: {file_path}")
                 return {}
+
+            duration = 0.0
+            if getattr(audio, "info", None) is not None:
+                length = getattr(audio.info, "length", None)
+                if length is not None and isinstance(length, (int, float)) and length > 0:
+                    duration = float(length)
 
             # Basic tags
             metadata = {
@@ -31,7 +37,8 @@ class EmbeddedMetadataExtractor:
                 "disc_number": audio.get("discnumber", [None])[0],
                 "year": audio.get("date", [None])[0],
                 "comment": audio.get("comment", [None])[0],
-                "has_artwork": False
+                "has_artwork": False,
+                "duration": duration,
             }
 
             # Check for artwork and additional tags (APIC/COMM in ID3 or other formats)
@@ -69,7 +76,6 @@ class EmbeddedMetadataExtractor:
                 logger.debug(f"Artwork check failed for {file_path}: {e}")
 
             return {k: v for k, v in metadata.items() if v is not None}
-
         except Exception as e:
             logger.error(f"Error extracting metadata from {file_path}: {e}")
             return {}

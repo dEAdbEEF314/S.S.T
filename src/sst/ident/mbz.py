@@ -9,9 +9,20 @@ from difflib import SequenceMatcher
 logger = logging.getLogger("sst.ident.mbz")
 
 class MusicBrainzIdentifier:
-    def __init__(self, app_name: str, version: str, contact: str, scoring_config: Optional[Dict[str, Any]] = None, db=None):
+    def __init__(
+        self,
+        app_name: str,
+        version: str,
+        contact: str,
+        scoring_config: Optional[Dict[str, Any]] = None,
+        db=None,
+        rate_limit_delay: float = 1.0,
+        search_limit: int = 20,
+    ):
         musicbrainzngs.set_useragent(app_name, version, contact)
         self.db = db
+        self.rate_limit_delay = float(rate_limit_delay)
+        self.search_limit = int(search_limit)
         self.scores = scoring_config or {
             "direct_steam_link": 500,
             "parent_steam_link": 300,
@@ -47,7 +58,7 @@ class MusicBrainzIdentifier:
                 return cached
             
         try:
-            time.sleep(1.1)
+            time.sleep(self.rate_limit_delay)
             res = musicbrainzngs.get_release_by_id(mbid, includes=includes)
             release_data = res.get('release', {})
             if self.db and release_data:
@@ -67,7 +78,7 @@ class MusicBrainzIdentifier:
                 return cached
             
         try:
-            time.sleep(1.1)
+            time.sleep(self.rate_limit_delay)
             res = musicbrainzngs.get_recording_by_id(mbid, includes=includes)
             rec_data = res.get('recording', {})
             if self.db and rec_data:
@@ -152,9 +163,9 @@ class MusicBrainzIdentifier:
                 
         if not all_raw_releases and cached_search is None:
             try:
-                time.sleep(1.1)
+                time.sleep(self.rate_limit_delay)
                 # 1. Primary: Text-based search
-                result = musicbrainzngs.search_releases(release=album_name, limit=20)
+                result = musicbrainzngs.search_releases(release=album_name, limit=self.search_limit)
                 all_raw_releases = result.get('release-list', [])
                 if self.db:
                     self.db.set_api_cache("mbz", search_cache_key, all_raw_releases)

@@ -2,13 +2,42 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Any, Optional
 import os
+import stat
+import logging
+
+logger = logging.getLogger("sst.config")
 
 DEFAULT_TITLE_CLEANING_TRUSTED_SOURCES = "MBZ,FINGERPRINT"
 DEFAULT_METADATA_SOURCE_PRIORITY = "STEAM,ACOUSTID,MBZ_RELEASE,MBZ_SEARCH,EMBED,LOCAL"
 
 
+def check_env_security(env_path: str = ".env") -> None:
+    """
+    Checks whether the .env file has overly permissive file permissions on POSIX systems.
+    Warns the user to secure API keys and tokens if world-readable.
+    """
+    try:
+        if os.path.exists(env_path) and os.name == "posix":
+            file_stat = os.stat(env_path)
+            mode = file_stat.st_mode
+            if mode & stat.S_IROTH:
+                logger.warning(
+                    f"セキュリティ警告: '{env_path}' が他ユーザーから読み取り可能です（パーミッション: {oct(mode)[-3:]}）。"
+                    "APIキーやシークレット保護のため 'chmod 600 .env' を推奨します。"
+                )
+    except Exception as e:
+        logger.debug(f"環境設定ファイル権限チェック中にエラー: {e}")
+
+
 class Config(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore", env_ignore_empty=True, case_sensitive=False, env_prefix="")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore",
+        env_ignore_empty=True,
+        case_sensitive=False,
+        env_prefix=""
+    )
+
     steam_install_path: str
     steam_library_path: Optional[str] = None
     sst_working_dir: str = "/tmp/sst-work"
@@ -21,6 +50,14 @@ class Config(BaseSettings):
     user_language: str = "ja"
     steam_tag_cache_refresh_days: int = 30
     log_level: str = "INFO"
+
+    # Steam / Store API Timeout & Retry Controls
+    steam_api_timeout: float = 15.0
+    steam_pics_timeout: float = 30.0
+    steam_api_max_retries: int = 3
+    steam_throttle_delay: float = 2.0
+
+    # LLM Settings
     llm_backend: str = "GEMINI"
     llm_base_url: str = "http://localhost:11434"
     llm_api_key: Optional[str] = None
@@ -34,6 +71,10 @@ class Config(BaseSettings):
     llm_ollama_num_ctx: int = 32768
     llm_ollama_num_predict: int = 8192
     llm_ollama_think: bool = False
+    llm_health_check_timeout: float = 10.0
+    llm_retry_delay: float = 5.0
+    llm_retry_backoff: float = 1.5
+
     # Ollama's llama-server defaults to four concurrent sequence slots in the
     # production service. Keep the client-side album pool no larger than that
     # unless the service is explicitly configured with a different -np value.
@@ -69,12 +110,25 @@ class Config(BaseSettings):
     fingerprint_all: bool = True
     auto_audit_enabled: bool = True
 
-    # LLM結果キャッシュ（提案7: 検証を弱めない）
+    # LLM結果キャッシュ
     sst_llm_cache_enabled: bool = True
     sst_llm_cache_ttl_seconds: int = 86400
     sst_llm_cache_path: str = "data/llm_cache.json"
     sst_deferred_copy_delay_seconds: int = Field(default=600, ge=0)
     
+    # Audio, Packaging & Performance
+    zip_compression_strategy: str = "auto"  # auto | stored | deflate
+    zip_deflate_level: int = 1
+    ffprobe_timeout: float = 10.0
+    ffmpeg_timeout: float = 600.0
+    image_download_timeout: float = 15.0
+    image_download_max_bytes: int = 25 * 1024 * 1024
+    sst_fingerprint_sample_size: int = 3
+
+    # Security
+    security_block_private_ips: bool = True
+    security_mask_secrets_in_logs: bool = True
+
     # MusicBrainz Scoring Settings
     score_mbz_direct_steam_link: int = 500
     score_mbz_parent_steam_link: int = 300
@@ -95,15 +149,23 @@ class Config(BaseSettings):
     score_mbz_publisher_label_match: int = 100
     min_mbz_search_score_threshold: int = 250
 
+    # MusicBrainz & AcoustID Network Controls
+    mbz_app_name: str = "SST-Scout"
+    mbz_app_version: str = "1.0.0"
+    mbz_contact: str = "contact@example.lan"
+    mbz_rate_limit_delay: float = 1.0
+    mbz_search_limit: int = 20
+    acoustid_api_key: Optional[str] = None
+    acoustid_timeout: float = 10.0
+    acoustid_rate_limit_wait_min: float = 1.5
+    acoustid_rate_limit_wait_max: float = 2.0
+
     # Compatibility settings retained during the migration away from the old spec.
     title_cleaning_trusted_sources: str = DEFAULT_TITLE_CLEANING_TRUSTED_SOURCES
     metadata_source_priority: Optional[str] = None
     metadata_field_fallback_priority: str = DEFAULT_METADATA_SOURCE_PRIORITY
 
-    mbz_app_name: str = "SST-Scout"
-    mbz_app_version: str = "1.0.0"
-    mbz_contact: str = "contact@example.lan"
-    acoustid_api_key: Optional[str] = None
+    # Notifications
     notify_enabled: bool = False
     notify_cooldown: int = 60
     discord_webhook_critical: Optional[str] = None
@@ -115,14 +177,23 @@ class Config(BaseSettings):
         def try_set(key, env_var):
             val = os.getenv(env_var)
             if val is not None:
-                if isinstance(getattr(self, key), bool):
+                current = getattr(self, key, None)
+                if isinstance(current, bool):
                     setattr(self, key, val.lower() == "true")
-                elif isinstance(getattr(self, key), int):
+                elif isinstance(current, int):
                     setattr(self, key, int(val))
+                elif isinstance(current, float):
+                    setattr(self, key, float(val))
                 else:
                     setattr(self, key, val)
 
         try_set("fingerprint_all", "SST_FINGERPRINT_ALL")
+        try_set("sst_fingerprint_sample_size", "SST_FINGERPRINT_SAMPLE_SIZE")
+        try_set("zip_compression_strategy", "ZIP_COMPRESSION_STRATEGY")
+        try_set("zip_deflate_level", "ZIP_DEFLATE_LEVEL")
+        try_set("security_block_private_ips", "SECURITY_BLOCK_PRIVATE_IPS")
+        try_set("security_mask_secrets_in_logs", "SECURITY_MASK_SECRETS_IN_LOGS")
+        check_env_security()
         return self
 
     @property
@@ -184,6 +255,9 @@ class Config(BaseSettings):
             "llm_cache_enabled": self.sst_llm_cache_enabled,
             "llm_cache_ttl_seconds": self.sst_llm_cache_ttl_seconds,
             "llm_cache_path": self.sst_llm_cache_path,
+            "retry_delay": self.llm_retry_delay,
+            "retry_backoff": self.llm_retry_backoff,
+            "health_check_timeout": self.llm_health_check_timeout,
         }
 
     def resolve_llm_num_ctx_cap(self, tier_name: str) -> int:

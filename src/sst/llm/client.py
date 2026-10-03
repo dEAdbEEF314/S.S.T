@@ -32,7 +32,11 @@ class LLMClient:
                  max_retries: int = 3,
                  output_budget_safety_ratio: float = 0.25,
                  adaptive_degraded_prompt_enabled: bool = True,
-                 user_language: str = "ja"):
+                 user_language: str = "ja",
+                 retry_delay: float = 5.0,
+                 retry_backoff: float = 1.5,
+                 health_check_timeout: float = 10.0,
+                 **kwargs):
         self.base_url = base_url.rstrip('/')
         self.api_key = api_key
         self.model = model
@@ -50,6 +54,9 @@ class LLMClient:
         self.output_budget_safety_ratio = max(0.0, output_budget_safety_ratio)
         self.adaptive_degraded_prompt_enabled = adaptive_degraded_prompt_enabled
         self.user_language = user_language
+        self.retry_delay = float(retry_delay)
+        self.retry_backoff = float(retry_backoff)
+        self.health_check_timeout = float(health_check_timeout)
         self.limiter = DistributedRateLimiter(rpm, tpm, rpd)
         self.vram_manager = None
 
@@ -77,7 +84,7 @@ class LLMClient:
         try:
             if self.llm_backend == "OLLAMA":
                 url = f"{self.base_url}/api/tags"
-                response = requests.get(url, timeout=5)
+                response = requests.get(url, timeout=self.health_check_timeout)
                 if response.status_code == 200:
                     logger.info(f"Ollamaサーバーとの接続に成功しました: {self.base_url}")
                     return True
@@ -104,7 +111,7 @@ class LLMClient:
                     url = f"{self.base_url}/v1/models"
                     
                 headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-                response = requests.get(url, headers=headers, timeout=10)
+                response = requests.get(url, headers=headers, timeout=self.health_check_timeout)
                 
                 if response.status_code == 200:
                     logger.info(f"{self.llm_backend} との接続およびAPIキーの有効性を確認しました。")
@@ -155,7 +162,7 @@ class LLMClient:
             return None, log_entry
 
         max_retries = self.max_retries
-        retry_delay = 5
+        retry_delay = self.retry_delay
         effective_num_ctx = num_ctx or self.ollama_num_ctx
         request_enqueued = time.monotonic()
         request_started = request_enqueued
@@ -314,7 +321,7 @@ class LLMClient:
                                     payload["messages"] = current_messages
                                 jitter = random.uniform(0.8, 1.2)
                                 time.sleep(retry_delay * jitter)
-                                retry_delay *= 1.5
+                                retry_delay *= self.retry_backoff
                                 continue
 
                             if self.llm_backend == "OLLAMA" and attempt < max_retries:
@@ -468,7 +475,7 @@ class LLMClient:
                                 payload["messages"] = current_messages
                         jitter = random.uniform(0.8, 1.2)
                         time.sleep(retry_delay * jitter)
-                        retry_delay *= 1.5
+                        retry_delay *= self.retry_backoff
                         continue
                     return None, log_entry
 
@@ -499,7 +506,7 @@ class LLMClient:
                                 payload["messages"] = current_messages
                         jitter = random.uniform(0.8, 1.2)
                         time.sleep(retry_delay * jitter)
-                        retry_delay *= 1.5
+                        retry_delay *= self.retry_backoff
                         continue
                     log_entry["error"] = str(e)
                     logger.info(

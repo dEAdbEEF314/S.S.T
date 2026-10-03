@@ -8,6 +8,7 @@ import requests
 
 from .models import SteamMetadata
 from .track_grouper import TrackManager
+from .utils import safe_validate_url
 
 logger = logging.getLogger("sst.processor")
 
@@ -336,21 +337,47 @@ def apply_mbz_track_artists_to_fast_track(
     return applied
 
 
-def safe_download_image(url: Optional[str], timeout: float = 15.0, max_bytes: int = 25 * 1024 * 1024) -> Optional[bytes]:
-    """Downloads an image securely with URL scheme validation and a strict size limit."""
+def safe_download_image(
+    url: Optional[str],
+    timeout: float = 15.0,
+    max_bytes: int = 25 * 1024 * 1024,
+    block_private: bool = True,
+) -> Optional[bytes]:
+    """Downloads an image securely with URL scheme validation, SSRF guard, and strict size limit."""
     if not url:
         return None
-    parsed = str(url).strip()
-    if not (parsed.startswith("http://") or parsed.startswith("https://")):
-        logger.warning(f"安全ガード: 不正なURLスキームを拒否しました: {url}")
+
+    block_private_bool = block_private if isinstance(block_private, bool) else True
+    valid, reason = safe_validate_url(url, block_private=block_private_bool)
+    if not valid:
+        logger.warning(f"安全ガード: 画像URLを拒否しました ({reason}): {url}")
         return None
+
     try:
-        r = requests.get(parsed, timeout=timeout)
-        if r.status_code == 200:
-            content = r.content
+        timeout_float = float(timeout) if isinstance(timeout, (int, float)) else 15.0
+        max_bytes_int = int(max_bytes) if isinstance(max_bytes, (int, float)) else 25 * 1024 * 1024
+    except Exception:
+        timeout_float = 15.0
+        max_bytes_int = 25 * 1024 * 1024
+
+    try:
+        r = requests.get(str(url).strip(), timeout=timeout_float)
+        if getattr(r, "status_code", None) == 200:
+            headers_dict = getattr(r, "headers", None)
+            if headers_dict and isinstance(headers_dict, dict):
+                content_type = str(headers_dict.get("Content-Type", "")).lower()
+                if content_type and not (
+                    content_type.startswith("image/")
+                    or "octet-stream" in content_type
+                    or "binary" in content_type
+                ):
+                    logger.warning(f"安全ガード: 非画像Content-Typeを拒否しました ({content_type}): {url}")
+                    return None
+
+            content = getattr(r, "content", None)
             if content and isinstance(content, (bytes, bytearray)):
-                if len(content) > max_bytes:
-                    logger.warning(f"画像サイズが上限（{max_bytes} bytes）を超過したためダウンロードを中止しました: {url}")
+                if len(content) > max_bytes_int:
+                    logger.warning(f"画像サイズが上限（{max_bytes_int} bytes）を超過したためダウンロードを中止しました: {url}")
                     return None
                 if len(content) > 0:
                     return bytes(content)
@@ -384,14 +411,21 @@ def fetch_album_artwork(
         on_mbz_candidate(mbz_candidate)
     if mbz_candidate and mbz_candidate.get("mbid"):
         url = mbz_client.get_release_artwork_url(mbz_candidate["mbid"])
+        dl_timeout = float(getattr(config, "image_download_timeout", 15.0)) if isinstance(getattr(config, "image_download_timeout", None), (int, float)) else 15.0
+        dl_max_bytes = int(getattr(config, "image_download_max_bytes", 25 * 1024 * 1024)) if isinstance(getattr(config, "image_download_max_bytes", None), (int, float)) else 25 * 1024 * 1024
+        dl_block_private = bool(getattr(config, "security_block_private_ips", True)) if isinstance(getattr(config, "security_block_private_ips", None), bool) else True
         if url:
-            art = safe_download_image(url)
+            art = safe_download_image(url, timeout=dl_timeout, max_bytes=dl_max_bytes, block_private=dl_block_private)
             if art:
                 logger.info("MBZソースからアルバムアートワークを採用しました")
                 return art
 
+    dl_timeout = float(getattr(config, "image_download_timeout", 15.0)) if isinstance(getattr(config, "image_download_timeout", None), (int, float)) else 15.0
+    dl_max_bytes = int(getattr(config, "image_download_max_bytes", 25 * 1024 * 1024)) if isinstance(getattr(config, "image_download_max_bytes", None), (int, float)) else 25 * 1024 * 1024
+    dl_block_private = bool(getattr(config, "security_block_private_ips", True)) if isinstance(getattr(config, "security_block_private_ips", None), bool) else True
+
     def _fetch_image(image_url: Optional[str], label: str) -> Optional[bytes]:
-        art = safe_download_image(image_url)
+        art = safe_download_image(image_url, timeout=dl_timeout, max_bytes=dl_max_bytes, block_private=dl_block_private)
         if art:
             logger.info(f"STEAMソースからアルバムアートワークを採用しました ({label}: {image_url})")
             return art

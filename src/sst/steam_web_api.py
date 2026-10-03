@@ -12,13 +12,29 @@ from .db import DatabaseManager
 logger = logging.getLogger(__name__)
 
 class SteamWebClient:
-    def __init__(self, db: DatabaseManager, bridge_url: str, bridge_api_key: Optional[str] = None, api_key: Optional[str] = None, language: str = "japanese", llm_extractor: Any = None):
+    def __init__(
+        self,
+        db: DatabaseManager,
+        bridge_url: str,
+        bridge_api_key: Optional[str] = None,
+        api_key: Optional[str] = None,
+        language: str = "japanese",
+        llm_extractor: Any = None,
+        api_timeout: float = 15.0,
+        pics_timeout: float = 30.0,
+        max_retries: int = 3,
+        throttle_delay: float = 2.0,
+    ):
         self.db = db
         self.bridge_url = bridge_url if bridge_url.endswith("/") else bridge_url + "/"
         self.bridge_api_key = bridge_api_key
         self.api_key = api_key
         self.language = language
         self.llm_extractor = llm_extractor
+        self.api_timeout = float(api_timeout)
+        self.pics_timeout = float(pics_timeout)
+        self.max_retries = int(max_retries)
+        self.throttle_delay = float(throttle_delay)
 
     @staticmethod
     def _parse_text_tracklist(description: str) -> list[Dict[str, Any]]:
@@ -67,7 +83,7 @@ class SteamWebClient:
         url = f"https://store.steampowered.com/app/{app_id}/?l={self.language}"
         headers = {"User-Agent": "SST/0.1 (+local Steam metadata tool)"}
         try:
-            response = requests.get(url, headers=headers, timeout=15)
+            response = requests.get(url, headers=headers, timeout=self.api_timeout)
             response.raise_for_status()
             tags = {}
             pattern = re.compile(r'"tagid":(\d+),"name":"((?:\\.|[^"\\])*)"')
@@ -117,7 +133,7 @@ class SteamWebClient:
             if force or not result["store_tracklist"]:
                 # Mandatory Throttle (2s + jitter)
                 import random
-                time.sleep(2.0 + random.random())
+                time.sleep(self.throttle_delay + random.random())
                 
                 session = requests.Session()
                 common_headers = {
@@ -129,12 +145,12 @@ class SteamWebClient:
                 store_url = f"https://store.steampowered.com/api/appdetails?appids={app_id}&l={self.language}"
                 app_data = None
                 tier1_started = time.monotonic()
-                for attempt in range(3):
+                for attempt in range(self.max_retries):
                     attempt_started = time.monotonic()
                     failure_reason = "http_status"
                     status_code = None
                     try:
-                        sr = session.get(store_url, headers=common_headers, timeout=15)
+                        sr = session.get(store_url, headers=common_headers, timeout=self.api_timeout)
                         status_code = sr.status_code
                         if status_code == 200:
                             s_json = sr.json()
@@ -212,12 +228,12 @@ class SteamWebClient:
 
                 # Retry logic for Tier 2 (Critical for structured data)
                 tier2_started = time.monotonic()
-                for attempt in range(3):
+                for attempt in range(self.max_retries):
                     attempt_started = time.monotonic()
                     failure_reason = "http_status"
                     status_code = None
                     try:
-                        pr = session.get(pics_url, headers=pics_headers, timeout=30)
+                        pr = session.get(pics_url, headers=pics_headers, timeout=self.pics_timeout)
                         status_code = pr.status_code
                         if status_code == 200:
                             p_json = pr.json()
@@ -284,7 +300,7 @@ class SteamWebClient:
                     if self.language.lower() not in {"english", "en"}:
                         try:
                             english_url = f"https://store.steampowered.com/api/appdetails?appids={app_id}&l=english"
-                            english_response = session.get(english_url, headers=common_headers, timeout=15)
+                            english_response = session.get(english_url, headers=common_headers, timeout=self.api_timeout)
                             if english_response.status_code == 200:
                                 english_data = english_response.json().get(str(app_id), {})
                                 if english_data.get("success"):

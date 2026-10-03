@@ -10,11 +10,19 @@ from .models import SteamMetadata
 logger = logging.getLogger("sst.alignment")
 
 class AlignmentInputBuilder:
-    def __init__(self, acoustid_client: AcoustIDIdentifier, mbz_client: MusicBrainzIdentifier, fingerprint_all: bool = False, min_mbz_search_score_threshold: int = 250):
+    def __init__(
+        self,
+        acoustid_client: AcoustIDIdentifier,
+        mbz_client: MusicBrainzIdentifier,
+        fingerprint_all: bool = False,
+        min_mbz_search_score_threshold: int = 250,
+        fingerprint_sample_size: int = 3,
+    ):
         self.acoustid = acoustid_client
         self.mbz = mbz_client
         self.fingerprint_all = fingerprint_all
         self.min_mbz_search_score_threshold = min_mbz_search_score_threshold
+        self.fingerprint_sample_size = max(1, int(fingerprint_sample_size))
 
     def build_fingerprint_album(self, track_groups: Dict[Tuple[int, str], List[Dict[str, Any]]], on_track_complete: Optional[callable] = None) -> Optional[Dict[str, Any]]:
         """
@@ -29,10 +37,15 @@ class AlignmentInputBuilder:
         target_keys = list(track_groups.keys())
         sampled_keys = target_keys
         
-        # Apply sampling if not fingerprint_all and album is large
-        if not self.fingerprint_all and len(target_keys) > 3:
-            mid = len(target_keys) // 2
-            sampled_keys = [target_keys[0], target_keys[mid], target_keys[-1]]
+        # Apply sampling if not fingerprint_all and album is larger than sample size
+        if not self.fingerprint_all and len(target_keys) > self.fingerprint_sample_size:
+            n = self.fingerprint_sample_size
+            if n <= 1:
+                sampled_keys = [target_keys[0]]
+            else:
+                step = (len(target_keys) - 1) / (n - 1)
+                indices = sorted(list({int(round(i * step)) for i in range(n)}))
+                sampled_keys = [target_keys[idx] for idx in indices]
             logger.info(f"Sampling mode: Scanning {len(sampled_keys)}/{len(target_keys)} tracks.")
         else:
             logger.info(f"Full scan mode: Scanning all {len(target_keys)} tracks.")

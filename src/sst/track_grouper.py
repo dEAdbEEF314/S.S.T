@@ -5,6 +5,8 @@ import subprocess
 import hashlib
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
+import os
+from mutagen import File
 from .ident.embedded import EmbeddedMetadataExtractor
 
 logger = logging.getLogger("sst.track_grouper")
@@ -52,9 +54,21 @@ class TrackManager:
 
     @staticmethod
     def get_duration(path: Path) -> float:
+        # 1. Fast path: Mutagen length extraction directly from headers (no subprocess)
         try:
+            audio = File(path)
+            if audio is not None and getattr(audio, "info", None) is not None:
+                length = getattr(audio.info, "length", None)
+                if length is not None and isinstance(length, (int, float)) and length > 0:
+                    return float(length)
+        except Exception:
+            pass
+
+        # 2. Fallback: ffprobe process invocation (with configurable timeout)
+        try:
+            timeout_sec = float(os.getenv("FFPROBE_TIMEOUT", "10"))
             cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(path)]
-            return float(subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout.strip())
+            return float(subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec).stdout.strip())
         except Exception:
             return 0.0
 
@@ -132,7 +146,7 @@ class TrackManager:
             
             raw_tracks.append({
                 "file_id": hashlib.sha1(str(f.resolve()).encode("utf-8")).hexdigest()[:16],
-                "path": f, "meta": meta, "duration": TrackManager.get_duration(f), 
+                "path": f, "meta": meta, "duration": meta.get("duration") or TrackManager.get_duration(f), 
                 "format": f.suffix.lower().lstrip('.'),
                 "filename_track": filename_track_val,
                 "t_num_val": t_num_val,
