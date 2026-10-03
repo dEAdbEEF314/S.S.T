@@ -196,3 +196,73 @@ RULES:
 2. DO NOT use reasoning blocks, "Thinking Process", or any preamble.
 3. Output MUST be valid JSON.
 4. If uncertain, default to judgment "REVIEW" and confidence 0."""
+
+
+def build_degraded_prompt(original_prompt: str, request_kind: str, user_language: str = "ja") -> str:
+    """Adapt an existing prompt into a degraded, ultra-minimal format.
+    
+    Preserves the entire prefix (data signals) for optimal KV/prompt cache hit rates,
+    while replacing the output format instructions to forbid explanations, reasons,
+    and verbosity. This forces minimal token consumption and prevents runaway generation.
+    """
+    if request_kind == "identity":
+        marker = "### OUTPUT FORMAT"
+        if marker in original_prompt:
+            prefix = original_prompt.split(marker)[0].rstrip()
+            return prefix + f"""
+
+### [EMERGENCY DEGRADED OUTPUT FORMAT - MINIMAL JSON ONLY]
+**PREVIOUS ATTEMPT FAILED OR TRUNCATED. OMIT ALL EXPLANATIONS, REASONS, AND CONCERNS TO FIT BUDGET.**
+Return ONLY this minimal raw JSON object without markdown or reasoning:
+{{
+  "album_confidence": 0-100,
+  "mapping_confidence": 0-100,
+  "data_quality": 0-100,
+  "strategy": "ACOUSTID_BASED" | "STEAM_BASED" | "LOCAL_BASED" | "MBZ_SEARCH_BASED" | "HYBRID",
+  "global_tags": {{
+    "canonical_album_artist": "...",
+    "canonical_genre": "...",
+    "canonical_year": "YYYY",
+    "canonical_label": "...",
+    "chosen_mbz_id": "..."
+  }}
+}}
+"""
+    elif request_kind == "track_mapping":
+        marker = "### MANDATORY OUTPUT FORMAT (JSON ONLY):"
+        if marker in original_prompt:
+            prefix = original_prompt.split(marker)[0].rstrip()
+            return prefix + """
+
+### [EMERGENCY DEGRADED OUTPUT FORMAT - MINIMAL JSON ONLY]
+**PREVIOUS ATTEMPT FAILED OR TRUNCATED. OMIT ALL REASONS AND TEXT EXPLANATIONS TO FIT BUDGET.**
+Return ONLY this minimal raw JSON object without reason fields or markdown:
+{
+  "slots": {
+    "SLOT_NUMBER": {
+      "files": ["FILE_ID"],
+      "confidence": 0.95
+    }
+  },
+  "unassigned_files": ["FILE_ID"]
+}
+"""
+    elif request_kind == "steam_tracklist_extraction":
+        marker = "### OUTPUT JSON ONLY"
+        if marker in original_prompt:
+            prefix = original_prompt.split(marker)[0].rstrip()
+            return prefix + """
+
+### [EMERGENCY DEGRADED OUTPUT FORMAT - MINIMAL JSON ONLY]
+**PREVIOUS ATTEMPT FAILED OR TRUNCATED. OMIT EVIDENCE TO FIT BUDGET.**
+Return ONLY this minimal raw JSON object:
+{
+  "found": true,
+  "confidence": 0.0,
+  "tracks": [
+    {"disc": 1, "number": 1, "title": "verbatim title", "duration_s": null}
+  ]
+}
+"""
+
+    return original_prompt.rstrip() + "\n\n### [EMERGENCY DEGRADED FORMAT]: Output strictly minimal valid JSON. Omit all reasoning and explanations.\n"

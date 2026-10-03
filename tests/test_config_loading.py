@@ -21,6 +21,22 @@ def test_ollama_thinking_is_disabled_by_default_and_passed_to_llm_client():
     assert config.build_llm_organizer_kwargs()["ollama_think"] is False
 
 
+def test_deferred_copy_delay_defaults_to_ten_minutes(monkeypatch):
+    monkeypatch.delenv("SST_DEFERRED_COPY_DELAY_SECONDS", raising=False)
+
+    config = Config(steam_install_path="/tmp")
+
+    assert config.sst_deferred_copy_delay_seconds == 600
+
+
+def test_deferred_copy_delay_reads_environment_override(monkeypatch):
+    monkeypatch.setenv("SST_DEFERRED_COPY_DELAY_SECONDS", "42")
+
+    config = Config(steam_install_path="/tmp")
+
+    assert config.sst_deferred_copy_delay_seconds == 42
+
+
 def test_organizer_forwards_ollama_think_to_client(tmp_path):
     config = Config(
         steam_install_path="/tmp",

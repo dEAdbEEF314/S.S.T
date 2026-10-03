@@ -69,6 +69,187 @@ def test_multi_format_variant_consolidation():
     assert len(unassigned) == 0
 
 
+def test_adopted_same_basename_slots_get_unique_staging_names():
+    steam_meta = SteamMetadata(
+        app_id=424242,
+        name="Collision Test OST",
+        store_tracklist=[
+            {"disc": 1, "number": "1", "title": "Gear Shift"},
+            {"disc": 1, "number": "2", "title": "Gear Shift"},
+        ],
+    )
+    track_groups = {
+        (1, "gear shift first"): [
+            {"file_id": "gear-a", "format": "mp3", "path": Path("/source-a/gear_shift.mp3")}
+        ],
+        (1, "gear shift second"): [
+            {"file_id": "gear-b", "format": "mp3", "path": Path("/source-b/gear_shift.mp3")}
+        ],
+    }
+    final_metadata = {
+        "1_gear shift first": {"matched_v_idx": 0},
+        "1_gear shift second": {"matched_v_idx": 1},
+    }
+
+    slot_variants, track_to_slot = build_slot_variant_index(final_metadata, track_groups, steam_meta)
+    adopted = adopt_best_file_per_slot(track_groups, slot_variants, track_to_slot)
+
+    assert len(adopted) == 2
+    assert {info["staging_filename"] for info in adopted.values()} == {
+        "gear_shift__sst_d1_t1.mp3",
+        "gear_shift__sst_d1_t2.mp3",
+    }
+
+
+def test_unaligned_filename_number_does_not_override_steam_title():
+    steam_meta = SteamMetadata(
+        app_id=424243,
+        name="Slot Identity Test OST",
+        store_tracklist=[{"disc": 1, "number": "1", "title": "Opening Theme"}],
+    )
+    track_groups = {
+        (1, "menu whoosh::sfx1"): [
+            {
+                "file_id": "sfx1",
+                "format": "mp3",
+                "duration": 2.0,
+                "t_num_val": "1",
+                "path": Path("/source/menu_whoosh_01.mp3"),
+            }
+        ]
+    }
+
+    slot_variants, track_to_slot = build_slot_variant_index({}, track_groups, steam_meta)
+
+    assert (1, "1") not in slot_variants
+    assert (1, "menu whoosh::sfx1") in slot_variants
+    assert track_to_slot["1_menu whoosh::sfx1"] == (1, "menu whoosh::sfx1")
+
+
+def test_format_variant_can_merge_across_local_disc_tags_when_steam_title_is_unique():
+    steam_meta = SteamMetadata(
+        app_id=424244,
+        name="Cross Disc Variant Test OST",
+        store_tracklist=[{"disc": 4, "number": "20", "title": "Impact Truck Big 1"}],
+    )
+    track_groups = {
+        (4, "Impact Truck Big 1::mp3"): [
+            {
+                "file_id": "mp3",
+                "format": "mp3",
+                "duration": 12.0,
+                "norm_stem": "impact truck big 1",
+                "t_num_val": "20",
+                "path": Path("/source/disc4/impact_truck_big_01.mp3"),
+            }
+        ],
+        (1, "Impact Truck Big 1::aiff"): [
+            {
+                "file_id": "aiff",
+                "format": "aiff",
+                "duration": 12.4,
+                "norm_stem": "impact truck big 1",
+                "t_num_val": "20",
+                "path": Path("/source/disc1/impact_truck_big_01.aiff"),
+            }
+        ],
+    }
+    final_metadata = {"4_Impact Truck Big 1::mp3": {"matched_v_idx": 0}}
+
+    slot_variants, track_to_slot = build_slot_variant_index(final_metadata, track_groups, steam_meta)
+
+    assert len(slot_variants[(4, "20")]) == 2
+    assert track_to_slot["1_Impact Truck Big 1::aiff"] == (4, "20")
+    assert (1, "20") not in slot_variants
+
+
+def test_reconciliation_does_not_assign_number_only_match():
+    steam_meta = SteamMetadata(
+        app_id=424245,
+        name="No Number Only Match OST",
+        store_tracklist=[
+            {"disc": 1, "number": "1", "title": "Known Theme"},
+            {"disc": 1, "number": "2", "title": "Another Theme"},
+        ],
+    )
+    final_metadata = {"1_known": {"matched_v_idx": 0}}
+    track_groups = {
+        (1, "Known Theme"): [{"file_id": "known", "t_num_val": "1", "norm_stem": "known theme"}],
+        (1, "Menu Whoosh"): [{"file_id": "sfx", "t_num_val": "2", "norm_stem": "menu whoosh"}],
+    }
+
+    reconciled = reconcile_deterministic_unassigned_slots(
+        final_metadata,
+        track_groups,
+        steam_meta,
+        global_identity={},
+    )
+
+    assert reconciled == []
+    assert "1_Menu Whoosh" not in final_metadata
+
+
+def test_contradictory_llm_slot_keeps_steam_title_and_rejects_unrelated_file():
+    local_tracks = [
+        {
+            "local_key": (1, "opening theme::good"),
+            "file_ids": ["good"],
+            "title": "Composer - Opening Theme",
+            "duration_ms": 120000,
+        },
+        {
+            "local_key": (1, "menu whoosh::bad"),
+            "file_ids": ["bad"],
+            "title": "Menu Whoosh",
+            "duration_ms": 2000,
+        },
+    ]
+    instructions = {
+        "1_opening theme::good": {"matched_v_idx": 0, "reason": "LLM assignment"},
+        "1_menu whoosh::bad": {"matched_v_idx": 0, "reason": "LLM assignment"},
+    }
+
+    filtered, contradictions = LLMOrganizer._reject_contradictory_slot_assignments(
+        instructions,
+        local_tracks,
+        [{"v_idx": 0, "d": 1, "n": 1, "t": "Opening Theme"}],
+    )
+
+    assert list(filtered) == ["1_opening theme::good"]
+    assert len(contradictions) == 1
+    assert contradictions[0]["rejected_track_ids"] == ["1_menu whoosh::bad"]
+
+
+def test_llm_same_title_format_candidates_remain_in_one_slot():
+    local_tracks = [
+        {
+            "local_key": (1, "opening theme::aiff"),
+            "file_ids": ["aiff"],
+            "title": "Opening Theme",
+            "duration_ms": 120000,
+        },
+        {
+            "local_key": (1, "opening theme::mp3"),
+            "file_ids": ["mp3"],
+            "title": "Opening Theme",
+            "duration_ms": 120500,
+        },
+    ]
+    instructions = {
+        "1_opening theme::aiff": {"matched_v_idx": 0, "reason": "LLM assignment"},
+        "1_opening theme::mp3": {"matched_v_idx": 0, "reason": "LLM assignment"},
+    }
+
+    filtered, contradictions = LLMOrganizer._reject_contradictory_slot_assignments(
+        instructions,
+        local_tracks,
+        [{"v_idx": 0, "d": 1, "n": 1, "t": "Opening Theme"}],
+    )
+
+    assert filtered == instructions
+    assert contradictions == []
+
+
 def test_client_token_budget_elevation():
     """Client provides at least 1536 minimum output tokens for track_mapping to withstand thinking models."""
     client = LLMClient(api_key="dummy", base_url="http://localhost:11434", model="test-model", llm_backend="OLLAMA")

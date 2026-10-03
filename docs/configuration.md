@@ -31,7 +31,10 @@
 - SST_OUTPUT_DIR
 - SST_WORKING_DIR
 - SST_DB_PATH
+- SST_DEFERRED_COPY_DELAY_SECONDS
 - MAX_ENCODING_TASKS
+
+`SST_DEFERRED_COPY_DELAY_SECONDS` は共有ストレージへのcopyに失敗したtrackを、通常バッチ完了後に一度だけ再試行するまでの待機秒数です。既定値は600秒（10分）です。0を指定すると待機せずに居残り再試行を行います。未復旧のtrackは再キューせず、そのAppIDをReviewに確定します。
 
 `SST_WORKING_DIR` の中間成果物は、通常の INFO 実行では処理終了時に削除されます。人間による後追い確認が必要な場合は `--dev` を付けるか `LOG_LEVEL=DEBUG` を指定してください。この場合、`final_<AppID>_*`、`buffer_<AppID>_*`、`early_review_<AppID>_*` が保持されます。`--force` でも保持モード中は既存成果物を事前削除しません。
 
@@ -74,6 +77,9 @@
 - LLM_OLLAMA_NUM_CTX_SMALL / MEDIUM / LARGE
 - LLM_REQUEST_PARALLELISM_MAX_WORKERS_SMALL / MEDIUM / LARGE
 - LLM_FORCE_COHERENCE_LARGE
+- LLM_MAX_RETRIES (LLM呼び出し失敗時の最大再試行回数。既定: 3)
+- LLM_OUTPUT_BUDGET_SAFETY_RATIO (動的トークン天井の安全マージン比率。既定: 0.25 / +25%)
+- LLM_ADAPTIVE_DEGRADED_PROMPT_ENABLED (トークン上限到達・暴走時の縮退プロンプト自動適用。既定: true)
 
 これらは実行性能やタイムアウト耐性に影響しますが、メタデータの正誤判定規則を変えてはいけません。
 

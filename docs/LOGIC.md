@@ -175,6 +175,19 @@ STEAM の曲構造が不在な場合でも処理は継続できますが、全�
 
 LLMの`alignment_res.unassigned_files`は、track groupの有無ではなくfile IDを正として扱う。未割当file IDは全件を物理候補へ逆引きし、同一未割当論理群からTier最高の1ファイルを選出して変換し、`unassigned/`へ隔離する。
 
+slot identityの安全条件:
+
+- 1 slotに複数の物理候補を割り当てる場合、正規化タイトルが一致し、時間情報がある候補間の再生時間差が1秒未満であることを確認する。複数の異なる論理タイトルが混在した場合は、Steamタイトルまたは決定論的根拠で支持されない候補を除外し、矛盾を記録してReviewとする。
+- ローカル番号だけの推定はSteam構造とタイトルで検証する。番号が合うだけの効果音や余剰ファイルはSteam slotへ割り当てない。
+- 異disc間の形式バリアント統合は、タイトルが一意なSteam slotを示し、形式・時間条件を満たす場合だけ許可する。
+- 別slotの変換先stemが衝突する場合はslot識別子付き作業名を使用し、最終track間で物理パスを共有させない。
+
+一時copy障害の処理:
+
+- 通常trackのcopyが有限回再試行後も失敗した場合、その音源をFFmpegへ渡さず居残りキューに保留する。他のアルバムの通常処理を継続する。
+- `JobRunner`の通常アルバムworker終了後、`SST_DEFERRED_COPY_DELAY_SECONDS`（既定600秒）だけ一度待機し、保留trackを一回だけ再処理する。保留がない場合は待たず、0秒指定では待機だけを省略する。
+- copyが回復した場合も通常のValidator/Archive preflightを通す。回復しない場合は再キューせず、そのAppIDをReview確定して残りのバッチを継続する。
+
 - 未割当file IDが1件でもあれば必ずReview。
 - `metadata.json`と`review_manifest.json`の未割当件数はalignmentの未割当件数と一致させる。
 - 対応する物理候補が見つからないfile IDは、隔離失敗理由をmanifestへ記録する。

@@ -1,4 +1,5 @@
 import logging
+import hashlib
 from collections import defaultdict
 from difflib import SequenceMatcher
 from typing import Any, Callable, Dict, List, Optional
@@ -27,6 +28,16 @@ def _normalize_slot_key(disc_number: Any, track_number: Any) -> Optional[tuple[i
     return disc_value, normalized_track
 
 
+def _normalized_titles_match(left: str, right: str) -> bool:
+    if not left or not right:
+        return False
+    return (
+        left == right
+        or f" {left} " in f" {right} "
+        or f" {right} " in f" {left} "
+    )
+
+
 def build_slot_variant_index(
     final_metadata: Dict[str, Any],
     track_groups: Dict,
@@ -35,6 +46,21 @@ def build_slot_variant_index(
     slot_variants: Dict[tuple[int, str], List[Dict[str, Any]]] = defaultdict(list)
     track_to_slot: Dict[str, tuple[int, str]] = {}
     priorities = TrackManager.get_audio_format_priority()
+    variant_titles = {
+        variant.get("file_id"): TrackManager.normalize_title(
+            str(group_key[1]).split("::", 1)[0]
+        )
+        for group_key, variants in track_groups.items()
+        for variant in variants
+    }
+    steam_slots_by_key: Dict[tuple[int, str], List[Dict[str, Any]]] = defaultdict(list)
+    for steam_track in steam_meta.store_tracklist or []:
+        slot_key = _normalize_slot_key(
+            steam_track.get("disc", 1),
+            steam_track.get("number", steam_track.get("track_number")),
+        )
+        if slot_key is not None:
+            steam_slots_by_key[slot_key].append(steam_track)
 
     def sort_key(variant: Dict[str, Any]) -> int:
         fmt = str(variant.get("format", "")).lower()
@@ -64,9 +90,7 @@ def build_slot_variant_index(
         else:
             unaligned_groups.append(((disc, clean_title), variants))
 
-    # 2. Second pass: format variant consolidation for unaligned groups
-    # If an unaligned group is a format variant of an already assigned slot (same disc, diff format, dur diff < 1.0s, title match),
-    # merge it into that slot's variants as a subordinate variant.
+    # 2. Merge only title- and duration-compatible format variants.
     remaining_unaligned = []
     for (disc, clean_title), variants in unaligned_groups:
         track_id = f"{disc}_{clean_title}"
@@ -76,46 +100,66 @@ def build_slot_variant_index(
         u_norm_title = TrackManager.normalize_title(raw_title)
         u_dur = float(variants[0].get("duration", 0.0) or 0.0)
         u_fmt = str(variants[0].get("format", "")).lower()
-        u_num = str(variants[0].get("t_num_val") or "").lstrip("0")
-
-        merged_slot_key = None
+        matching_slot_keys = set()
         for slot_key, assigned_variants in list(slot_variants.items()):
             if not isinstance(slot_key, tuple) or len(slot_key) != 2 or not str(slot_key[1]).isdigit():
                 continue
-            s_disc, _ = slot_key
-            if s_disc != disc:
-                continue
-
             for a_var in assigned_variants:
                 a_fmt = str(a_var.get("format", "")).lower()
                 a_dur = float(a_var.get("duration", 0.0) or 0.0)
-                a_stem = a_var.get("norm_stem") or ""
-                a_num = str(a_var.get("t_num_val") or "").lstrip("0")
+                a_title = a_var.get("norm_stem") or variant_titles.get(a_var.get("file_id"), "")
 
                 is_diff_fmt = (a_fmt != u_fmt) and bool(a_fmt and u_fmt)
                 dur_ok = abs(a_dur - u_dur) < 1.0 if (a_dur > 0 and u_dur > 0) else True
-                num_match = (a_num == u_num and a_num != "")
-                title_match = bool(u_norm_title and a_stem and (u_norm_title == a_stem or u_norm_title.startswith(a_stem) or a_stem.startswith(u_norm_title)))
+                title_match = _normalized_titles_match(u_norm_title, a_title)
 
-                if is_diff_fmt and dur_ok and (title_match or num_match):
-                    merged_slot_key = slot_key
-                    break
-            if merged_slot_key:
-                break
+                if not (is_diff_fmt and dur_ok and title_match):
+                    continue
 
-        if merged_slot_key is not None:
+                if slot_key[0] != disc:
+                    candidate_steam_slots = {
+                        steam_key
+                        for steam_key, steam_tracks in steam_slots_by_key.items()
+                        if any(
+                            _normalized_titles_match(
+                                u_norm_title,
+                                TrackManager.normalize_title(
+                                    str(track.get("title") or track.get("name") or "")
+                                ),
+                            )
+                            for track in steam_tracks
+                        )
+                    }
+                    if candidate_steam_slots != {slot_key}:
+                        continue
+
+                matching_slot_keys.add(slot_key)
+
+        if len(matching_slot_keys) == 1:
+            merged_slot_key = next(iter(matching_slot_keys))
             slot_variants[merged_slot_key].extend(variants)
             track_to_slot[track_id] = merged_slot_key
         else:
             remaining_unaligned.append(((disc, clean_title), variants))
 
-    # 3. Third pass: fallback for remaining unaligned groups (inferred track or clean_title)
+    # 3. Use filename numbers only when title and Steam structure confirm the slot.
     for (disc, clean_title), variants in remaining_unaligned:
         track_id = f"{disc}_{clean_title}"
         track_numbers = [variant.get("t_num_val") for variant in variants if variant.get("t_num_val") not in (None, "", "0")]
         inferred_track = track_numbers[0] if track_numbers else None
-        slot_key = _normalize_slot_key(disc, inferred_track)
-        if slot_key is None:
+        inferred_slot_key = _normalize_slot_key(disc, inferred_track)
+        raw_title = clean_title.split("::", 1)[0]
+        local_title = TrackManager.normalize_title(raw_title)
+        matching_steam_tracks = steam_slots_by_key.get(inferred_slot_key, []) if inferred_slot_key else []
+        title_matches_steam = len(matching_steam_tracks) == 1 and _normalized_titles_match(
+            local_title,
+            TrackManager.normalize_title(
+                str(matching_steam_tracks[0].get("title") or matching_steam_tracks[0].get("name") or "")
+            ),
+        )
+        if title_matches_steam and inferred_slot_key not in slot_variants:
+            slot_key = inferred_slot_key
+        else:
             slot_key = (disc, clean_title)
         slot_variants[slot_key].extend(variants)
         track_to_slot[track_id] = slot_key
@@ -156,7 +200,31 @@ def adopt_best_file_per_slot(
             "tier": "lossless" if tier_rank in {0, 1} else ("lossy" if chosen.get("format") != "mp3" else "mp3"),
             "tier_rank": tier_rank,
             "filename_track": chosen.get("filename_track"),
+            "slot_key": slot_key,
         }
+
+    output_names: Dict[tuple[str, str, str], List[Dict[str, Any]]] = defaultdict(list)
+    for adopted_info in adopted.values():
+        source_path = adopted_info["path"]
+        output_extension = ".aif" if adopted_info["tier_rank"] in {0, 1} else ".mp3"
+        disc_number = str(adopted_info["slot_key"][0])
+        output_names[(disc_number, source_path.stem.casefold(), output_extension)].append(adopted_info)
+
+    for colliding_infos in output_names.values():
+        if len(colliding_infos) < 2:
+            continue
+        for adopted_info in colliding_infos:
+            source_path = adopted_info["path"]
+            disc_number, track_number = adopted_info["slot_key"]
+            if str(track_number).isdigit():
+                slot_token = f"d{disc_number}_t{int(track_number)}"
+            else:
+                slot_token = hashlib.sha1(
+                    f"{disc_number}_{track_number}".encode("utf-8")
+                ).hexdigest()[:8]
+            adopted_info["staging_filename"] = (
+                f"{source_path.stem}__sst_{slot_token}{source_path.suffix}"
+            )
     return adopted
 
 
@@ -382,7 +450,7 @@ def _find_candidate_unassigned_matches(
         num_match = (s_disc == t_disc and s_num == t_num and s_num != "0")
         title_match = bool(s_title and t_title and (s_title == t_title or s_title.startswith(t_title) or t_title.startswith(s_title)))
 
-        if num_match or title_match:
+        if title_match:
             matching_groups.append((group_key, "number_match" if num_match else "title_match", variants))
     return matching_groups
 

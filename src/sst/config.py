@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Any, Optional
 import os
@@ -53,6 +54,9 @@ class Config(BaseSettings):
     llm_request_parallelism_max_workers_large: Optional[int] = 1
     llm_force_coherence_large: bool = True
     llm_coherence_threshold: int = 75
+    llm_max_retries: int = 3
+    llm_output_budget_safety_ratio: float = 0.25
+    llm_adaptive_degraded_prompt_enabled: bool = True
     llm_chunk_size_virtual: int = 20
     llm_chunk_size_metadata_ollama: int = 10
     llm_chunk_size_metadata_cloud: int = 30
@@ -69,6 +73,7 @@ class Config(BaseSettings):
     sst_llm_cache_enabled: bool = True
     sst_llm_cache_ttl_seconds: int = 86400
     sst_llm_cache_path: str = "data/llm_cache.json"
+    sst_deferred_copy_delay_seconds: int = Field(default=600, ge=0)
     
     # MusicBrainz Scoring Settings
     score_mbz_direct_steam_link: int = 500
@@ -172,6 +177,9 @@ class Config(BaseSettings):
             "chunk_adaptive": self.llm_chunk_adaptive,
             "chunk_output_tokens_per_track": self.llm_chunk_output_tokens_per_track,
             "chunk_output_safety_ratio": self.llm_chunk_output_safety_ratio,
+            "max_retries": self.llm_max_retries,
+            "output_budget_safety_ratio": self.llm_output_budget_safety_ratio,
+            "adaptive_degraded_prompt_enabled": self.llm_adaptive_degraded_prompt_enabled,
             "metadata_source_priority": self.resolved_metadata_source_priority,
             "llm_cache_enabled": self.sst_llm_cache_enabled,
             "llm_cache_ttl_seconds": self.sst_llm_cache_ttl_seconds,

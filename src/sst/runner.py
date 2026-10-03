@@ -105,6 +105,7 @@ class JobRunner:
                     steam_meta,
                     on_track_complete=lambda: progress.advance(album_task),
                     llm_progress_callback=_llm_progress,
+                    defer_copy_retries=True,
                 )
                 
                 if result is None:
@@ -127,7 +128,7 @@ class JobRunner:
             progress.remove_task(album_task)
             progress.update(overall_task, advance=1)
             
-            status_color = "green" if result.status == "archive" else ("yellow" if result.status == "review" else "red")
+            status_color = "cyan" if result.status == "deferred" else ("green" if result.status == "archive" else ("yellow" if result.status == "review" else "red"))
             self.console.print(f"[bold {status_color}]✓[/bold {status_color}] {ost['name']} -> [bold]{result.status.upper()}[/bold]")
 
         try:
@@ -140,6 +141,21 @@ class JobRunner:
                 
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     list(executor.map(lambda ost: _process_single_album(ost, progress, overall_task), soundtracks))
+
+                deferred_resolver = getattr(type(self.processor), "resolve_deferred_copy_retries", None)
+                if deferred_resolver is not None:
+                    delay_seconds = max(
+                        0,
+                        int(getattr(self.config, "sst_deferred_copy_delay_seconds", 600)),
+                    )
+                    resolved_results = deferred_resolver(self.processor, delay_seconds)
+                    if resolved_results:
+                        results = [resolved_results.get(result.app_id, result) for result in results]
+                        for result in resolved_results.values():
+                            status_color = "green" if result.status == "archive" else ("yellow" if result.status == "review" else "red")
+                            self.console.print(
+                                f"[bold {status_color}]✓[/bold {status_color}] {result.album_name} -> [bold]{result.status.upper()}[/bold]"
+                            )
                     
         finally:
             self.console.show_cursor(True)

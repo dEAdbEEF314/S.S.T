@@ -1,5 +1,6 @@
 import logging
 import shutil
+import threading
 import time
 from pathlib import Path
 from typing import Callable, List, Dict, Any, Optional, Tuple
@@ -61,6 +62,47 @@ class LocalProcessor:
         self.alignment_input_builder = AlignmentInputBuilder(self.acoustid, self.mbz, fingerprint_all=config.fingerprint_all, min_mbz_search_score_threshold=config.min_mbz_search_score_threshold)
         self.llm = LLMOrganizer(**config.build_llm_organizer_kwargs())
         self.working_dir = Path(config.sst_working_dir)
+        self._deferred_copy_finalizers: Dict[int, Callable[[], LocalProcessResult]] = {}
+        self._deferred_copy_lock = threading.Lock()
+
+    def _queue_deferred_copy_finalizer(
+        self,
+        app_id: int,
+        finalizer: Callable[[], LocalProcessResult],
+    ) -> None:
+        with self._deferred_copy_lock:
+            self._deferred_copy_finalizers[app_id] = finalizer
+
+    def resolve_deferred_copy_retries(self, delay_seconds: int) -> Dict[int, LocalProcessResult]:
+        """Run one delayed retry pass after the runner's normal album pool drains."""
+        with self._deferred_copy_lock:
+            pending = self._deferred_copy_finalizers
+            self._deferred_copy_finalizers = {}
+
+        if not pending:
+            return {}
+
+        delay = max(0, int(delay_seconds))
+        if delay:
+            logger.warning(
+                "一時copy失敗の居残り再試行を%d件、%d秒後に一度だけ実行します。",
+                len(pending),
+                delay,
+            )
+            time.sleep(delay)
+
+        resolved: Dict[int, LocalProcessResult] = {}
+        for app_id, finalizer in pending.items():
+            try:
+                resolved[app_id] = finalizer()
+            except Exception as error:
+                logger.exception("[%s] 居残りcopy再試行後の最終化に失敗しました", app_id)
+                resolved[app_id] = LocalProcessResult(
+                    app_id=app_id,
+                    status="error",
+                    message=f"Deferred copy finalization failed: {error}",
+                )
+        return resolved
 
     def set_vram_manager(self, vram_manager: Any):
         self.llm.set_vram_manager(vram_manager)
@@ -460,6 +502,11 @@ class LocalProcessor:
         buffer_dir: Path,
         on_track_complete: Optional[Callable[[], None]],
         _diag: Callable,
+        adopted_file_subset: Optional[List[Tuple[Tuple[int, str], Dict[str, Any]]]] = None,
+        defer_copy_failures: bool = False,
+        include_unassigned: bool = True,
+        artwork_prepared: bool = False,
+        prepared_album_artwork_path: Optional[Path] = None,
     ) -> Tuple[
         List[Dict[str, Any]],
         bool,
@@ -470,6 +517,8 @@ class LocalProcessor:
         List[Dict[str, Any]],
         int,
         int,
+        List[Tuple[Tuple[int, str], Dict[str, Any]]],
+        Optional[Path],
     ]:
         tagger = AudioTagger(temp_output)
 
@@ -484,14 +533,17 @@ class LocalProcessor:
             )
             _diag("FAST_TRACK_MBZ_ARTISTS_APPLIED", enriched_track_count=applied)
 
-        raw_album_artwork = self._fetch_album_artwork(
-            steam_meta,
-            mbz_candidates,
-            track_groups,
-            allow_mbz_artwork_search=llm_log.get("processing_route") == "FAST_TRACK",
-            on_mbz_candidate=_apply_fast_track_mbz_artists,
-        )
-        album_artwork_path = tagger.process_artwork(raw_album_artwork) if raw_album_artwork else None
+        if artwork_prepared:
+            album_artwork_path = prepared_album_artwork_path
+        else:
+            raw_album_artwork = self._fetch_album_artwork(
+                steam_meta,
+                mbz_candidates,
+                track_groups,
+                allow_mbz_artwork_search=llm_log.get("processing_route") == "FAST_TRACK",
+                on_mbz_candidate=_apply_fast_track_mbz_artists,
+            )
+            album_artwork_path = tagger.process_artwork(raw_album_artwork) if raw_album_artwork else None
 
         track_sources = TrackManager.prepare_llm_track_context(track_groups)
         p1_res = llm_log.get("phase1_res", {})
@@ -517,17 +569,27 @@ class LocalProcessor:
                 album_artwork=album_artwork_path,
                 notifier=self.notifier,
                 on_track_complete=on_track_complete,
+                defer_copy_failure=defer_copy_failures,
             )
 
         from concurrent.futures import ThreadPoolExecutor
-        adopted_files = adopt_best_file_per_slot(track_groups, slot_variant_index, track_to_slot_index)
-        _diag(
-            "TRACKS_ADOPTED",
-            adopted_slot_count=len(adopted_files),
-            adopted_file_count=sum(len(v) for v in adopted_files.values()),
-        )
+        if adopted_file_subset is None:
+            adopted_files = adopt_best_file_per_slot(track_groups, slot_variant_index, track_to_slot_index)
+            _diag(
+                "TRACKS_ADOPTED",
+                adopted_slot_count=len(adopted_files),
+                adopted_file_count=len(adopted_files),
+            )
+        else:
+            adopted_files = dict(adopted_file_subset)
+            _diag("DEFERRED_COPY_RETRY_TRACKS", track_count=len(adopted_files))
         with ThreadPoolExecutor(max_workers=self.config.max_encoding_tasks) as executor:
             track_results = list(executor.map(_process_single_track, adopted_files.items()))
+        deferred_track_data = [
+            track_data
+            for track_data, result in zip(adopted_files.items(), track_results)
+            if result.get("copy_pending")
+        ]
 
         processed_tracks_meta = self._normalize_processed_tracks(
             [r["track_meta"] for r in track_results if r.get("track_meta")]
@@ -539,13 +601,14 @@ class LocalProcessor:
             for file_id in (llm_log.get("alignment_res", {}) or {}).get("unassigned_files", [])
         }
         unassigned_manifest = []
-        for unassigned in select_best_unassigned_files(
+        unassigned_candidates = select_best_unassigned_files(
             track_groups,
             final_metadata,
             alignment_unassigned_ids or None,
             slot_variant_index=slot_variant_index,
             track_to_slot_index=track_to_slot_index,
-        ):
+        ) if include_unassigned else []
+        for unassigned in unassigned_candidates:
             manifest = {
                 "track_id": unassigned["track_id"],
                 "original_filename": unassigned["path"].name,
@@ -585,7 +648,19 @@ class LocalProcessor:
             io_retry_logs,
             len(adopted_files),
             len(track_results),
+            deferred_track_data,
+            album_artwork_path,
         )
+
+    @staticmethod
+    def _count_duplicate_slot_keys(tracks: List[Dict[str, Any]]) -> int:
+        slot_keys = []
+        for track in tracks:
+            tags = track.get("tags") or {}
+            disc = str(tags.get("disc_number") or "1").split("/")[0].strip().lstrip("0") or "1"
+            number = str(tags.get("track_number") or "0").split("/")[0].strip().lstrip("0") or "0"
+            slot_keys.append((disc, number))
+        return len(slot_keys) - len(set(slot_keys))
 
     def _finalize_album_package(
         self,
@@ -613,6 +688,7 @@ class LocalProcessor:
         _diag: Callable,
     ) -> LocalProcessResult:
         p1_res = llm_log.get("phase1_res", {})
+        final_duplicate_slot_count = self._count_duplicate_slot_keys(processed_tracks_meta)
         status, message, score, quality, reason = ResultValidator.validate(
             app_id,
             processed_tracks_meta,
@@ -651,6 +727,23 @@ class LocalProcessor:
         )
 
         multi_variant_slot_count = sum(1 for variants in slot_variant_index.values() if len(variants) > 1)
+        llm_diagnostics = llm_log.get("diagnostics") or {}
+        deferred_copy_diagnostics = {
+            key: llm_diagnostics.get(key, default)
+            for key, default in (
+                ("deferred_copy_count", 0),
+                ("deferred_copy_success_count", 0),
+                ("deferred_copy_failure_count", 0),
+                ("deferred_copy_failures", []),
+            )
+        }
+        failed_copy_logs = [
+            log for log in io_retry_logs if log.get("final_state") == "failed"
+        ]
+        successful_copy_logs = [
+            log for log in io_retry_logs if log.get("final_state") != "failed"
+        ][:5]
+        audit_copy_logs = failed_copy_logs + successful_copy_logs
         summary_meta = {
             "app_id": app_id, 
             "album_name": steam_meta.name, 
@@ -666,7 +759,7 @@ class LocalProcessor:
             "audit": {
                 "steam_expected_slots": len(steam_meta.store_tracklist or []),
                 "final_adopted_slots": len(processed_tracks_meta),
-                "final_duplicate_slots": max(0, track_results_len - len(processed_tracks_meta)),
+                "final_duplicate_slots": final_duplicate_slot_count,
                 "steam_legitimate_unknown": (llm_log.get("diagnostics") or {}).get("steam_unknown_count", 0),
                 "anomalous_unknown": (llm_log.get("diagnostics") or {}).get("anomalous_unknown_count", 0),
                 "input_file_count": all_files_count,
@@ -678,7 +771,8 @@ class LocalProcessor:
                 "multi_variant_slot_count": multi_variant_slot_count,
                 "adopted_slot_count": adopted_file_count,
                 "io_retry_count": io_retry_count,
-                "io_retry_logs": io_retry_logs[:5],
+                "io_retry_logs": audit_copy_logs,
+                **deferred_copy_diagnostics,
             },
             "strategy": p1_res.get("strategy"),
             "confidence_reason": reason, 
@@ -686,7 +780,7 @@ class LocalProcessor:
             "tracks": processed_tracks_meta, 
             "unassigned_files": unassigned_manifest,
             "steam_info": steam_meta.model_dump(),
-            "diagnostics": diagnostics,
+            "diagnostics": {**diagnostics, **deferred_copy_diagnostics},
         }
         discord_msg = self._send_notifications(app_id, steam_meta.name, status, message, score, reason, llm_log, any_audio_failures, len(processed_tracks_meta), mbz_candidates)
 
@@ -720,6 +814,111 @@ class LocalProcessor:
         self.db.record_processed(app_id, status, steam_meta.name, self._get_localized_now().isoformat(), summary_meta)
         return LocalProcessResult(app_id=app_id, status=status, album_name=steam_meta.name, confidence_score=score, confidence_reason=reason, message=message, metadata=summary_meta)
 
+    def _retry_and_finalize_deferred_copy(self, context: Dict[str, Any]) -> LocalProcessResult:
+        retry_result = self._encode_and_tag_tracks(
+            context["app_id"],
+            context["steam_meta"],
+            context["final_metadata"],
+            context["mbz_candidates"],
+            context["track_groups"],
+            context["slot_variant_index"],
+            context["track_to_slot_index"],
+            context["llm_log"],
+            context["total_discs"],
+            context["temp_output"],
+            context["buffer_dir"],
+            None,
+            context["_diag"],
+            adopted_file_subset=context["deferred_track_data"],
+            defer_copy_failures=False,
+            include_unassigned=False,
+            artwork_prepared=True,
+            prepared_album_artwork_path=context["album_artwork_path"],
+        )
+        (
+            retried_tracks,
+            retry_audio_failures,
+            retry_audio_warnings,
+            retry_warned_tracks,
+            _,
+            retry_count,
+            retry_logs,
+            _,
+            _,
+            still_deferred,
+            _,
+        ) = retry_result
+
+        recovered_track_ids = {
+            log.get("track_id")
+            for log in retry_logs
+            if log.get("final_state") == "success" and log.get("track_id")
+        }
+        for log in context["io_retry_logs"]:
+            if log.get("track_id") in recovered_track_ids:
+                log["recovered_after_defer"] = True
+
+        final_copy_failures = [
+            log for log in retry_logs if log.get("final_state") == "failed"
+        ]
+        llm_diagnostics = context["llm_log"].setdefault("diagnostics", {})
+        llm_diagnostics["deferred_copy_count"] = len(context["deferred_track_data"])
+        llm_diagnostics["deferred_copy_success_count"] = len(recovered_track_ids)
+        llm_diagnostics["deferred_copy_failure_count"] = len(final_copy_failures)
+        llm_diagnostics["deferred_copy_failures"] = [
+            {
+                "track_id": log.get("track_id"),
+                "slot_key": log.get("slot_key"),
+                "source": log.get("source"),
+                "attempts": log.get("attempts", []),
+            }
+            for log in final_copy_failures
+        ]
+        context["_diag"](
+            "DEFERRED_COPY_RETRY_DONE",
+            succeeded=len(recovered_track_ids),
+            failed=len(final_copy_failures),
+            requeued=bool(still_deferred),
+        )
+
+        processed_tracks_meta = self._normalize_processed_tracks(
+            context["processed_tracks_meta"] + retried_tracks
+        )
+        combined_io_retry_logs = context["io_retry_logs"] + retry_logs
+        return self._finalize_album_package(
+            context["app_id"],
+            context["steam_meta"],
+            processed_tracks_meta,
+            context["llm_log"],
+            context["mbz_candidates"],
+            context["any_audio_failures"] or retry_audio_failures or bool(still_deferred),
+            context["any_audio_warnings"] or retry_audio_warnings,
+            context["audio_warned_tracks"] + retry_warned_tracks,
+            context["unassigned_manifest"],
+            context["temp_output"],
+            context["processing_route"],
+            context["all_files_count"],
+            context["adopted_file_count"],
+            context["track_groups"],
+            context["slot_variant_index"],
+            context["track_results_len"],
+            context["io_retry_count"] + retry_count,
+            combined_io_retry_logs,
+            context["alignment_inputs_bundle"],
+            context["mbz_log"],
+            context["diagnostics"],
+            context["_diag"],
+        )
+
+    def _run_deferred_copy_finalizer(self, context: Dict[str, Any]) -> LocalProcessResult:
+        try:
+            return self._retry_and_finalize_deferred_copy(context)
+        finally:
+            if not self.preserve_working_files:
+                for path in (context["temp_output"], context["buffer_dir"]):
+                    if path.exists():
+                        shutil.rmtree(path, ignore_errors=True)
+
     def process_album(
         self,
         app_id: int,
@@ -727,6 +926,7 @@ class LocalProcessor:
         steam_meta: SteamMetadata,
         on_track_complete: Optional[Callable[[], None]] = None,
         llm_progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        defer_copy_retries: bool = False,
     ) -> LocalProcessResult:
         logger.info(f"[{app_id}] --- 処理中: {steam_meta.name} ---")
         process_started_at = time.monotonic()
@@ -764,6 +964,7 @@ class LocalProcessor:
 
         temp_output: Optional[Path] = None
         buffer_dir: Optional[Path] = None
+        pending_copy_finalization = False
         try:
             context = self._init_album_context(app_id, install_dir, steam_meta, _diag)
             if context is None:
@@ -823,6 +1024,7 @@ class LocalProcessor:
                 buffer_dir,
                 on_track_complete,
                 _diag,
+                defer_copy_failures=defer_copy_retries,
             )
             (
                 processed_tracks_meta,
@@ -834,7 +1036,54 @@ class LocalProcessor:
                 io_retry_logs,
                 adopted_file_count,
                 track_results_len,
+                deferred_track_data,
+                album_artwork_path,
             ) = encode_result
+
+            if deferred_track_data and defer_copy_retries:
+                pending_copy_finalization = True
+                _diag("DEFERRED_COPY_QUEUED", track_count=len(deferred_track_data))
+                deferred_context = {
+                    "app_id": app_id,
+                    "steam_meta": steam_meta,
+                    "final_metadata": final_metadata,
+                    "mbz_candidates": mbz_candidates,
+                    "track_groups": track_groups,
+                    "slot_variant_index": slot_variant_index,
+                    "track_to_slot_index": track_to_slot_index,
+                    "llm_log": llm_log,
+                    "total_discs": total_discs,
+                    "temp_output": temp_output,
+                    "buffer_dir": buffer_dir,
+                    "_diag": _diag,
+                    "deferred_track_data": deferred_track_data,
+                    "album_artwork_path": album_artwork_path,
+                    "processed_tracks_meta": processed_tracks_meta,
+                    "any_audio_failures": any_audio_failures,
+                    "any_audio_warnings": any_audio_warnings,
+                    "audio_warned_tracks": audio_warned_tracks,
+                    "unassigned_manifest": unassigned_manifest,
+                    "io_retry_count": io_retry_count,
+                    "io_retry_logs": io_retry_logs,
+                    "adopted_file_count": adopted_file_count,
+                    "track_results_len": track_results_len,
+                    "processing_route": processing_route,
+                    "all_files_count": len(all_files),
+                    "alignment_inputs_bundle": alignment_inputs_bundle,
+                    "mbz_log": mbz_log,
+                    "diagnostics": diagnostics,
+                }
+                self._queue_deferred_copy_finalizer(
+                    app_id,
+                    lambda: self._run_deferred_copy_finalizer(deferred_context),
+                )
+                return LocalProcessResult(
+                    app_id=app_id,
+                    status="deferred",
+                    album_name=steam_meta.name,
+                    message=f"Deferred copy recovery queued ({len(deferred_track_data)} tracks)",
+                    metadata={"deferred_copy_count": len(deferred_track_data)},
+                )
 
             return self._finalize_album_package(
                 app_id,
@@ -873,7 +1122,7 @@ class LocalProcessor:
                     app_id,
                     ", ".join(str(path) for path in paths) or "なし",
                 )
-            else:
+            elif not pending_copy_finalization:
                 for path in paths:
                     if path.exists():
                         shutil.rmtree(path, ignore_errors=True)

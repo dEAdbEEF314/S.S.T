@@ -9,7 +9,8 @@ from typing import cast, Dict, Any, Optional, Tuple, Callable
 from datetime import UTC, datetime
 
 from ..rate_limit import DistributedRateLimiter
-from .prompts import get_system_prompt
+from .prompts import get_system_prompt, build_degraded_prompt
+import random
 
 logger = logging.getLogger("sst.llm.client")
 
@@ -27,7 +28,11 @@ class LLMClient:
                  ollama_think: bool = False,
                  llm_vram_scheduling_enabled: bool = True,
                  request_timeout: int = 3600,
-                 chunk_output_tokens_per_track: int = 180):
+                 chunk_output_tokens_per_track: int = 180,
+                 max_retries: int = 3,
+                 output_budget_safety_ratio: float = 0.25,
+                 adaptive_degraded_prompt_enabled: bool = True,
+                 user_language: str = "ja"):
         self.base_url = base_url.rstrip('/')
         self.api_key = api_key
         self.model = model
@@ -41,6 +46,10 @@ class LLMClient:
         self.request_timeout = request_timeout
         self.chunk_output_tokens_per_track = max(1, chunk_output_tokens_per_track)
         self.llm_backend = llm_backend.upper()
+        self.max_retries = max(0, max_retries)
+        self.output_budget_safety_ratio = max(0.0, output_budget_safety_ratio)
+        self.adaptive_degraded_prompt_enabled = adaptive_degraded_prompt_enabled
+        self.user_language = user_language
         self.limiter = DistributedRateLimiter(rpm, tpm, rpd)
         self.vram_manager = None
 
@@ -145,7 +154,7 @@ class LLMClient:
             log_entry["error"] = "Rate limit reached"
             return None, log_entry
 
-        max_retries = 3
+        max_retries = self.max_retries
         retry_delay = 5
         effective_num_ctx = num_ctx or self.ollama_num_ctx
         request_enqueued = time.monotonic()
@@ -160,21 +169,24 @@ class LLMClient:
         )
 
         output_budget = max(1, self._estimate_expected_output_tokens(request_kind, request_units))
+        # 動的出力トークン天井（安全マージン 25% 天井規約）
+        dynamic_budget_ceiling = max(256, int(output_budget * (1.0 + self.output_budget_safety_ratio)))
+        current_messages = list(messages)
+        is_degraded_active = False
+
         try:
             if self.llm_backend == "OLLAMA":
                 url = f"{self.base_url}/api/chat"
-                # Keep the backend output budget aligned with the adaptive
-                # chunk planner. Unlimited generation caused repeated backend
-                # truncation at the server's context boundary.
+                effective_output_budget = dynamic_budget_ceiling
                 if effective_num_ctx:
                     approx_prompt_tokens = max(512, len(prompt) // 3)
                     max_safe_output = max(256, effective_num_ctx - approx_prompt_tokens - 256)
-                    output_budget = min(output_budget, max_safe_output)
-                options = {"temperature": 0.0, "num_predict": output_budget}
+                    effective_output_budget = min(effective_output_budget, max_safe_output)
+                options = {"temperature": 0.0, "num_predict": effective_output_budget}
                 if effective_num_ctx:
                     options["num_ctx"] = effective_num_ctx
                 payload = {
-                    "model": self.model, "messages": messages, "stream": False, "format": "json",
+                    "model": self.model, "messages": current_messages, "stream": False, "format": "json",
                     "options": options, "think": self.ollama_think
                 }
                 if self.draft_model:
@@ -182,13 +194,14 @@ class LLMClient:
                 headers = {"Content-Type": "application/json"}
             elif self.llm_backend != "LITELLM":
                 url = f"{self.base_url}/v1beta/openai/chat/completions" if self.llm_backend == "GEMINI" else f"{self.base_url}/v1/chat/completions"
+                effective_cloud_max = min(self.llm_cloud_max_tokens, dynamic_budget_ceiling)
                 payload = {
                     "model": self.model,
-                    "messages": messages,
+                    "messages": current_messages,
                     "temperature": 0.0,
                     "response_format": {"type": "json_object"}
                 }
-                payload["max_tokens"] = self.llm_cloud_max_tokens
+                payload["max_tokens"] = effective_cloud_max
                 headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
 
             for attempt in range(max_retries + 1):
@@ -203,14 +216,15 @@ class LLMClient:
                 )
                 try:
                     if self.llm_backend == "LITELLM":
+                        effective_cloud_max = min(self.llm_cloud_max_tokens, dynamic_budget_ceiling)
                         sdk_response = litellm.completion(
                             model=self.model,
-                            messages=messages,
+                            messages=current_messages,
                             api_key=self.api_key or None,
                             api_base=None if self.base_url.lower() == "auto" else self.base_url,
                             timeout=self.request_timeout,
                             temperature=0.0,
-                            max_tokens=self.llm_cloud_max_tokens,
+                            max_tokens=effective_cloud_max,
                             extra_body={"think": self.ollama_think},
                             drop_params=True,
                             num_retries=0,
@@ -284,8 +298,26 @@ class LLMClient:
                             )
 
                         if done_reason in {"length", "max_tokens"}:
+                            if attempt < max_retries and self.adaptive_degraded_prompt_enabled and not is_degraded_active:
+                                logger.warning(
+                                    f"[{app_id}] 出力上限到達 (done_reason={done_reason}) を検知。縮退プロンプト（最小JSON指示）へ切り替えて再試行します..."
+                                )
+                                current_prompt = build_degraded_prompt(prompt, request_kind, self.user_language)
+                                current_messages = [
+                                    {"role": "system", "content": system_prompt},
+                                    {"role": "user", "content": current_prompt}
+                                ]
+                                is_degraded_active = True
+                                if self.llm_backend == "OLLAMA":
+                                    payload["messages"] = current_messages
+                                elif self.llm_backend != "LITELLM":
+                                    payload["messages"] = current_messages
+                                jitter = random.uniform(0.8, 1.2)
+                                time.sleep(retry_delay * jitter)
+                                retry_delay *= 1.5
+                                continue
+
                             if self.llm_backend == "OLLAMA" and attempt < max_retries:
-                                # 仕様書 §11.5: Truncation 発生時は出力トークン上限（num_predict）を倍増してリトライ
                                 current_predict = payload.get("options", {}).get("num_predict", output_budget)
                                 new_predict = min(current_predict * 2, self.ollama_num_predict)
                                 if new_predict > current_predict:
@@ -343,6 +375,26 @@ class LLMClient:
                                         return d
 
                                     parsed = lower_keys(parsed)
+                                if is_degraded_active and isinstance(parsed, dict):
+                                    if request_kind == "identity":
+                                        parsed.setdefault("confidence_reason", "縮退プロンプト適用（最小フォーマット判定）")
+                                        parsed.setdefault("concerns", [])
+                                        parsed.setdefault("semantic_label", "Archive" if parsed.get("album_confidence", 0) >= 80 else "Review")
+                                        parsed.setdefault("archive_vs_review_ratio", {
+                                            "archive": parsed.get("album_confidence", 0),
+                                            "review": 100 - parsed.get("album_confidence", 0)
+                                        })
+                                        parsed.setdefault("identity_confidence", parsed.get("album_confidence", 0))
+                                        parsed.setdefault("integrity_quality", parsed.get("data_quality", 0))
+                                    elif request_kind == "track_mapping":
+                                        slots = parsed.get("slots")
+                                        if isinstance(slots, dict):
+                                            for slot_info in slots.values():
+                                                if isinstance(slot_info, dict):
+                                                    slot_info.setdefault("reason", "Degraded mapping")
+                                        parsed.setdefault("unassigned_files", [])
+                                        parsed.setdefault("unassigned_reason", "")
+
                                 total_duration = round(time.monotonic() - request_started, 3)
                                 prompt_eval_count = log_entry.get("meta", {}).get("prompt_eval_count")
                                 eval_count = log_entry.get("meta", {}).get("eval_count")
@@ -402,7 +454,20 @@ class LLMClient:
                             attempt=attempt + 1,
                             reason=log_entry["error"],
                         )
-                        time.sleep(retry_delay)
+                        if self.adaptive_degraded_prompt_enabled and not is_degraded_active and status_code in (408, 500, 502, 503, 504):
+                            logger.info(f"[{app_id}] タイムアウト/エラー(HTTP {status_code})を検知。縮退プロンプトへ切り替えて再試行します...")
+                            current_prompt = build_degraded_prompt(prompt, request_kind, self.user_language)
+                            current_messages = [
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": current_prompt}
+                            ]
+                            is_degraded_active = True
+                            if self.llm_backend == "OLLAMA":
+                                payload["messages"] = current_messages
+                            elif self.llm_backend != "LITELLM":
+                                payload["messages"] = current_messages
+                        jitter = random.uniform(0.8, 1.2)
+                        time.sleep(retry_delay * jitter)
                         retry_delay *= 1.5
                         continue
                     return None, log_entry
@@ -419,7 +484,21 @@ class LLMClient:
                             attempt=attempt + 1,
                             reason=str(e),
                         )
-                        time.sleep(retry_delay)
+                        err_str = str(e).lower()
+                        if self.adaptive_degraded_prompt_enabled and not is_degraded_active and any(k in err_str for k in ("timeout", "timed out", "json", "408")):
+                            logger.info(f"[{app_id}] タイムアウト/JSON破損例外を検知。縮退プロンプトへ切り替えて再試行します...")
+                            current_prompt = build_degraded_prompt(prompt, request_kind, self.user_language)
+                            current_messages = [
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": current_prompt}
+                            ]
+                            is_degraded_active = True
+                            if self.llm_backend == "OLLAMA":
+                                payload["messages"] = current_messages
+                            elif self.llm_backend != "LITELLM":
+                                payload["messages"] = current_messages
+                        jitter = random.uniform(0.8, 1.2)
+                        time.sleep(retry_delay * jitter)
                         retry_delay *= 1.5
                         continue
                     log_entry["error"] = str(e)

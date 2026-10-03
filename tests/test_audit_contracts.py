@@ -146,3 +146,82 @@ def test_validator_flags_llm_rejected_slots_and_duplicates():
     assert status == "review"
     assert "LLM Rejected Slots (2)" in message
     assert "LLM Duplicate Assignment (1)" in message
+
+
+def test_validator_reads_nested_alignment_diagnostics():
+    log = llm_log()
+    log["alignment_res"] = {
+        "diagnostics": {
+            "rejected_slot_keys": ["99"],
+            "duplicate_assignment_file_ids": ["file-1"],
+            "contradictory_slot_assignments": [{"matched_v_idx": 0}],
+        }
+    }
+
+    status, message, _, _, _ = ResultValidator.validate(
+        1, [track("Real Title")], log, [], steam_meta("Real Title"), False, False
+    )
+
+    assert status == "review"
+    assert "LLM Rejected Slots (1)" in message
+    assert "LLM Duplicate Assignment (1)" in message
+    assert "LLM Contradictory Slot Assignments (1)" in message
+
+
+def test_validator_reviews_duplicate_output_paths():
+    steam = SteamMetadata(
+        app_id=424246,
+        name="Duplicate Path Test OST",
+        store_tracklist=[
+            {"disc": "1", "number": "1", "title": "First"},
+            {"disc": "1", "number": "2", "title": "Second"},
+        ],
+    )
+    tracks = [
+        {
+            "file_path": "disc_1/shared.aif",
+            "tags": {"disc_number": "1", "track_number": "1", "title": "First"},
+        },
+        {
+            "file_path": "disc_1/SHARED.aif",
+            "tags": {"disc_number": "1", "track_number": "2", "title": "Second"},
+        },
+    ]
+    log = llm_log()
+
+    status, message, _, _, _ = ResultValidator.validate(
+        424246, tracks, log, [], steam, False, False
+    )
+
+    assert status == "review"
+    assert "Duplicate Output Paths (1)" in message
+    assert log["diagnostics"]["duplicate_output_path_count"] == 1
+
+
+def test_validator_reports_exhausted_deferred_copy_recovery():
+    log = llm_log()
+    log["diagnostics"] = {
+        "deferred_copy_failures": [
+            {"track_id": "1_theme", "source": "01_theme.mp3"}
+        ]
+    }
+
+    status, message, _, _, _ = ResultValidator.validate(
+        1, [track("Real Title")], log, [], steam_meta("Real Title"), True, False
+    )
+
+    assert status == "review"
+    assert "CRITICAL: Audio Source Error" in message
+    assert "Deferred Copy Recovery Exhausted (1)" in message
+
+
+def test_audit_duplicate_slot_count_is_not_missing_track_count():
+    from sst.processor import LocalProcessor
+
+    tracks = [
+        {"tags": {"disc_number": "1", "track_number": "1"}},
+        {"tags": {"disc_number": "1", "track_number": "2"}},
+    ]
+
+    assert LocalProcessor._count_duplicate_slot_keys(tracks) == 0
+    assert LocalProcessor._count_duplicate_slot_keys(tracks + [tracks[-1]]) == 1
