@@ -43,32 +43,34 @@ class EmbeddedMetadataExtractor:
 
             # Check for artwork and additional tags (APIC/COMM in ID3 or other formats)
             try:
-                full_audio = File(file_path)
-                if not metadata.get("comment") and full_audio and full_audio.tags:
-                    # Search for COMM frames if easy mode missed it (common in ID3)
-                    for key in full_audio.tags.keys():
-                        if key.startswith("COMM"):
-                            comm_frame = full_audio.tags[key]
-                            if hasattr(comm_frame, "text") and comm_frame.text:
-                                metadata["comment"] = str(comm_frame.text[0])
-                                break
+                # Single-pass: inspect underlying raw tags / picture blocks without re-opening file
+                raw_tags = getattr(audio.tags, "_EasyID3__id3", audio.tags)
+                if raw_tags is not None and hasattr(raw_tags, "keys"):
+                    if not metadata.get("comment"):
+                        # Search for COMM frames if easy mode missed it (common in ID3)
+                        for key in raw_tags.keys():
+                            if key.startswith("COMM"):
+                                comm_frame = raw_tags[key]
+                                if hasattr(comm_frame, "text") and comm_frame.text:
+                                    metadata["comment"] = str(comm_frame.text[0])
+                                    break
 
-                if not metadata.get("composer") and full_audio and full_audio.tags:
-                    for key in full_audio.tags.keys():
-                        if key.startswith("TCOM"):
-                            composer_frame = full_audio.tags[key]
-                            if hasattr(composer_frame, "text") and composer_frame.text:
-                                metadata["composer"] = str(composer_frame.text[0])
-                                break
+                    if not metadata.get("composer"):
+                        for key in raw_tags.keys():
+                            if key.startswith("TCOM"):
+                                composer_frame = raw_tags[key]
+                                if hasattr(composer_frame, "text") and composer_frame.text:
+                                    metadata["composer"] = str(composer_frame.text[0])
+                                    break
 
-                if hasattr(full_audio, 'pictures') and full_audio.pictures:
+                if hasattr(audio, 'pictures') and audio.pictures:
                     metadata["has_artwork"] = True
-                elif isinstance(full_audio, ID3):
-                    if full_audio.getall("APIC"):
+                elif isinstance(raw_tags, ID3) or hasattr(raw_tags, "getall"):
+                    if hasattr(raw_tags, "getall") and raw_tags.getall("APIC"):
                         metadata["has_artwork"] = True
-                elif getattr(full_audio, 'tags', None) is not None:
+                elif raw_tags is not None and hasattr(raw_tags, "keys"):
                     # Check for common artwork tags in different formats
-                    for key in full_audio.tags.keys():
+                    for key in raw_tags.keys():
                         if "covr" in key or "METADATA_BLOCK_PICTURE" in key:
                             metadata["has_artwork"] = True
                             break

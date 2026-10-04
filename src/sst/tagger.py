@@ -1,3 +1,4 @@
+import os
 import subprocess
 import logging
 import re
@@ -23,11 +24,29 @@ class AudioTagger:
 
     def _get_audio_properties(self, path: Path) -> Tuple[int, int]:
         """
-        Gets (sample_rate, bit_depth) using ffprobe.
+        Gets (sample_rate, bit_depth) using Mutagen header inspection with ffprobe fallback.
         Returns (0, 0) on failure.
         """
+        # 1. Fast path: Mutagen direct header inspection (no subprocess)
+        try:
+            from mutagen import File
+            audio = File(path)
+            if audio is not None and getattr(audio, "info", None) is not None:
+                sr = getattr(audio.info, "sample_rate", None)
+                if sr is not None and isinstance(sr, (int, float)) and sr > 0:
+                    sample_rate = int(sr)
+                    bit_depth = 0
+                    bd = getattr(audio.info, "bits_per_sample", None)
+                    if bd is not None and isinstance(bd, int) and bd > 0:
+                        bit_depth = int(bd)
+                    return sample_rate, bit_depth
+        except Exception:
+            pass
+
+        # 2. Fallback: ffprobe process invocation (with configurable timeout)
         import json
         try:
+            timeout_sec = float(os.getenv("FFPROBE_TIMEOUT", "10"))
             cmd = [
                 "ffprobe", "-v", "error", 
                 "-select_streams", "a:0", 
@@ -35,7 +54,7 @@ class AudioTagger:
                 "-of", "json", 
                 str(path)
             ]
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
             data = json.loads(res.stdout)
             streams = data.get("streams", [])
             if not streams:

@@ -150,3 +150,14 @@ uv run pytest
 | **ハイブリッド高速 ZIP 圧縮 (`ZIP_COMPRESSION_STRATEGY=auto`)** | 音声・画像ファイルは無圧縮 (`ZIP_STORED`)、テキスト・JSON・キューシートのみ `ZIP_DEFLATED` (level 1) で格納する専用 packager を実装。 | 2.5GBアルバムのZIP化時間が **89.5秒 → 3.1秒** に激減。100件バッチ全体で約35分の短縮効果。パストラバーサル検証も内包。 |
 | **Mutagen ヘッダ直接抽出 (Fast Duration)** | `EmbeddedMetadataExtractor` で開いた `mutagen.File.info.length` を直接利用し、`TrackManager.get_duration` も Mutagen を最優先、失敗時のみ `ffprobe` にフォールバック。 | 1曲あたりの所要時間が **~400ms → 13.1ms (約30倍高速)**。外部プロセス起動をゼロ化し、100件バッチで約21分の短縮効果。 |
 | **AcoustID 代表サンプリング制御 (`SST_FINGERPRINT_SAMPLE_SIZE`)** | `SST_FINGERPRINT_ALL=false` 時にトラックリスト全体から均等に代表曲を抽出するサンプリングアルゴリズムを導入。 | アルバム特定に必要な信頼度を担保しつつ、API 待機時間を大幅に抑制。 |
+
+
+### 8.3 追加のファイル I/O および外部プロセス起動最適化
+
+第1弾の最適化（ZIP高速化、Fast Duration、AcoustIDサンプリング）に続き、コードベース全体の精査に基づき以下の3項目の高速化を実装した。
+
+| 最適化項目 | 実装方針 | 効果 / ベンチマーク結果 |
+|---|---|---|
+| **音声プロパティ高速抽出 (Fast Audio Properties)** | `AudioTagger._get_audio_properties` でロスレス（AIFF）変換時の sample_rate / bit_depth 取得を Mutagen ヘッダ直接読み込みに刷新。失敗時のみ `ffprobe` にフォールバック。 | 1曲あたり **47.7ms → 0.47ms (約100倍高速)**。100件バッチのロスレス曲（数千曲）で約15〜20分の外部プロセス起動オーバーヘッドを解消。 |
+| **単一オープンメタデータ抽出 (Single-pass Extractor)** | `EmbeddedMetadataExtractor.extract` において、`File(easy=True)` の内部 `raw_tags`（`_EasyID3__id3` または `tags`）から APIC / COMM / TCOM を直接抽出し、同一ファイルの二重オープン（`File(file_path)` の再呼び出し）を撤廃。 | 1ファイルあたりのメタデータパース時間を **約 2.6 倍高速化**。ディスク I/O 回数を半減。 |
+| **事前走査ファイル一覧の引き継ぎ (Pre-scanned Context Reuse)** | `JobRunner.run` でスキャンした `_audio_files` を `LocalProcessor.process_album` へ引き継ぎ、`_init_album_context` での同一ディレクトリ二重 `rglob("*")` 走査を排除。また `list_audio_files` の拡張子・隠しファイル判定を早期化。 | アルバム初期化時のファイルシステム再帰走査をゼロ化。 |

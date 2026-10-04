@@ -114,6 +114,7 @@ class SteamWebClient:
             "store_tracklist_source": None,
             "store_tracklist_language": None,
             "store_credits": "",
+            "store_description": None,
             "label": None,
             "release_date": None,
             "header_image_url": None,
@@ -213,6 +214,7 @@ class SteamWebClient:
                     result["header_image_url"] = app_data.get("header_image")
                     result["capsule_image_url"] = app_data.get("capsule_image")
                     description = app_data.get("detailed_description", "")
+                    result["store_description"] = description
                 else:
                     description = ""
 
@@ -305,6 +307,7 @@ class SteamWebClient:
                                 english_data = english_response.json().get(str(app_id), {})
                                 if english_data.get("success"):
                                     candidate_description = english_data.get("data", {}).get("detailed_description", "")
+                                    result["store_description"] = candidate_description
                                     description_language = "english"
                         except Exception as language_error:
                             logger.debug(f"{app_id} の英語説明文フォールバックに失敗しました: {language_error}")

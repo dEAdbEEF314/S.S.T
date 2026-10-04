@@ -27,6 +27,7 @@ class SteamMetadata(BaseModel):
     store_tracklist_source: Optional[str] = None # STEAM_PICS or STEAM_TEXT_TRACKLIST
     store_tracklist_language: Optional[str] = None
     store_credits: str = "" # Scraped from HTML
+    store_description: Optional[str] = None
 
 class TrackMetadata(BaseModel):
     title: str

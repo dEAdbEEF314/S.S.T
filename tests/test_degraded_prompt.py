@@ -1,4 +1,3 @@
-import pytest
 from sst.config import Config
 from sst.llm.prompts import build_identity_prompt, build_mapping_prompt, build_degraded_prompt
 from sst.llm.client import LLMClient

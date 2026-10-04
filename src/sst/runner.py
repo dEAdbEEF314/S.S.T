@@ -38,9 +38,11 @@ class JobRunner:
                 install_dir = Path(ost["install_dir"])
                 audio_files = TrackManager.list_audio_files(install_dir)
                 ost["_track_count"] = len(audio_files)
+                ost["_audio_files"] = audio_files
             except Exception as e:
                 logger.error(f"[{ost.get('app_id')}] 初期トラック数スキャン中にエラーが発生しました: {e}")
                 ost["_track_count"] = 0
+                ost["_audio_files"] = []
 
         # Sort soundtracks by track count to process small ones first (better packing)
         soundtracks.sort(key=lambda x: x["_track_count"])
@@ -106,6 +108,7 @@ class JobRunner:
                     on_track_complete=lambda: progress.advance(album_task),
                     llm_progress_callback=_llm_progress,
                     defer_copy_retries=True,
+                    pre_scanned_files=ost.get("_audio_files"),
                 )
                 
                 if result is None:

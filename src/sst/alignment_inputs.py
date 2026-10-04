@@ -375,9 +375,9 @@ class AlignmentInputBuilder:
                 "duration_ms": int(best["duration"] * 1000)
             })
             
-        # Sort tracks by (disc, track_num)
+        # Sort tracks by (disc, track_num, title)
         signal_bundle["tracks"].sort(
-            key=lambda t: (t["disc"], t["track_num"] if t["track_num"] is not None else 999)
+            key=lambda t: (t["disc"], t["track_num"] if t["track_num"] is not None else 999, str(t.get("title") or ""))
         )
             
         return signal_bundle

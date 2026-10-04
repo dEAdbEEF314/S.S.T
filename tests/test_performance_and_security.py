@@ -17,6 +17,11 @@ from sst.utils import (
 from sst.packager import PackageManager
 from sst.track_grouper import TrackManager
 from sst.processor_support import safe_download_image
+from sst.tagger import AudioTagger
+from sst.ident.embedded import EmbeddedMetadataExtractor
+from sst.processor import LocalProcessor
+from sst.models import SteamMetadata
+import subprocess
 
 
 # ==============================================================================
@@ -252,3 +257,138 @@ def test_config_env_overrides():
         assert cfg.zip_compression_strategy == "stored"
         assert cfg.sst_fingerprint_sample_size == 5
         assert cfg.security_block_private_ips is False
+
+
+# ==============================================================================
+# 4. Fast Audio Properties & Single-pass Metadata Tests
+# ==============================================================================
+
+def test_audio_tagger_get_audio_properties_fast_path():
+    """Verify AudioTagger._get_audio_properties extracts properties via Mutagen without ffprobe."""
+    with tempfile.TemporaryDirectory() as td:
+        flac_path = Path(td) / "test.flac"
+        # Create a sample FLAC using ffmpeg
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=1000:duration=0.1", "-c:a", "flac", "-sample_fmt", "s32", "-ar", "96000", str(flac_path)],
+            check=True,
+            capture_output=True,
+        )
+
+        tagger = AudioTagger(output_dir=Path(td))
+        with patch("subprocess.run") as mock_sub:
+            rate, depth = tagger._get_audio_properties(flac_path)
+            assert rate == 96000
+            assert depth == 24
+            # Subprocess (ffprobe) should NOT be invoked
+            assert not mock_sub.called
+
+
+def test_audio_tagger_get_audio_properties_ffprobe_fallback():
+    """Verify AudioTagger._get_audio_properties falls back to ffprobe when mutagen cannot parse."""
+    with tempfile.NamedTemporaryFile(suffix=".flac") as tmp:
+        tmp.write(b"corrupted flac header content")
+        tmp.flush()
+
+        tagger = AudioTagger(output_dir=Path(tmp.name).parent)
+        fake_ffprobe_output = '{"streams": [{"sample_rate": "44100", "bits_per_sample": 16}]}'
+        with patch("subprocess.run") as mock_sub:
+            mock_sub.return_value = MagicMock(stdout=fake_ffprobe_output)
+            rate, depth = tagger._get_audio_properties(Path(tmp.name))
+            assert rate == 44100
+            assert depth == 16
+            assert mock_sub.called
+
+
+def test_embedded_metadata_extractor_single_pass():
+    """Verify EmbeddedMetadataExtractor.extract parses all fields in a single pass without reopening the file."""
+    with tempfile.TemporaryDirectory() as td:
+        mp3_path = Path(td) / "test.mp3"
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=1000:duration=0.1", "-c:a", "libmp3lame", str(mp3_path)],
+            check=True,
+            capture_output=True,
+        )
+
+        from mutagen.id3 import ID3, TIT2, TPE1, TALB, APIC, COMM, TCOM
+        id3 = ID3(mp3_path)
+        id3.add(TIT2(encoding=3, text=["SinglePass Title"]))
+        id3.add(TPE1(encoding=3, text=["SinglePass Artist"]))
+        id3.add(TALB(encoding=3, text=["SinglePass Album"]))
+        id3.add(TCOM(encoding=3, text=["SinglePass Composer"]))
+        id3.add(COMM(encoding=3, lang="eng", desc="", text=["SinglePass Comment"]))
+        id3.add(APIC(encoding=3, mime="image/jpeg", type=3, desc="Cover", data=b"fakejpeg"))
+        id3.save()
+
+        # Count mutagen.File calls: exactly 1 call should happen
+        import mutagen
+        original_file = mutagen.File
+        file_call_count = 0
+
+        def counting_file(*args, **kwargs):
+            nonlocal file_call_count
+            file_call_count += 1
+            return original_file(*args, **kwargs)
+
+        with patch("sst.ident.embedded.File", side_effect=counting_file):
+            meta = EmbeddedMetadataExtractor.extract(mp3_path)
+
+        assert file_call_count == 1
+        assert meta.get("title") == "SinglePass Title"
+        assert meta.get("artist") == "SinglePass Artist"
+        assert meta.get("album") == "SinglePass Album"
+        assert meta.get("composer") == "SinglePass Composer"
+        assert meta.get("comment") == "SinglePass Comment"
+        assert meta.get("has_artwork") is True
+        assert meta.get("duration", 0) > 0
+
+
+def test_processor_uses_pre_scanned_files():
+    """Verify LocalProcessor._init_album_context uses pre_scanned_files without re-scanning."""
+    with tempfile.TemporaryDirectory() as td:
+        dummy_file = Path(td) / "track01.flac"
+        dummy_file.write_bytes(b"fake")
+
+        config = Config(steam_install_path="/tmp")
+        db = MagicMock()
+        processor = LocalProcessor(config, db)
+
+        steam_meta = SteamMetadata(app_id=999, name="Test Album")
+        diag_events = []
+
+        with patch("sst.track_grouper.TrackManager.list_audio_files") as mock_list,              patch("sst.track_grouper.TrackManager.build_file_records", return_value={}):
+            context = processor._init_album_context(
+                app_id=999,
+                install_dir=Path(td),
+                steam_meta=steam_meta,
+                _diag=lambda s, **kw: diag_events.append(s),
+                pre_scanned_files=[dummy_file],
+            )
+            assert not mock_list.called
+            assert context is not None
+            assert context[0] == [dummy_file]
+
+
+def test_track_manager_list_audio_files_filtering():
+    """Verify TrackManager.list_audio_files rejects hidden files and non-audio files efficiently."""
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td)
+        (base / "song.flac").write_bytes(b"flac")
+        (base / "song.mp3").write_bytes(b"mp3")
+        (base / ".hidden.flac").write_bytes(b"hidden")
+        (base / "._apple_double.mp3").write_bytes(b"appledouble")
+        (base / "readme.txt").write_bytes(b"text")
+        (base / "cover.jpg").write_bytes(b"jpg")
+
+        subdir = base / "__macosx"
+        subdir.mkdir()
+        (subdir / "sub.flac").write_bytes(b"sub")
+
+        found = TrackManager.list_audio_files(base)
+        found_names = {f.name for f in found}
+        assert "song.flac" in found_names
+        assert "song.mp3" in found_names
+        assert ".hidden.flac" not in found_names
+        assert "._apple_double.mp3" not in found_names
+        assert "readme.txt" not in found_names
+        assert "cover.jpg" not in found_names
+        assert "sub.flac" not in found_names

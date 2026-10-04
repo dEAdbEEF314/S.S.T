@@ -241,7 +241,7 @@ def main():
             cache_path="data/sst_cache.json",
             language=config.steam_language_full,
             tag_refresh_days=config.steam_tag_cache_refresh_days,
-            llm_extractor=processor.llm,
+            llm_extractor=None,  # オンデマンド抽出へ移行（スキャン時のLLM呼び出しを防止）
             api_timeout=config.steam_api_timeout,
             pics_timeout=config.steam_pics_timeout,
             max_retries=config.steam_api_max_retries,

@@ -358,9 +358,10 @@ class LocalProcessor:
         install_dir: Path,
         steam_meta: SteamMetadata,
         _diag: Callable,
+        pre_scanned_files: Optional[List[Path]] = None,
     ) -> Optional[Tuple[List[Path], Dict, int, int, Any]]:
         _diag("PROCESS_START", install_dir=str(install_dir))
-        all_files = TrackManager.list_audio_files(install_dir)
+        all_files = pre_scanned_files if pre_scanned_files is not None else TrackManager.list_audio_files(install_dir)
         _diag("FILES_SCANNED", audio_file_count=len(all_files))
         if not all_files:
             _diag("SKIP_NO_AUDIO")
@@ -368,6 +369,25 @@ class LocalProcessor:
 
         track_groups = TrackManager.build_file_records(all_files, album_name=steam_meta.name)
         _diag("FILE_RECORDS_BUILT", file_count=len(track_groups))
+
+        if not steam_meta.store_tracklist and getattr(steam_meta, "store_description", None):
+            from .steam_web_api import SteamWebClient
+            desc_text = SteamWebClient._description_text(steam_meta.store_description)
+            if desc_text:
+                logger.info(f"[{app_id}] ストアトラックリスト未設定のため、オンデマンドLLM抽出を実行します。")
+                llm_tracks, llm_log = self.llm.extract_steam_tracklist(app_id, desc_text)
+                if llm_tracks:
+                    steam_meta.store_tracklist = llm_tracks
+                    steam_meta.store_tracklist_source = "STEAM_TEXT_TRACKLIST_LLM"
+                    self.db.save_store_data(
+                        app_id,
+                        llm_tracks,
+                        steam_meta.store_credits or "",
+                        tracklist_language=getattr(steam_meta, "store_tracklist_language", None)
+                    )
+                    logger.info(f"[{app_id}] オンデマンドLLM抽出成功: {len(llm_tracks)} トラックを取得しました。")
+                    _diag("STORE_TRACKLIST_EXTRACTED_ON_DEMAND", track_count=len(llm_tracks))
+
         max_local_disc = max((d for d, _ in track_groups.keys()), default=1) if track_groups else 1
         max_store_disc = max((int(t.get("disc", 1)) for t in steam_meta.store_tracklist), default=1) if steam_meta.store_tracklist else 1
         total_discs = max(max_local_disc, max_store_disc)
@@ -950,6 +970,7 @@ class LocalProcessor:
         on_track_complete: Optional[Callable[[], None]] = None,
         llm_progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
         defer_copy_retries: bool = False,
+        pre_scanned_files: Optional[List[Path]] = None,
     ) -> LocalProcessResult:
         logger.info(f"[{app_id}] --- 処理中: {steam_meta.name} ---")
         process_started_at = time.monotonic()
@@ -989,7 +1010,9 @@ class LocalProcessor:
         buffer_dir: Optional[Path] = None
         pending_copy_finalization = False
         try:
-            context = self._init_album_context(app_id, install_dir, steam_meta, _diag)
+            context = self._init_album_context(
+                app_id, install_dir, steam_meta, _diag, pre_scanned_files=pre_scanned_files
+            )
             if context is None:
                 return LocalProcessResult(app_id=app_id, status="skip", album_name=steam_meta.name, message="No audio", confidence_score=0)
             all_files, track_groups, total_discs, track_count, execution_profile = context

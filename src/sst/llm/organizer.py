@@ -784,7 +784,7 @@ class LLMOrganizer:
 
         return start_idx, segment_instructions, segment_logs
 
-    def _adaptive_chunk_size(self, base_chunk_size: int) -> int:
+    def _adaptive_chunk_size(self, base_chunk_size: int, execution_profile: Optional[Any] = None) -> int:
         if not self.chunk_adaptive:
             return max(1, base_chunk_size)
 
@@ -798,18 +798,22 @@ class LLMOrganizer:
         by_output = max(1, safe_output_budget // self.chunk_output_tokens_per_track)
         
         if self.llm_backend == "OLLAMA":
-            # Ollamaの場合: VRAMはセマフォで管理されるため、出力限界までOne-shot化
-            return by_output
+            dynamic_limit = by_output
         else:
             # 外部APIの場合: 毎分トークン(TPM)の枯渇による429エラーを防止する
             # 1曲あたりの総消費見積もり(入力150+出力180=330)、オーバーヘッド約1000
             tpm_limit = self.llm_limit_tpm
             safe_tpm_budget = int(tpm_limit * 0.8) # 80%の安全マージン
             by_tpm = max(1, (safe_tpm_budget - 1000) // 330)
-            
-            # 出力破綻限界とTPM枯渇限界の、より厳しい方（小さい方）を最終的な限界チャンクとして採用
             dynamic_limit = min(by_output, by_tpm)
-            return dynamic_limit
+
+        prefer_one_shot = getattr(execution_profile, "prefer_one_shot", False) if execution_profile else False
+        if not prefer_one_shot:
+            return max(1, min(base_chunk_size, dynamic_limit))
+        else:
+            # One-shot を選好する場合でも、1リクエストの巨大化によるトークン爆発とモデル精度劣化を防ぐため安全上限(50曲)を設ける
+            max_safe_one_shot = max(base_chunk_size, min(50, dynamic_limit))
+            return max(1, max_safe_one_shot)
 
     def _is_truncation_log(self, log_data: Dict[str, Any]) -> bool:
         if not isinstance(log_data, dict):
@@ -1036,7 +1040,7 @@ class LLMOrganizer:
         prematch_map: Optional[Dict[str, Any]],
     ) -> Dict[int, Tuple[Dict[str, Dict[str, Any]], List[Dict[str, Any]]]]:
         segment_results: Dict[int, Tuple[Dict[str, Dict[str, Any]], List[Dict[str, Any]]]] = {}
-        dynamic_chunk_size = max(1, self._adaptive_chunk_size(self.chunk_size_virtual))
+        dynamic_chunk_size = max(1, self._adaptive_chunk_size(self.chunk_size_virtual, execution_profile))
         segments = [
             (start_idx, unmatched_local_tracks[start_idx:start_idx + dynamic_chunk_size])
             for start_idx in range(0, len(unmatched_local_tracks), dynamic_chunk_size)

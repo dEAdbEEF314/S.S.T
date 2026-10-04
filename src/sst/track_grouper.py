@@ -35,15 +35,15 @@ class TrackManager:
                 return []
             for p in directory.rglob("*"):
                 try:
+                    name = p.name
+                    if name.startswith(".") or name.startswith("._"):
+                        continue
+                    if p.suffix.lower() not in exts:
+                        continue
                     path_parts = {part.lower() for part in p.parts}
-                    if (
-                        p.suffix.lower() in exts
-                        and not p.name.startswith(".")
-                        and not p.name.startswith("._")
-                        and ".ds_store" not in path_parts
-                        and "__macosx" not in path_parts
-                    ):
-                        audio_files.append(p)
+                    if ".ds_store" in path_parts or "__macosx" in path_parts:
+                        continue
+                    audio_files.append(p)
                 except OSError as e:
                     logger.warning(f"ファイルアクセス中にエラーが発生しました ({p}): {e}")
                     continue
@@ -117,6 +117,8 @@ class TrackManager:
                 t_num_str = str(file_track)
             else:
                 t_num = re.match(r'^(\d+)', f.stem)
+                if not t_num:
+                    t_num = re.search(r'(?:^|[\s\-_])(\d{1,3})(?:[\s\-_.]|$)', f.stem)
                 filename_track_val = int(t_num.group(1)) if t_num else None
                 t_num_str = t_num.group(1) if t_num else None
 

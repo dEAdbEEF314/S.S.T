@@ -154,6 +154,7 @@ class SteamScanner:
                     "store_tracklist_source": enriched.get("store_tracklist_source"),
                     "store_tracklist_language": enriched.get("store_tracklist_language"),
                     "store_credits": enriched.get("store_credits", ""),
+                    "store_description": enriched.get("store_description"),
                     "url": f"https://store.steampowered.com/app/{current_id}",
                     "header_image_url": enriched.get("header_image_url"),
                     "parent_header_image_url": enriched.get("parent_header_image_url"),
@@ -200,6 +201,7 @@ class SteamScanner:
             "store_tracklist_source": None,
             "store_tracklist_language": None,
             "store_credits": "",
+            "store_description": None,
             "parent_app_id": common.get("parent") or common.get("fullgameid"),
             "parent_genres": []
         }

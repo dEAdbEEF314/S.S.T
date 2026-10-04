@@ -52,7 +52,7 @@ API の輻輳やレート制限を防ぎ、通信エラーに対する復旧性�
   - `stored`: 全ファイルを無圧縮（`ZIP_STORED`）で保存（超高速 I/O）。
   - `deflate`: 全ファイルを DEFLATE 圧縮（従来の挙動）。
 - `ZIP_DEFLATE_LEVEL`: DEFLATE 圧縮時の圧縮レベル 1〜9（既定: 1 / 最高速）。
-- `FFPROBE_TIMEOUT`: `ffprobe` のタイムアウト秒数（既定: 10.0）。※音源 duration は mutagen によるヘッダ直接抽出（高速パス: 1ファイル約13ms）が優先され、mutagen 失敗時のみ ffprobe へフォールバックします。
+- `FFPROBE_TIMEOUT`: `ffprobe` のタイムアウト秒数（既定: 10.0）。※音源 duration およびロスレス音声プロパティ（sample_rate, bit_depth）は mutagen によるヘッダ直接抽出（高速パス: 0.5ms〜13ms）が優先され、mutagen 失敗時のみ ffprobe へフォールバックします。
 - `FFMPEG_TIMEOUT`: `ffmpeg` エンコードのタイムアウト秒数（既定: 600.0）。
 - `IMAGE_DOWNLOAD_TIMEOUT`: カバーアート画像ダウンロードのタイムアウト秒数（既定: 15.0）。
 - `IMAGE_DOWNLOAD_MAX_BYTES`: カバーアート画像ダウンロードの最大許容サイズ（既定: 25MB = 26,214,400 bytes）。超過時は安全に中止します。
