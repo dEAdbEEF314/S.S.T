@@ -9,6 +9,7 @@ class MockDB:
 def base_config():
     return Config(
         steam_install_path="/tmp",
+        steam_library_path="/tmp/steam-library",
         llm_album_tier_small_max_tracks=50,
         llm_album_tier_medium_max_tracks=100,
         llm_ollama_num_ctx_small=8192,

@@ -199,7 +199,8 @@ def main():
 
         # Removed Fingerprint-all confirmation as it is now default
     except Exception as e:
-        return console.print(f"[red]設定エラー: {e}[/red]")
+        console.print(f"[red]設定エラー: {e}[/red]")
+        raise SystemExit(2) from e
 
     fetch_steam_userdata(config, console)
 
@@ -238,7 +239,7 @@ def main():
             bridge_url=config.steam_pics_bridge_url,
             bridge_api_key=config.steam_pics_bridge_api_key,
             api_key=config.steam_web_api_key,
-            override_library_path=config.steam_library_path,
+            library_path=config.steam_library_path,
             cache_path=config.sst_steam_cache_path,
             tag_cache_path=config.sst_steam_tag_cache_path,
             language=config.steam_language_full,
@@ -353,6 +354,7 @@ def main():
     except Exception as e:
         logger.error(f"致命的なシステムエラー: {e}", exc_info=True)
         console.print(f"[bold red]致命的なエラー: {e}[/bold red]")
+        raise SystemExit(1) from e
     finally:
         if lock_file.exists():
             lock_file.unlink()

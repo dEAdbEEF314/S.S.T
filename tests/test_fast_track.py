@@ -27,7 +27,10 @@ class MockDB(DatabaseManager):
 
 
 def make_processor() -> LocalProcessor:
-    return LocalProcessor(Config(steam_install_path="/tmp"), MockDB())
+    return LocalProcessor(
+        Config(steam_install_path="/tmp", steam_library_path="/tmp/steam-library"),
+        MockDB(),
+    )
 
 
 def make_steam_meta() -> SteamMetadata:

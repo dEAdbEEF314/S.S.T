@@ -4,7 +4,7 @@ from typing import Any, Callable, List, Optional
 from pathlib import Path
 
 from .utils import ensure_path
-from .steam_vdf import SteamBinaryVDF, SteamLibraryDiscovery
+from .steam_vdf import SteamBinaryVDF
 from .db import DatabaseManager
 from .scanner_cache import ScannerCacheManager
 from .steam_web_api import SteamWebClient
@@ -20,9 +20,9 @@ class SteamScanner:
         install_path: str,
         db: DatabaseManager,
         bridge_url: str,
+        library_path: str,
         bridge_api_key: Optional[str] = None,
         api_key: Optional[str] = None,
-        override_library_path: Optional[str] = None,
         cache_path: str = "data/scout_cache.json",
         tag_cache_path: str = "data/steam_tags.json",
         language: str = "japanese",
@@ -58,8 +58,19 @@ class SteamScanner:
             throttle_delay=throttle_delay,
         )
         
-        # 1. Discover all libraries
-        self.library_paths = self._discover_all_libraries(override_library_path)
+        # Use the explicitly configured path so mounted libraries are not inferred
+        # from Windows paths in libraryfolders.vdf.
+        self.library_path = ensure_path(library_path)
+        if not self.library_path.is_dir():
+            raise FileNotFoundError(
+                f"STEAM_LIBRARY_PATH does not exist or is not accessible: {self.library_path}"
+            )
+        if not (self.library_path / "steamapps").is_dir():
+            raise FileNotFoundError(
+                f"STEAM_LIBRARY_PATH must contain a steamapps directory: {self.library_path}"
+            )
+        self.library_paths = [self.library_path]
+        logger.info("明示されたSteamライブラリパスを使用します: %s", self.library_path)
         
         # 2. Parse appinfo.vdf
         appcache_path = self.install_path / "appcache" / "appinfo.vdf"
@@ -69,22 +80,6 @@ class SteamScanner:
         else:
             self.appinfo_dict = {}
             logger.warning(f"appinfo.vdf が {appcache_path} に見つかりません。基本スキャンにフォールバックします。")
-
-
-
-
-    def _discover_all_libraries(self, override_path: Optional[str]) -> List[Path]:
-        libs = SteamLibraryDiscovery.discover(self.install_path)
-        # CRITICAL: Convert all Windows paths from libraryfolders.vdf to WSL paths
-        wsl_libs = [ensure_path(str(p)) for p in libs]
-        
-        if override_path:
-            p = ensure_path(override_path)
-            if p not in wsl_libs:
-                wsl_libs.append(p)
-        
-        logger.info(f"{len(wsl_libs)} 個のライブラリで SteamScanner を初期化しました。")
-        return wsl_libs
 
     def find_soundtracks(
         self,

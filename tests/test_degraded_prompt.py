@@ -60,7 +60,7 @@ def test_estimate_output_budget_and_ceiling():
     assert track_ceiling == int(2436 * 1.25)
 
 def test_config_llm_retries_and_budget_safety():
-    cfg = Config()
+    cfg = Config(steam_install_path="/tmp", steam_library_path="/tmp/steam-library")
     kwargs = cfg.build_llm_organizer_kwargs()
     assert "max_retries" in kwargs
     assert "output_budget_safety_ratio" in kwargs

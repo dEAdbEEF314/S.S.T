@@ -211,7 +211,11 @@ def test_check_env_security_no_crash():
 def test_config_classified_defaults():
     """Verify default values of newly categorized configuration settings."""
     with patch.dict(os.environ, {}, clear=True):
-        cfg = Config(steam_install_path="/tmp/steam", _env_file=None)
+        cfg = Config(
+            steam_install_path="/tmp/steam",
+            steam_library_path="/tmp/steam-library",
+            _env_file=None,
+        )
 
     # Category 1: Steam API
     assert cfg.steam_api_timeout == 15.0
@@ -253,7 +257,10 @@ def test_config_env_overrides():
         "SST_FINGERPRINT_SAMPLE_SIZE": "5",
         "SECURITY_BLOCK_PRIVATE_IPS": "false",
     }):
-        cfg = Config(steam_install_path="/tmp/steam").load_env_overrides()
+        cfg = Config(
+            steam_install_path="/tmp/steam",
+            steam_library_path="/tmp/steam-library",
+        ).load_env_overrides()
         assert cfg.steam_api_timeout == 25.5
         assert cfg.zip_compression_strategy == "stored"
         assert cfg.sst_fingerprint_sample_size == 5
@@ -360,7 +367,10 @@ def test_processor_uses_pre_scanned_files():
         dummy_file = Path(td) / "track01.flac"
         dummy_file.write_bytes(b"fake")
 
-        config = Config(steam_install_path="/tmp")
+        config = Config(
+            steam_install_path="/tmp",
+            steam_library_path="/tmp/steam-library",
+        )
         db = MagicMock()
         processor = LocalProcessor(config, db)
 

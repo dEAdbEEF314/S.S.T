@@ -128,7 +128,7 @@ def resolve_album_identity(
     if structural_match and current_conf < 100 and (not v_fingerprint or current_conf >= 80):
         logger.info(
             "[%s] Applying STEAM-TRUST: Structural match detected "
-            "(Steam: %s, Local: %s, Unique: %s). Boosting confidence to 100%.",
+            "(Steam: %s, Local: %s, Unique: %s). Boosting confidence to 100%%.",
             app_id,
             steam_count,
             local_count,

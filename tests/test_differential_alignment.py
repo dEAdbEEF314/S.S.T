@@ -1,3 +1,5 @@
+import logging
+
 from unittest.mock import MagicMock
 from sst.llm.prematch import resolve_prematch_signals
 from sst.llm.organizer import LLMOrganizer
@@ -112,7 +114,8 @@ def test_reconcile_deterministic_unassigned_multiformat():
     assert final_metadata["1_battle theme::fid_flac"]["override_track"] == "3"
     assert final_metadata["1_battle theme::fid_mp3"]["override_track"] == "3"
 
-def test_steam_trust_multiformat_equivalence():
+def test_steam_trust_multiformat_equivalence(caplog):
+    caplog.set_level(logging.INFO, logger="sst.llm.identity")
     organizer = LLMOrganizer(
         api_key="mock",
         base_url="http://localhost:11434",
@@ -168,3 +171,4 @@ def test_steam_trust_multiformat_equivalence():
     assert p1_res["data_quality"] == 100
     assert p1_res["archive_vs_review_ratio"]["archive"] == 100
     assert len(final_meta) == 4
+    assert "Boosting confidence to 100%." in caplog.text

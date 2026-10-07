@@ -54,7 +54,7 @@ class Config(BaseSettings):
     )
 
     steam_install_path: str
-    steam_library_path: Optional[str] = None
+    steam_library_path: str
     sst_working_dir: str = "/tmp/sst-work"
     sst_db_path: str = "data/sst_local_state.db"
     sst_output_dir: str = "output"

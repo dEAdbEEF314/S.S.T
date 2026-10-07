@@ -20,12 +20,12 @@
 
 ### 2.1 Steam 関連
 
-- `STEAM_INSTALL_PATH`: Steam インストールパス (必須)
+- `STEAM_INSTALL_PATH`: Steam インストールパス (必須)。`appcache/appinfo.vdf` などSteam本体のファイルがあるディレクトリを指定します。
+- `STEAM_LIBRARY_PATH`: スキャンするSteamライブラリのルート (必須)。`steamapps/` を含むディレクトリを指定します。自動検出は行わず、このパスのみを走査します。ネットワークマウントの場合は実行環境からアクセスできるLinux/WSL上のマウント先を指定してください。Windows形式のパスは使用できません。
 - `STEAM_LOGIN_SECURE`: dynamicstore / ストア情報取得用クッキー
 - `STEAM_PICS_BRIDGE_URL`: PICS 情報取得ブリッジURL（既定: `http://localhost:8080/v1/info/`）
 - `STEAM_PICS_BRIDGE_API_KEY`: PICS Bridge 認証用キー (任意)
 - `STEAM_WEB_API_KEY`: Steam Web API キー (任意)
-- `STEAM_LIBRARY_PATH`: 特定のライブラリフォルダのみを対象にする場合のパス (任意)
 
 ### 2.2 出力とローカル状態
 
