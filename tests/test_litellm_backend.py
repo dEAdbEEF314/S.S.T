@@ -1,3 +1,6 @@
+from unittest.mock import patch
+from types import SimpleNamespace
+
 from sst.llm import client as llm_client_module
 from sst.llm.client import LLMClient
 
@@ -37,8 +40,46 @@ def test_litellm_backend_uses_sdk_and_parses_openai_response(monkeypatch):
     assert calls[0]["api_key"] == "test-key"
     assert calls[0]["api_base"] is None
     assert calls[0]["timeout"] == 12
-    assert calls[0]["response_format"] == {"type": "json_object"}
+    assert "response_format" not in calls[0]
+    assert calls[0]["extra_body"] == {"think": False}
     assert calls[0]["num_retries"] == 0
+
+
+def test_litellm_empty_content_logs_response_shape_without_text(monkeypatch):
+    secret_reasoning = "private reasoning text"
+    monkeypatch.setattr(
+        llm_client_module.litellm,
+        "completion",
+        lambda **kwargs: {
+            "choices": [{
+                "message": {"content": "", "reasoning_content": secret_reasoning},
+                "finish_reason": "stop",
+            }],
+            "usage": {"prompt_tokens": 12, "completion_tokens": 5},
+        },
+    )
+    monkeypatch.setattr(llm_client_module.time, "sleep", lambda _: None)
+    client = _build_client()
+
+    with patch("sst.llm.client.logger.info") as mock_info:
+        result, log_entry = client.call_llm(42, "Return JSON", request_kind="identity")
+
+    assert result is None
+    assert log_entry["error"] == "Empty response"
+    response_shape = log_entry["meta"]["response_shape"]
+    assert response_shape["message_keys"] == ["content", "reasoning_content"]
+    assert response_shape["content_empty"] is True
+    assert response_shape["content_length"] == 0
+    assert response_shape["reasoning_content_present"] is True
+    assert response_shape["reasoning_content_length"] == len(secret_reasoning)
+    assert response_shape["completion_tokens"] == 5
+    shape_logs = [
+        call.args[1]
+        for call in mock_info.call_args_list
+        if call.args[0] == "LLM_RESPONSE_SHAPE %s"
+    ]
+    assert shape_logs
+    assert all(secret_reasoning not in logged for logged in shape_logs)
 
 
 def test_litellm_backend_uses_custom_api_base(monkeypatch):
@@ -56,6 +97,25 @@ def test_litellm_backend_uses_custom_api_base(monkeypatch):
 
     assert result == {"ok": True}
     assert calls[0]["api_base"] == "https://litellm.example/v1"
+
+
+def test_litellm_backend_preserves_ollama_provider_and_alias(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        llm_client_module.litellm,
+        "completion",
+        lambda **kwargs: calls.append(kwargs) or {
+            "choices": [{"message": {"content": '{"ok": true}'}, "finish_reason": "stop"}],
+        },
+    )
+    client = _build_client("http://litellm.example/v1")
+    client.model = "ollama/local-ornith-9B"
+
+    result, _ = client.call_llm(42, "Return JSON")
+
+    assert result == {"ok": True}
+    assert calls[0]["model"] == "ollama/local-ornith-9B"
+    assert "response_format" not in calls[0]
 
 
 def test_litellm_availability_defers_provider_validation(monkeypatch):
@@ -84,3 +144,32 @@ def test_litellm_backend_marks_length_finish_as_truncated(monkeypatch):
     assert result is None
     assert log_entry["error_code"] == "response_truncated"
     assert log_entry["meta"]["done_reason"] == "length"
+
+
+def test_ollama_backend_disables_thinking_by_default(monkeypatch):
+    calls = []
+    response = SimpleNamespace(
+        status_code=200,
+        json=lambda: {
+            "message": {"content": '{"ok": true}'},
+            "done_reason": "stop",
+            "eval_count": 5,
+        },
+        text="",
+    )
+    monkeypatch.setattr(
+        llm_client_module.requests,
+        "post",
+        lambda *args, **kwargs: calls.append(kwargs) or response,
+    )
+    client = LLMClient(
+        api_key="test-key",
+        base_url="http://ollama.example",
+        model="test-model",
+        llm_backend="OLLAMA",
+    )
+
+    result, _ = client.call_llm(42, "Return JSON")
+
+    assert result == {"ok": True}
+    assert calls[0]["json"]["think"] is False

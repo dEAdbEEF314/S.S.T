@@ -256,6 +256,25 @@ def test_builder_prefers_recording_artist_from_track_level_signal():
 
     assert tag_map["artist"] == "Recording Artist"
 
+    fast_track_tag_map = MetadataBuilder.build_tag_map(
+        app_id=123,
+        disc=1,
+        clean_title="title",
+        adopted_info={"path": Path("dummy.mp3")},
+        steam_meta=steam_meta,
+        instr={
+            "action": "use_local",
+            "chosen_mbz_index": 0,
+            "mbz_track_index": 0,
+            "mbz_track_artist": "Fast-Track MBZ Artist",
+        },
+        mbz_candidates=[{"year": "1999", "artist": "Release Artist", "tracks": [{"title": "Title", "recording_artist": "Recording Artist"}]}],
+        track_sources={},
+        user_language_639_2="jpn",
+    )
+
+    assert fast_track_tag_map["artist"] == "Fast-Track MBZ Artist"
+
 
 def test_builder_comment_preserves_empty_tag_block_and_album_artist_omits_missing_values():
     steam_meta = MagicMock(spec=SteamMetadata)

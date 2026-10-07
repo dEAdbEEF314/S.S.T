@@ -1,14 +1,23 @@
+import os
 import subprocess
 import logging
 import re
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
+import mutagen
 
 logger = logging.getLogger("sst.tagger")
 
 class AudioTagger:
-    def __init__(self, output_dir: Path):
+    def __init__(
+        self,
+        output_dir: Path,
+        ffmpeg_timeout: float = 600.0,
+        ffprobe_timeout: Optional[float] = None,
+    ):
         self.output_dir = output_dir
+        self.ffmpeg_timeout = ffmpeg_timeout
+        self.ffprobe_timeout = ffprobe_timeout
 
     def process_artwork(self, raw_data: bytes) -> Optional[Path]:
         if not raw_data:
@@ -23,11 +32,33 @@ class AudioTagger:
 
     def _get_audio_properties(self, path: Path) -> Tuple[int, int]:
         """
-        Gets (sample_rate, bit_depth) using ffprobe.
+        Gets (sample_rate, bit_depth) using Mutagen header inspection with ffprobe fallback.
         Returns (0, 0) on failure.
         """
+        # 1. Fast path: Mutagen direct header inspection (no subprocess)
+        try:
+            file_loader = getattr(mutagen, "File")
+            audio = file_loader(path)
+            if audio is not None and getattr(audio, "info", None) is not None:
+                sr = getattr(audio.info, "sample_rate", None)
+                if sr is not None and isinstance(sr, (int, float)) and sr > 0:
+                    sample_rate = int(sr)
+                    bit_depth = 0
+                    bd = getattr(audio.info, "bits_per_sample", None)
+                    if bd is not None and isinstance(bd, int) and bd > 0:
+                        bit_depth = int(bd)
+                    return sample_rate, bit_depth
+        except Exception:
+            pass
+
+        # 2. Fallback: ffprobe process invocation (with configurable timeout)
         import json
         try:
+            timeout_sec = (
+                self.ffprobe_timeout
+                if self.ffprobe_timeout is not None
+                else float(os.getenv("FFPROBE_TIMEOUT", "10"))
+            )
             cmd = [
                 "ffprobe", "-v", "error", 
                 "-select_streams", "a:0", 
@@ -35,7 +66,7 @@ class AudioTagger:
                 "-of", "json", 
                 str(path)
             ]
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
             data = json.loads(res.stdout)
             streams = data.get("streams", [])
             if not streams:
@@ -102,9 +133,17 @@ class AudioTagger:
         
         # Capture output as binary to avoid UnicodeDecodeError when paths contain non-UTF-8 characters
         try:
-            process = subprocess.run(cmd, capture_output=True, timeout=600)
+            process = subprocess.run(
+                cmd,
+                capture_output=True,
+                timeout=self.ffmpeg_timeout,
+            )
         except subprocess.TimeoutExpired:
-            logger.error(f"FFmpeg process timed out after 600 seconds for {source_path.name}")
+            logger.error(
+                "FFmpeg process timed out after %s seconds for %s",
+                self.ffmpeg_timeout,
+                source_path.name,
+            )
             raise RuntimeError(f"FFmpeg conversion timed out for {source_path.name}")
             
         if process.returncode != 0:

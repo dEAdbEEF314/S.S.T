@@ -12,13 +12,33 @@ from .db import DatabaseManager
 logger = logging.getLogger(__name__)
 
 class SteamWebClient:
-    def __init__(self, db: DatabaseManager, bridge_url: str, bridge_api_key: Optional[str] = None, api_key: Optional[str] = None, language: str = "japanese", llm_extractor: Any = None):
+    def __init__(
+        self,
+        db: DatabaseManager,
+        bridge_url: str,
+        bridge_api_key: Optional[str] = None,
+        api_key: Optional[str] = None,
+        language: str = "japanese",
+        llm_extractor: Any = None,
+        api_timeout: float = 15.0,
+        pics_timeout: float = 30.0,
+        max_retries: int = 3,
+        throttle_delay: float = 2.0,
+        retry_delay: float = 2.0,
+        retry_backoff: float = 2.0,
+    ):
         self.db = db
         self.bridge_url = bridge_url if bridge_url.endswith("/") else bridge_url + "/"
         self.bridge_api_key = bridge_api_key
         self.api_key = api_key
         self.language = language
         self.llm_extractor = llm_extractor
+        self.api_timeout = float(api_timeout)
+        self.pics_timeout = float(pics_timeout)
+        self.max_retries = int(max_retries)
+        self.throttle_delay = float(throttle_delay)
+        self.retry_delay = float(retry_delay)
+        self.retry_backoff = float(retry_backoff)
 
     @staticmethod
     def _parse_text_tracklist(description: str) -> list[Dict[str, Any]]:
@@ -67,7 +87,7 @@ class SteamWebClient:
         url = f"https://store.steampowered.com/app/{app_id}/?l={self.language}"
         headers = {"User-Agent": "SST/0.1 (+local Steam metadata tool)"}
         try:
-            response = requests.get(url, headers=headers, timeout=15)
+            response = requests.get(url, headers=headers, timeout=self.api_timeout)
             response.raise_for_status()
             tags = {}
             pattern = re.compile(r'"tagid":(\d+),"name":"((?:\\.|[^"\\])*)"')
@@ -89,6 +109,8 @@ class SteamWebClient:
         """Fetches metadata from 3 tiers of APIs (Official Store, PICS Bridge, Official Tags) with DB persistence."""
         # 1. Check Database first
         db_data = None if force else self.db.get_store_data(app_id)
+        app_pics = None
+        pics_change_num = None
         
         result = {
             "genres": [],
@@ -98,6 +120,7 @@ class SteamWebClient:
             "store_tracklist_source": None,
             "store_tracklist_language": None,
             "store_credits": "",
+            "store_description": None,
             "label": None,
             "release_date": None,
             "header_image_url": None,
@@ -117,7 +140,7 @@ class SteamWebClient:
             if force or not result["store_tracklist"]:
                 # Mandatory Throttle (2s + jitter)
                 import random
-                time.sleep(2.0 + random.random())
+                time.sleep(self.throttle_delay + random.random())
                 
                 session = requests.Session()
                 common_headers = {
@@ -128,18 +151,73 @@ class SteamWebClient:
                 # --- Tier 1: Official Store API (Localized name/genres) ---
                 store_url = f"https://store.steampowered.com/api/appdetails?appids={app_id}&l={self.language}"
                 app_data = None
-                for attempt in range(3):
+                tier1_started = time.monotonic()
+                retry_delay = self.retry_delay
+                for attempt in range(self.max_retries):
+                    attempt_started = time.monotonic()
+                    failure_reason = "http_status"
+                    status_code = None
                     try:
-                        sr = session.get(store_url, headers=common_headers, timeout=15)
-                        if sr.status_code == 200:
+                        sr = session.get(store_url, headers=common_headers, timeout=self.api_timeout)
+                        status_code = sr.status_code
+                        if status_code == 200:
                             s_json = sr.json()
-                            if str(app_id) in s_json and s_json[str(app_id)]["success"]:
-                                app_data = s_json[str(app_id)]["data"]
+                            app_entry = s_json.get(str(app_id)) if isinstance(s_json, dict) else None
+                            if not isinstance(app_entry, dict):
+                                failure_reason = "app_id_missing"
+                            elif not app_entry.get("success"):
+                                failure_reason = "success_false"
+                            elif not isinstance(app_entry.get("data"), dict):
+                                failure_reason = "data_missing_or_invalid"
+                            else:
+                                app_data = app_entry["data"]
+                                logger.debug(
+                                    "STORE_API_RESULT tier=1 app_id=%s attempt=%s/%s outcome=success "
+                                    "status_code=%s duration_seconds=%.3f total_seconds=%.3f",
+                                    app_id,
+                                    attempt + 1,
+                                    self.max_retries,
+                                    status_code,
+                                    time.monotonic() - attempt_started,
+                                    time.monotonic() - tier1_started,
+                                )
                                 break
-                        logger.debug(f"Tier 1 の試行 {attempt+1} が失敗しました (ステータス: {sr.status_code})")
+                        delay = retry_delay if attempt < self.max_retries - 1 else 0
+                        logger.debug(
+                            "STORE_API_RESULT tier=1 app_id=%s attempt=%s/%s outcome=retryable_failure "
+                            "reason=%s status_code=%s duration_seconds=%.3f retry_delay_seconds=%s",
+                            app_id,
+                            attempt + 1,
+                            self.max_retries,
+                            failure_reason,
+                            status_code,
+                            time.monotonic() - attempt_started,
+                            delay,
+                        )
                     except Exception as e:
-                        logger.debug(f"Tier 1 の試行 {attempt+1} エラー: {e}")
-                    time.sleep(2 ** (attempt + 1))  # 2s, 4s, 8s exponential backoff
+                        delay = retry_delay if attempt < self.max_retries - 1 else 0
+                        logger.debug(
+                            "STORE_API_RESULT tier=1 app_id=%s attempt=%s/%s outcome=exception "
+                            "error_type=%s status_code=%s duration_seconds=%.3f retry_delay_seconds=%s",
+                            app_id,
+                            attempt + 1,
+                            self.max_retries,
+                            type(e).__name__,
+                            status_code,
+                            time.monotonic() - attempt_started,
+                            delay,
+                        )
+                    if attempt < self.max_retries - 1:
+                        time.sleep(retry_delay)
+                        retry_delay *= self.retry_backoff
+
+                if app_data is None:
+                    logger.debug(
+                        "STORE_API_RESULT tier=1 app_id=%s outcome=exhausted attempts=%s total_seconds=%.3f",
+                        app_id,
+                        self.max_retries,
+                        time.monotonic() - tier1_started,
+                    )
                 
                 if app_data:
                     result["name"] = html.unescape(app_data.get("name")) if app_data.get("name") else None
@@ -148,6 +226,7 @@ class SteamWebClient:
                     result["header_image_url"] = app_data.get("header_image")
                     result["capsule_image_url"] = app_data.get("capsule_image")
                     description = app_data.get("detailed_description", "")
+                    result["store_description"] = description
                 else:
                     description = ""
 
@@ -162,20 +241,68 @@ class SteamWebClient:
                         pics_headers["X-API-Key"] = self.bridge_api_key
 
                 # Retry logic for Tier 2 (Critical for structured data)
-                for attempt in range(3):
+                tier2_started = time.monotonic()
+                retry_delay = self.retry_delay
+                for attempt in range(self.max_retries):
+                    attempt_started = time.monotonic()
+                    failure_reason = "http_status"
+                    status_code = None
                     try:
-                        pr = session.get(pics_url, headers=pics_headers, timeout=30)
-                        if pr.status_code == 200:
+                        pr = session.get(pics_url, headers=pics_headers, timeout=self.pics_timeout)
+                        status_code = pr.status_code
+                        if status_code == 200:
                             p_json = pr.json()
-                            app_pics = p_json.get("data", {}).get(str(app_id), {})
+                            pics_data = p_json.get("data", {}) if isinstance(p_json, dict) else {}
+                            app_pics = pics_data.get(str(app_id), {}) if isinstance(pics_data, dict) else {}
                             if app_pics:
+                                logger.debug(
+                                    "STORE_API_RESULT tier=2 app_id=%s attempt=%s/%s outcome=success "
+                                    "status_code=%s duration_seconds=%.3f total_seconds=%.3f",
+                                    app_id,
+                                    attempt + 1,
+                                    self.max_retries,
+                                    status_code,
+                                    time.monotonic() - attempt_started,
+                                    time.monotonic() - tier2_started,
+                                )
                                 break  # Success
-                        logger.debug(f"Tier 2 の試行 {attempt+1} が失敗しました (ステータス: {pr.status_code})")
+                            failure_reason = "app_id_missing_or_empty"
+                        delay = retry_delay if attempt < self.max_retries - 1 else 0
+                        logger.debug(
+                            "STORE_API_RESULT tier=2 app_id=%s attempt=%s/%s outcome=retryable_failure "
+                            "reason=%s status_code=%s duration_seconds=%.3f retry_delay_seconds=%s",
+                            app_id,
+                            attempt + 1,
+                            self.max_retries,
+                            failure_reason,
+                            status_code,
+                            time.monotonic() - attempt_started,
+                            delay,
+                        )
                     except Exception as e:
-                        logger.debug(f"Tier 2 の試行 {attempt+1} エラー: {e}")
-                    time.sleep(2 ** (attempt + 1))
+                        delay = retry_delay if attempt < self.max_retries - 1 else 0
+                        logger.debug(
+                            "STORE_API_RESULT tier=2 app_id=%s attempt=%s/%s outcome=exception "
+                            "error_type=%s status_code=%s duration_seconds=%.3f retry_delay_seconds=%s",
+                            app_id,
+                            attempt + 1,
+                            self.max_retries,
+                            type(e).__name__,
+                            status_code,
+                            time.monotonic() - attempt_started,
+                            delay,
+                        )
+                    if attempt < self.max_retries - 1:
+                        time.sleep(retry_delay)
+                        retry_delay *= self.retry_backoff
                 else:
                     app_pics = {} # All retries failed
+                    logger.debug(
+                        "STORE_API_RESULT tier=2 app_id=%s outcome=exhausted attempts=%s total_seconds=%.3f",
+                        app_id,
+                        self.max_retries,
+                        time.monotonic() - tier2_started,
+                    )
 
                 album_meta = app_pics.get("albummetadata", {})
                 
@@ -193,11 +320,12 @@ class SteamWebClient:
                     if self.language.lower() not in {"english", "en"}:
                         try:
                             english_url = f"https://store.steampowered.com/api/appdetails?appids={app_id}&l=english"
-                            english_response = session.get(english_url, headers=common_headers, timeout=15)
+                            english_response = session.get(english_url, headers=common_headers, timeout=self.api_timeout)
                             if english_response.status_code == 200:
                                 english_data = english_response.json().get(str(app_id), {})
                                 if english_data.get("success"):
                                     candidate_description = english_data.get("data", {}).get("detailed_description", "")
+                                    result["store_description"] = candidate_description
                                     description_language = "english"
                         except Exception as language_error:
                             logger.debug(f"{app_id} の英語説明文フォールバックに失敗しました: {language_error}")
@@ -245,7 +373,7 @@ class SteamWebClient:
                             "context": json.dumps({"language": self.language, "country_code": "JP"}),
                             "data_request": json.dumps({"include_tag_count": 20})
                         }
-                        tr = session.get(tag_url, params=params, timeout=10)
+                        tr = session.get(tag_url, params=params, timeout=self.api_timeout)
                         if tr.status_code == 200:
                             t_json = tr.json()
                             store_items = t_json.get("response", {}).get("store_items", [])
@@ -261,8 +389,8 @@ class SteamWebClient:
                         app_id, 
                         result["store_tracklist"], 
                         result["store_credits"], 
-                        change_number=locals().get("pics_change_num"), 
-                        raw_pics=locals().get("app_pics"),
+                        change_number=pics_change_num,
+                        raw_pics=app_pics,
                         tracklist_language=result.get("store_tracklist_language")
                     )
             

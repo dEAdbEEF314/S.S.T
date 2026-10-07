@@ -89,12 +89,23 @@ class ResultValidator:
             issues.append(f"Unassigned Files ({len(actual_unassigned)})")
 
         # 提案3: LLM矛盾の拒否を明示（自動修正で隠さない）
-        rejected_slot_keys = alignment_res.get("rejected_slot_keys") or []
+        alignment_diagnostics = alignment_res.get("diagnostics") or {}
+        rejected_slot_keys = alignment_res.get("rejected_slot_keys") or alignment_diagnostics.get("rejected_slot_keys") or []
         if rejected_slot_keys:
             issues.append(f"LLM Rejected Slots ({len(rejected_slot_keys)})")
-        duplicate_assignment_file_ids = alignment_res.get("duplicate_assignment_file_ids") or []
+        duplicate_assignment_file_ids = alignment_res.get("duplicate_assignment_file_ids") or alignment_diagnostics.get("duplicate_assignment_file_ids") or []
         if duplicate_assignment_file_ids:
             issues.append(f"LLM Duplicate Assignment ({len(duplicate_assignment_file_ids)})")
+        contradictory_slot_assignments = (
+            alignment_res.get("contradictory_slot_assignments")
+            or alignment_diagnostics.get("contradictory_slot_assignments")
+            or []
+        )
+        if contradictory_slot_assignments:
+            issues.append(f"LLM Contradictory Slot Assignments ({len(contradictory_slot_assignments)})")
+        deferred_copy_failures = (llm_log.get("diagnostics") or {}).get("deferred_copy_failures") or []
+        if deferred_copy_failures:
+            issues.append(f"Deferred Copy Recovery Exhausted ({len(deferred_copy_failures)})")
         
         # Track #0 / Unknown Title. Steam is authoritative: an official
         # Unknown (Unused) slot is legitimate and must not be treated as an
@@ -164,6 +175,15 @@ class ResultValidator:
         if duplicate_pairs:
             issues.append(f"Duplicates ({len(duplicate_pairs)})")
 
+        output_paths = [
+            str(track.get("file_path") or "").strip().casefold()
+            for track in tracks
+            if str(track.get("file_path") or "").strip()
+        ]
+        duplicate_output_path_count = len(output_paths) - len(set(output_paths))
+        if duplicate_output_path_count:
+            issues.append(f"Duplicate Output Paths ({duplicate_output_path_count})")
+
         # Duplicate Titles (Heavy Hallucination Guard)
         titles = [str(t["tags"].get("title", "")).strip() for t in tracks if t["tags"].get("title")]
         from collections import Counter
@@ -182,6 +202,7 @@ class ResultValidator:
         diagnostics["audio_quality_warnings"] = bool(audio_warn)
         diagnostics["audio_source_failures"] = bool(audio_fail)
         diagnostics["audio_warned_tracks"] = audio_warned_tracks or []
+        diagnostics["duplicate_output_path_count"] = duplicate_output_path_count
 
         # --- 3. Confidence & Quality Thresholds ---
         llm_archive_path = album_confidence >= 90 and mapping_confidence >= 80 and data_quality >= 70

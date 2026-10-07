@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import UTC, datetime
 
 from sst.db import DatabaseManager
 
@@ -36,3 +37,17 @@ def test_api_cache_migrates_existing_schema(tmp_path: Path):
     assert db.get_api_cache("mbz", "release") == {"ok": True}
     columns = {row[1] for row in sqlite3.connect(db_path).execute("PRAGMA table_info(api_cache)")}
     assert "app_id" in columns
+
+
+def test_store_data_timestamp_is_utc_aware(tmp_path: Path):
+    db = DatabaseManager(tmp_path / "state.db")
+    db.save_store_data(123, [], "credits")
+
+    with db._connect() as connection:
+        timestamp = connection.execute(
+            "SELECT scraped_at FROM steam_store_data WHERE app_id = ?", (123,)
+        ).fetchone()[0]
+
+    parsed = datetime.fromisoformat(timestamp)
+    assert parsed.tzinfo is not None
+    assert parsed.utcoffset() == UTC.utcoffset(parsed)

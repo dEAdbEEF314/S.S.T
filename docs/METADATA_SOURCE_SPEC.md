@@ -40,9 +40,9 @@
 ┌──────────────────────────┐  ┌────────────────────────────────────────────┐
 │ ⚡ FAST_TRACK 確定        │  │ 4. オンデマンド信号収集 & One-Shot LLM整列 │
 │ ・LLM推論を完全バイパス   │  │    ・CPU並列 fpcalc による波形計算        │
-│ ・AcoustID/タグ用MBZ照会をスキップ│  │    ・未解決トラックのみ AcoustID/MBZ 照会 │
+│ ・artistはAPIC用MBZ_SEARCHから一意補完│  │    ・未解決トラックのみ AcoustID/MBZ 照会 │
 │ ・APIC欠落時のみMBZ画像検索   │  │                                            │
-│ ・所要時間: 0.2秒/アルバム│  │    ・Tesla V100 による One-Shot スロット整列│
+│ ・照会時の所要時間はAPI依存│  │    ・Tesla V100 による One-Shot スロット整列│
 └──────┬───────────────────┘  └──────────────────┬─────────────────────────┘
        │                                         │
        ▼                                         ▼
@@ -67,17 +67,24 @@
 
 ## 2.1 処理経路 (Pipeline Route) の定義と監査証跡
 
-アルバム処理の透明性と監査性を担保するため、各アルバムの処理経路を以下の5区分で厳密に分類し、**「Discord通知」** および **「各アルバムZIP内の AUDIT_REPORT.html」** に明記しなければならない。
+アルバム処理の透明性と監査性を担保するため、実行route、validatorの昇格経路、終端結果を区別して分類し、**「Discord通知」** および **「各アルバムZIP内の AUDIT_REPORT.html」** に明記しなければならない。`processing_route`は実行routeを示し、終端結果やvalidatorの昇格経路とは別の値である。
 
-| 経路コード | 表示名称 | 判定条件 | 外部API / LLMの挙動 |
+| 名称 | 分類 | 判定条件 | 外部API / LLMの挙動 |
 | :--- | :--- | :--- | :--- |
-| `FAST_TRACK` | `⚡ FAST_TRACK` | Steamスロットとローカルファイル名・トラック番号・音源長が1:1完全一致 | **LLM・AcoustID・タグ用MBZ照会をバイパス**。ただし埋め込みAPICがない場合のみ、アート専用MBZ_SEARCHを許可 |
-| `LLM_ONE_SHOT` | `🧠 LLM_ONE_SHOT` | Fast-Track不成立（揺れ・バリアントあり）かつ150曲以下 | オンデマンドで信号収集し、**1回のOne-Shot LLM推論**で全曲確定 |
-| `LLM_CHUNKED` | `🧩 LLM_CHUNKED` | 超特大アルバムで分割チャンク処理が発動した場合 | 複数回の分割チャンク推論で段階的整列 |
-| `SKIP_NO_AUDIO` | `⏩ SKIP_NO_AUDIO` | ディレクトリ内に音声ファイルが存在しない場合 | スキップ（DB保存なし） |
-| `ERROR` | `❌ ERROR` | ファイル破損や致命的エラーが発生した場合 | エラー記録 |
+| `FAST_TRACK` | `⚡ FAST_TRACK` | 実行route (`processing_route`) | Steamスロットとローカルファイル名・トラック番号・音源長が1:1完全一致。**LLM・独立AcoustID照会・通常のMBZ候補選定をバイパス**。埋め込みAPICがない場合のみMBZ_SEARCHを遅延実行し、同じ候補のtrack artistを厳格な一意一致で任意補完 |
+| `LLM_ONE_SHOT` | `🧠 LLM_ONE_SHOT` | 実行route (`processing_route`) | Fast-Track不成立かつexecution profileの`prefer_one_shot=true`。profileはConfig tier境界から選ばれる。これはOne-Shot優先profileを示すroute labelであり、token budgetや安全上限による内部segment分割を否定しない |
+| `LLM_CHUNKED` | `🧩 LLM_CHUNKED` | 実行route (`processing_route`) | Fast-Track不成立かつexecution profileの`prefer_one_shot=false`。chunk sizeはtoken budget等で調整される |
+| `STEAM_TRUST` | `🛡️ STEAM-TRUST` | validatorの昇格経路 | Phase1 strategyがSteam-based条件に合致し、album/mapping/data confidenceが90/75/60以上の場合に通常thresholdの代替経路として使う。物理・整合性Review条件は引き続き適用 |
+| `REVIEW` | `🔍 REVIEW` | 終端結果 | validatorまたはArchive preflightにReview条件が1つ以上ある場合 |
+| `EARLY_REVIEW` | `🔍 EARLY_REVIEW` | 早期終端結果 (`review_phase`) | alignment後の通常検証へ進まず、早期Review返却処理が成果物を生成 |
+| `SKIP_NO_AUDIO` | `⏩ SKIP_NO_AUDIO` | スキャン結果 | ディレクトリ内に音声ファイルが存在しない場合にスキップ（DB保存なし） |
+| `ERROR` | `❌ ERROR` | 終端結果 | ファイル破損や致命的エラーが発生した場合にエラー記録 |
 
-FAST_TRACK の APIC 例外では、埋め込み画像を先に検索し、見つからない場合にのみ MBZ_SEARCH を遅延実行する。既存の `min_mbz_search_score_threshold` を適用し、候補の MBID はカバーアート取得にだけ使う。AcoustID フィンガープリントや LLM 整列は実行せず、候補をタグ構築・通常の MBZ 候補一覧へ渡さない。候補または画像を取得できない場合は Steam 画像へフォールバックする。
+FAST_TRACK のTPE1補完では、APIC欠落時にだけ実行される遅延MBZ_SEARCHの選択候補を再利用し、追加のAcoustID全曲走査やMBZ API要求は行わない。Steam slot titleとMBZ recording titleが正規化後に双方で一意一致し、artist-creditが存在する場合だけそのTPE1へ適用する。候補は既存の`min_mbz_search_score_threshold`を通過した場合に限り、候補選定やアルバムレベルメタデータには使わない。埋め込みAPICがある場合、候補が閾値未満の場合、一意一致しない場合、またはartist-creditがない場合はartistを補完しない。検索失敗はFAST_TRACKの成立・検証結果へ影響しない。
+
+FAST_TRACK の APIC 例外では、埋め込み画像を先に検索し、見つからない場合にのみ MBZ_SEARCH を遅延実行する。既存の`min_mbz_search_score_threshold`を適用し、候補MBIDはカバーアート取得に使用する。候補または画像を取得できない場合はSteam画像へフォールバックする。
+
+FAST_TRACKでは、タグ構築時に`matched_v_idx`が未設定の場合、Steamの`(disc, track_number)`と1:1で一意対応するindexだけを補完する。このindexが指すSteam titleをTIT2の正本とする。番号対応が欠落または重複する場合は推定しない。
 
 ---
 
@@ -351,14 +358,20 @@ LLMアライメント（またはファストトラック）の結果、各STEAM
 
 ### 7.1 フォーマットバリアント統合と未割当ファイル除外規則
 
-同一アルバム内に複数フォーマット（例: FLACとMP3、WAVとMP3）が同居している場合、以下の4重AND条件を満たすファイルは同一スロットの「従属フォーマットバリアント」として統合する：
+同一アルバム内に複数フォーマット（例: FLACとMP3、WAVとMP3）が同居している場合、次の条件を満たす候補だけを同一スロットの「従属フォーマットバリアント」として統合する。
 
 1. **異種フォーマットであること**（例: FLAC と MP3）
-2. **ディスク番号が一致すること**
-3. **再生時間差が 1.0秒 未満であること**（または両者の再生時間が有効）
-4. **正規化タイトル（Stem）が一致または前方一致すること**
+2. **正規化タイトルが同一曲を示すこと**（トラック番号だけの一致では統合しない）
+3. 両方の再生時間が有効な場合、**差が1.0秒未満**であること
+4. 複数Steam slotが同じタイトル候補となる場合は、自動統合せずReviewに残すこと
 
-スロットにバリアントとして統合された従属ファイルは、最高Tierファイルの採用後に正常に解決されたものとして扱われ、後段の未割当ファイル（`unassigned_files`）としては扱わない。同一フォーマットで異なる楽曲であるファイルは絶対に統合せず、スロット未割り当ての場合は厳格に Review を維持する。
+ローカルのdisc番号が欠落またはSteamと異なる場合でも、正規化タイトルが一意なSteam slotと一致し、再生時間条件も満たす異フォーマット候補は、そのSteam slotへ統合してよい。番号だけを根拠にSteam slotへ推定配置してはならない。上記条件を証明できない候補は未割当として隔離し、Reviewを維持する。
+
+スロットに統合された従属ファイルは、最高Tierファイルの採用後に正常に解決されたものとして扱い、後段の未割当ファイル（`unassigned_files`）とはしない。同一フォーマットの別候補や、異なるタイトル・再生時間の候補は自動統合しない。
+
+LLMが1 slotへ複数の論理タイトルを割り当てた場合、同一正規化タイトルかつ有効な再生時間差が1.0秒未満の候補群だけを一つのslot候補群として扱う。Steamタイトルと一致する候補または決定論的根拠のない矛盾候補は割当から除外し、`unassigned_files` と `contradictory_slot_assignments` に記録してReviewとする。矛盾候補を自動で他slotへ振り替えてArchiveにしてはならない。
+
+変換後の出力パスはslotごとに一意でなければならない。同じ出力disc・変換後stem・拡張子が衝突する場合は、slot由来の安定した識別子をステージファイル名へ付ける。metadataのtrack参照が同じ出力パスを共有する場合はReviewとし、上書きを許可しない。
 
 ---
 
@@ -600,6 +613,8 @@ STEAMスロットN に対してフィールドF のEMBEDデータが必要:
 | **mapping_confidence** | トラックマッピングの品質 | LLMが出力した各スロットの信頼度の最小値 × 100 |
 | **data_quality** | メタデータの充足度 | 必須フィールド（TIT2, TRCK, TPE1）の充足率 |
 
+LLMのalbum identity confidenceは、実際に与えられたSTEAM/MBZ/ACOUSTID signalの一致と矛盾に根拠を置く。`confidence_reason`は最も強い支持根拠を、`concerns`は解消していない重要な矛盾を簡潔に記録する。ローカルファイル名の番号prefixや形式バリアントだけでidentity confidenceを下げず、Steam slot対応が解決してもartist・年・作品同一性・トラックリストの実質的矛盾は無視しない。confidenceの加点やArchive目的の閾値緩和は禁止する。
+
 ### 11.2 閾値定義
 
 | 判定パス | album | mapping | data | 条件 |
@@ -645,13 +660,24 @@ Steamストアトラックリストとローカルタグのトラック番号照
 
 ### 11.5 LLMトークンバジェットおよび Truncation 対策・フォールバック規約
 
-思考モデル（DeepSeek-R1 / Qwen 思考版等）やローカル LLM (Ollama) におけるトークン枯渇（`done_reason=length`）による不当な Review 落ちを防止するため、以下の安全規約を設ける：
+思考モデル（DeepSeek-R1 / Qwen 思考版等）やローカル LLM (Ollama) におけるトークン枯渇（`done_reason=length`）による不当な Review 落ち、およびハルシネーションによる長文生成暴走（Runaway Generation）による長時間の滞留を防止するため、以下の安全規約を設ける：
 
-1. **出力トークン最小予算の確保**: `track_mapping`（Phase 2）の最小出力トークン予算は、思考トークン消費を考慮して最低 1,536 トークン以上を確保する。
-2. **Truncation 発生時のトークン枠倍増リトライ**: `done_reason=length` による打ち切りが発生した場合、即座に失敗とせず、出力トークン上限（`num_predict`）を 2 倍に拡張して最大 1 回の自動リトライを実行する。
-3. **単一トラック分割時の決定論的フォールバック**: チャンクサイズが 1 の状態で LLM 応答が Truncation となった場合、即座に空指示として破棄せず、決定論的プレマッチ（AcoustID / MBZ_SEARCH / 番号・タイトル完全一致）からの安全なスロット復元を試みる。
-4. **Identity 判定時の Steam-Trust フォールバック**: `identity`（Phase 1）判定で Truncation が発生した場合、Steam トラックリストとローカルファイル数が 1:1 完全一致していれば、`STEAM_BASED` を前提として Phase 2 へ進む。構造不一致の場合は安全側に倒して Review を維持する。
-5. **LLMスロットキー解決の堅牢化契約**: LLM が `"STEAM_SLOT_0"`, `"STEAM_SLOT_1"`, `"SLOT_1"` 等のプレフィックス付きキーを出力した場合、パーサーは先頭の非数字文字を除去して数値を抽出し、スロット配列（0-indexed / 1-indexed）と安全に照合する。プロンプト出力例示においてもプレースホルダーではなく具体的な数値キー（`"1"`, `"2"`）を用いて例示する。
+1. **動的出力トークン天井規約（Dynamic Output Budget Ceiling with Safety Margin）**:
+   - バックエンド呼び出し時の `max_tokens`（LiteLLM / Gemini / OpenAI互換）および `num_predict`（Ollama）には、静的なコンテキスト最大値（`llm_cloud_max_tokens`）を一律で渡すのではなく、タスク種別（`identity`, `track_mapping`, `steam_tracklist_extraction`）および対象ユニット数（トラック数等）から算出した期待出力トークン予算（`output_budget`）に、安全マージン（既定 25%: `LLM_OUTPUT_BUDGET_SAFETY_RATIO=0.25`）を加算した天井値（`int(output_budget * 1.25)`）を動的に設定する。
+   - これにより、モデルが停止トークンを出さずに長文反復出力に陥った場合でも、期待値の1.25倍（約1分強）でバックエンド側が強制打ち切り（`done_reason=length`）を行い、プロキシの長時間ソケットタイムアウト（10分等）を防止する。
+2. **縮退プロンプト適応規約（Adaptive Degraded Prompt on Truncation）**:
+   - トークン上限到達（`done_reason in {"length", "max_tokens"}`）、タイムアウト、または出力途切れ起因のパースエラーが発生してリトライする際、同一条件での再生成は同じ暴走を招くため、プロンプトを「縮退プロンプト（Degraded Minimal Prompt）」へ自動適応させる。
+   - **Prompt Cache プレフィックスの温存**: 並列処理時や推論エンジンの KV キャッシュ効率を損なわないよう、プロンプト本文（Steam、MBZ、音響指紋、ローカル楽曲リスト等のデータプレフィックス）は完全に維持する。
+   - **末尾フォーマット指示の縮退**: 末尾の `### OUTPUT FORMAT` 指示部のみを差し替え、`confidence_reason` や各スロットの `reason`、`concerns` 等の詳細解説・理由文の出力を一切禁止し、判定に必要な必須キー（信頼度数値、戦略コード、スロット配列、グローバルタグ）のみを含む最小 JSON の出力を強制する。
+   - これにより、モデルは少量のトークン枠で確実に JSON オブジェクトを完結させ、LLM の知能を活かして正常に Archive 判定を救出する。
+3. **リトライ設定・ランダムジッター規約**:
+   - LLM 呼び出しの最大リトライ回数は環境変数 `LLM_MAX_RETRIES`（既定 3）として設定可能とする。
+   - リトライ待機時間（指数バックオフ）にはランダムジッター（±20%）を付与し、並列ワーカー環境におけるリクエスト集中（Retry Storm）を抑制する。
+4. **温度（temperature）の不変性**:
+   - S.S.T の確証主義（再現性の保証・タグ値の創作禁止・確証不足は Review）を堅持するため、リトライ時であっても温度は常に `0.0` 固定とし、ブレ（偶然の成功）を誘発するサンプリング変更は禁止する。
+5. **単一トラック分割時の決定論的フォールバック**: チャンクサイズが 1 の状態で LLM 応答が Truncation となった場合、即座に空指示として破棄せず、決定論的プレマッチ（AcoustID / MBZ_SEARCH / 番号・タイトル完全一致）からの安全なスロット復元を試みる。
+6. **Identity 判定時の Steam-Trust フォールバック**: `identity`（Phase 1）判定で Truncation が発生した場合、Steam トラックリストとローカルファイル数が 1:1 完全一致していれば、`STEAM_BASED` を前提として Phase 2 へ進む。構造不一致の場合は安全側に倒して Review を維持する。
+7. **LLMスロットキー解決の堅牢化契約**: LLM が `"STEAM_SLOT_0"`, `"STEAM_SLOT_1"`, `"SLOT_1"` 等のプレフィックス付きキーを出力した場合、パーサーは先頭の非数字文字を除去して数値を抽出し、スロット配列（0-indexed / 1-indexed）と安全に照合する。プロンプト出力例示においてもプレースホルダーではなく具体的な数値キー（`"1"`, `"2"`）を用いて例示する。
 
 ### 11.6 音声変換警告（audio_warn）と物理破損（audio_fail）の監査分離規約
 
@@ -662,6 +688,18 @@ Steamストアトラックリストとローカルタグのトラック番号照
    - 元音源の FLAC の Rice 符号化破損（`invalid rice order` / `decode_frame() failed`）等に起因するデコード警告が発生したトラックを含むアルバムは、大音量再生時の微小ノイズ・瞬断リスクに備え、一旦 **REVIEW** 判定を維持する。
    - ただし、単なる一律の `Audio quality warning` ではなく、**「本来Archive相当（構造完全一致）だが微小問題を含むためReview送り」である旨と、該当する具体的なトラック番号（例: `Track 03, 08, 11, 17, 19`）を INFO ログ、Discord 通知、および各アルバム ZIP 内の AUDIT_REPORT.html に明記する**。
 3. **仕様適合リサンプリングの非警告化**: 32-bit float から 24-bit PCM への安全なビット深度低減等、本システム仕様（24bit/48kHz 上限）に適合させるための正常なリサンプリング処理は警告（`audio_warn`）とみなさず、正常変換として扱う。
+
+### 11.7 一時copy障害のバッチ後遅延再試行
+
+共有ストレージ等への一時的なアクセス障害で音源copyに失敗した場合、他アルバム・他trackの通常処理を妨げず、Runner管理の居残りキューで一度だけ再試行する。
+
+1. 初回copyは既定の有限回数で再試行する。最終失敗時はFFmpeg変換を呼ばず、trackとcopy試行記録を居残りキューへ保持する。
+2. 通常のアルバム処理がすべて完了した後、`SST_DEFERRED_COPY_DELAY_SECONDS` 秒待機し、保留trackを一度だけ再処理する。既定値は600秒（10分）。保留がない場合は待機しない。値が0の場合は待機を省くが、再試行ラウンドは省略しない。
+3. 遅延再試行でcopyできたtrackは、通常の変換・タグ付け・Validator・Archive Artifact Preflightへ進む。再試行成功だけでArchiveに昇格させない。
+4. 再試行でcopyできないtrackは再キューしない。該当AppIDを`Deferred Copy Recovery Exhausted (N)`でReview確定し、不足slotとcopy試行を監査metadataに残す。他AppIDの処理・結果を巻き戻さず、バッチ全体は継続する。
+5. `SST_DEFERRED_COPY_DELAY_SECONDS` は非負整数とし、未指定時は600秒とする。Runner後段で一度だけ消費するため、アルバムごとに待機時間を累積させない。
+
+監査metadataには`deferred_copy_count`、`deferred_copy_success_count`、`deferred_copy_failure_count`を記録する。再試行後も失敗したcopyログは成功ログの件数上限で切り捨てず、`track_id` / `slot_key` と各試行のerror typeを保持する。
 
 ---
 

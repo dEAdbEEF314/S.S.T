@@ -145,7 +145,9 @@ class MetadataBuilder:
         # 2.2 TPE1 (Artist)
         # Priority: ACOUSTID recording artist -> MBZ release artist -> Steam Credits -> Developer
         res_artist = None
-        if mbz_track and isinstance(mbz_track, dict) and (mbz_track.get("recording_artist") or mbz_track.get("artist_credit")):
+        if instr.get("mbz_track_artist"):
+            res_artist = instr["mbz_track_artist"]
+        if not res_artist and mbz_track and isinstance(mbz_track, dict) and (mbz_track.get("recording_artist") or mbz_track.get("artist_credit")):
             res_artist = mbz_track.get("recording_artist") or mbz_track.get("artist_credit")
         if mbz_album and mbz_album.get("artist"):
             res_artist = res_artist or mbz_album.get("artist")
@@ -160,12 +162,13 @@ class MetadataBuilder:
 
         # 2.3 TRCK (Track Number)
         res_track = ""
+        matched_v_idx = instr.get("matched_v_idx")
         if pics_track and pics_track.get("number") and not is_steam_numbering_broken:
             res_track = str(pics_track.get("number"))
         elif instr.get("override_track") and str(instr.get("override_track")) != "0" and not is_steam_numbering_broken:
             res_track = str(instr.get("override_track"))
-        elif instr.get("matched_v_idx") is not None:
-            res_track = str(int(instr.get("matched_v_idx")) + 1)
+        elif matched_v_idx is not None:
+            res_track = str(int(matched_v_idx) + 1)
         elif mbz_track:
             val = mbz_track.get("position") or mbz_track.get("track_num")
             if val:

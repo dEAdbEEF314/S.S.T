@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 logger = logging.getLogger("sst.vram_manager")
+NVIDIA_SMI_TIMEOUT_SECONDS = 5
 
 
 @dataclass(frozen=True)
@@ -21,9 +22,17 @@ class VramResourceManager:
     """
     起動時に一度だけシステムとOllamaのVRAMを計算し、固定num_ctx環境下での安全な最大並列数（スロット数）を決定するマネージャー
     """
-    def __init__(self, base_url: str, model: str):
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        preflight_timeout: float = 120.0,
+        health_check_timeout: float = 10.0,
+    ):
         self.base_url = base_url.rstrip('/')
         self.model = model
+        self.preflight_timeout = preflight_timeout
+        self.health_check_timeout = health_check_timeout
         
         self.total_vram_bytes = self._detect_total_vram()
         self.model_vram_bytes, self.bytes_per_token = self._preflight_check()
@@ -45,7 +54,12 @@ class VramResourceManager:
         """nvidia-smiを使用して物理VRAMの総量を自律検出する"""
         try:
             cmd = ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=NVIDIA_SMI_TIMEOUT_SECONDS,
+            )
             if result.returncode == 0:
                 lines = result.stdout.strip().split('\n')
                 total_mib = sum(int(line.strip()) for line in lines if line.strip().isdigit())
@@ -63,9 +77,12 @@ class VramResourceManager:
                 "messages": [{"role": "user", "content": "Hello"}],
                 "stream": False,
                 "options": {"num_predict": 1}
-            }, timeout=120)
+            }, timeout=self.preflight_timeout)
             
-            ps_res = requests.get(f"{self.base_url}/api/ps", timeout=10).json()
+            ps_res = requests.get(
+                f"{self.base_url}/api/ps",
+                timeout=self.health_check_timeout,
+            ).json()
             model_vram = 0
             for m in ps_res.get("models", []):
                 if m.get("name") == self.model or self.model in m.get("name"):

@@ -3,15 +3,26 @@ import logging
 import re
 import time
 from typing import List, Optional, Dict, Any, Tuple
-from datetime import datetime
+from datetime import UTC, datetime
 from difflib import SequenceMatcher
 
 logger = logging.getLogger("sst.ident.mbz")
 
 class MusicBrainzIdentifier:
-    def __init__(self, app_name: str, version: str, contact: str, scoring_config: Optional[Dict[str, Any]] = None, db=None):
+    def __init__(
+        self,
+        app_name: str,
+        version: str,
+        contact: str,
+        scoring_config: Optional[Dict[str, Any]] = None,
+        db=None,
+        rate_limit_delay: float = 1.0,
+        search_limit: int = 20,
+    ):
         musicbrainzngs.set_useragent(app_name, version, contact)
         self.db = db
+        self.rate_limit_delay = float(rate_limit_delay)
+        self.search_limit = int(search_limit)
         self.scores = scoring_config or {
             "direct_steam_link": 500,
             "parent_steam_link": 300,
@@ -37,7 +48,7 @@ class MusicBrainzIdentifier:
         match = re.search(r'(\d{4})', str(date_str))
         return int(match.group(1)) if match else None
 
-    def _fetch_release(self, mbid: str, includes: List[str] = None) -> Optional[Dict[str, Any]]:
+    def _fetch_release(self, mbid: str, includes: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
         includes_str = ",".join(sorted(includes)) if includes else ""
         cache_key = f"release_{mbid}_{includes_str}"
         
@@ -47,7 +58,7 @@ class MusicBrainzIdentifier:
                 return cached
             
         try:
-            time.sleep(1.1)
+            time.sleep(self.rate_limit_delay)
             res = musicbrainzngs.get_release_by_id(mbid, includes=includes)
             release_data = res.get('release', {})
             if self.db and release_data:
@@ -57,7 +68,7 @@ class MusicBrainzIdentifier:
             logger.warning(f"Failed to fetch details for {mbid}: {e}")
             return None
 
-    def _fetch_recording(self, mbid: str, includes: List[str] = None) -> Optional[Dict[str, Any]]:
+    def _fetch_recording(self, mbid: str, includes: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
         includes_str = ",".join(sorted(includes)) if includes else ""
         cache_key = f"recording_{mbid}_{includes_str}"
         
@@ -67,7 +78,7 @@ class MusicBrainzIdentifier:
                 return cached
             
         try:
-            time.sleep(1.1)
+            time.sleep(self.rate_limit_delay)
             res = musicbrainzngs.get_recording_by_id(mbid, includes=includes)
             rec_data = res.get('recording', {})
             if self.db and rec_data:
@@ -137,7 +148,7 @@ class MusicBrainzIdentifier:
         """
         log_data = {
             "query": {"album_name": album_name, "app_id": app_id, "expected_track_count": expected_track_count},
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "attempts": []
         }
         
@@ -152,9 +163,9 @@ class MusicBrainzIdentifier:
                 
         if not all_raw_releases and cached_search is None:
             try:
-                time.sleep(1.1)
+                time.sleep(self.rate_limit_delay)
                 # 1. Primary: Text-based search
-                result = musicbrainzngs.search_releases(release=album_name, limit=20)
+                result = musicbrainzngs.search_releases(release=album_name, limit=self.search_limit)
                 all_raw_releases = result.get('release-list', [])
                 if self.db:
                     self.db.set_api_cache("mbz", search_cache_key, all_raw_releases)
@@ -267,13 +278,13 @@ class MusicBrainzIdentifier:
 
             # --- Tier 2: Structural ---
             mb_tracks = 0
+            mb_labels = []
+            canonical_label = "Unknown"
             try:
                 for m in release_data.get('medium-list', []):
                     mb_tracks += len(m.get('track-list', []))
                 
                 # Publisher/Label Alignment (New Steam Anchor)
-                mb_labels = []
-                canonical_label = "Unknown"
                 for l_entry in release_data.get('label-info-list', []):
                     lname = l_entry.get('label', {}).get('name')
                     if lname:
@@ -349,7 +360,8 @@ class MusicBrainzIdentifier:
                     if rec.get('title'):
                         mb_tracks_data.append({
                             "title": rec['title'],
-                            "position": str(t.get('position', '0'))
+                            "position": str(t.get('position', '0')),
+                            "recording_artist": rec.get("artist-credit-phrase"),
                         })
             
             if local_baseline and local_baseline.get("tracks") and mb_tracks_data:

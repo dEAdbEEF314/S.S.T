@@ -2,8 +2,6 @@ import time
 import collections
 import threading
 import logging
-from pathlib import Path
-from datetime import datetime
 from typing import List, Dict
 
 logger = logging.getLogger("sst.rate_limit")
@@ -17,11 +15,6 @@ class DistributedRateLimiter:
         self.request_times = collections.deque()
         self.token_times = collections.deque() 
         
-    def _get_usage_file(self):
-        log_dir = Path("logs")
-        log_dir.mkdir(exist_ok=True)
-        return log_dir / f"llm_usage_{datetime.now().strftime('%Y%m%d')}.json"
-
     def _estimate_tokens(self, messages: List[Dict[str, str]]) -> int:
         total_chars = sum(len(m.get("content", "")) for m in messages)
         return max(1, total_chars // 3)

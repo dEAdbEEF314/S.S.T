@@ -58,8 +58,15 @@
 - 正ソース: ACOUSTID の Recording Artist Credit
 - 異常検知: ヒットなし、空、Various Artists / VA のような包括名義
 - フォールバック: MBZ_RELEASE -> MBZ_SEARCH -> STEAM Store Credits Artist -> STEAM Developer
+- FAST-TRACK例外: APIC欠落時の遅延MBZ_SEARCHが閾値を通過した場合、その候補のrecording artist-creditを正規化後に一意一致するSteam trackへ適用できる。追加AcoustID照会は行わず、候補不在・不一致・artist不在時は従来のフォールバックを維持する。
 - LLM 介入: ACOUSTID と MBZ_RELEASE で大きく乖離する場合
 - 複数名義は , 区切りで保持する
+
+### 4.3.1 FAST-TRACK TPE1/TIT2 slot binding
+
+- タグ生成時に`matched_v_idx`がある場合はそのSteam slot indexを保持して使う。
+- indexがない場合、Steamの`(disc, track_number)`が一意一致したときだけindexを復元する。
+- 復元indexが指すSteam titleをTIT2正本とする。番号が重複・欠落している場合は推定せず既存fallbackと監査を維持する。
 
 ### 4.4 TPE2
 
@@ -146,3 +153,10 @@
 - APIC 取得元: MP3
 
 この分離は仕様として許可されます。
+
+## 7. 出力ファイルのslot一意性
+
+- 最終metadataの各trackは、一意な物理出力パスを参照する。
+- 同一出力disc内で変換後のstemと拡張子が衝突する場合、ステージファイル名にslot由来の安定した識別子を付け、別trackによる上書きを防ぐ。
+- 衝突回避の識別子はタグ値を変更しない。元ファイル名は監査metadataに保持する。
+- Archive preflightでは、track参照パスの重複、参照先の欠落、ZIP内実体数との不一致をReview条件とする。

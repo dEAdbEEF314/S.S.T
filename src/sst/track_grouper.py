@@ -5,6 +5,8 @@ import subprocess
 import hashlib
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
+import os
+import mutagen
 from .ident.embedded import EmbeddedMetadataExtractor
 
 logger = logging.getLogger("sst.track_grouper")
@@ -33,15 +35,15 @@ class TrackManager:
                 return []
             for p in directory.rglob("*"):
                 try:
+                    name = p.name
+                    if name.startswith(".") or name.startswith("._"):
+                        continue
+                    if p.suffix.lower() not in exts:
+                        continue
                     path_parts = {part.lower() for part in p.parts}
-                    if (
-                        p.suffix.lower() in exts
-                        and not p.name.startswith(".")
-                        and not p.name.startswith("._")
-                        and ".ds_store" not in path_parts
-                        and "__macosx" not in path_parts
-                    ):
-                        audio_files.append(p)
+                    if ".ds_store" in path_parts or "__macosx" in path_parts:
+                        continue
+                    audio_files.append(p)
                 except OSError as e:
                     logger.warning(f"ファイルアクセス中にエラーが発生しました ({p}): {e}")
                     continue
@@ -52,9 +54,22 @@ class TrackManager:
 
     @staticmethod
     def get_duration(path: Path) -> float:
+        # 1. Fast path: Mutagen length extraction directly from headers (no subprocess)
         try:
+            file_loader = getattr(mutagen, "File")
+            audio = file_loader(path)
+            if audio is not None and getattr(audio, "info", None) is not None:
+                length = getattr(audio.info, "length", None)
+                if length is not None and isinstance(length, (int, float)) and length > 0:
+                    return float(length)
+        except Exception:
+            pass
+
+        # 2. Fallback: ffprobe process invocation (with configurable timeout)
+        try:
+            timeout_sec = float(os.getenv("FFPROBE_TIMEOUT", "10"))
             cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(path)]
-            return float(subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout.strip())
+            return float(subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec).stdout.strip())
         except Exception:
             return 0.0
 
@@ -103,6 +118,8 @@ class TrackManager:
                 t_num_str = str(file_track)
             else:
                 t_num = re.match(r'^(\d+)', f.stem)
+                if not t_num:
+                    t_num = re.search(r'(?:^|[\s\-_])(\d{1,3})(?:[\s\-_.]|$)', f.stem)
                 filename_track_val = int(t_num.group(1)) if t_num else None
                 t_num_str = t_num.group(1) if t_num else None
 
@@ -132,7 +149,7 @@ class TrackManager:
             
             raw_tracks.append({
                 "file_id": hashlib.sha1(str(f.resolve()).encode("utf-8")).hexdigest()[:16],
-                "path": f, "meta": meta, "duration": TrackManager.get_duration(f), 
+                "path": f, "meta": meta, "duration": meta.get("duration") or TrackManager.get_duration(f), 
                 "format": f.suffix.lower().lstrip('.'),
                 "filename_track": filename_track_val,
                 "t_num_val": t_num_val,
@@ -159,11 +176,11 @@ class TrackManager:
 
     @staticmethod
     def get_best_artwork(variants: List[Dict]) -> Optional[bytes]:
-        from mutagen import File
+        file_loader = getattr(mutagen, "File")
 
         for v in variants:
             try:
-                audio = File(v["path"])
+                audio = file_loader(v["path"])
                 if not audio:
                     continue
 

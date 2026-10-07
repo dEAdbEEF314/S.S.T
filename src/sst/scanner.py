@@ -1,10 +1,10 @@
 import vdf
 import logging
-from typing import List, Optional, Any
+from typing import Any, Callable, List, Optional
 from pathlib import Path
 
 from .utils import ensure_path
-from .steam_vdf import SteamBinaryVDF, SteamLibraryDiscovery
+from .steam_vdf import SteamBinaryVDF
 from .db import DatabaseManager
 from .scanner_cache import ScannerCacheManager
 from .steam_web_api import SteamWebClient
@@ -15,15 +15,62 @@ logger = logging.getLogger(__name__)
 MUSIC_EXTENSIONS = {".flac", ".wav", ".mp3", ".aiff", ".aif", ".m4a", ".ogg"}
 
 class SteamScanner:
-    def __init__(self, install_path: str, db: DatabaseManager, bridge_url: str, bridge_api_key: Optional[str] = None, api_key: Optional[str] = None, override_library_path: Optional[str] = None, cache_path: str = "data/scout_cache.json", language: str = "japanese", tag_refresh_days: int = 30, llm_extractor: Any = None):
+    def __init__(
+        self,
+        install_path: str,
+        db: DatabaseManager,
+        bridge_url: str,
+        library_path: str,
+        bridge_api_key: Optional[str] = None,
+        api_key: Optional[str] = None,
+        cache_path: str = "data/scout_cache.json",
+        tag_cache_path: str = "data/steam_tags.json",
+        language: str = "japanese",
+        tag_refresh_days: int = 30,
+        llm_extractor: Any = None,
+        api_timeout: float = 15.0,
+        pics_timeout: float = 30.0,
+        max_retries: int = 3,
+        retry_delay: float = 2.0,
+        retry_backoff: float = 2.0,
+        throttle_delay: float = 2.0,
+    ):
         self.install_path = ensure_path(install_path)
         self.db = db
         
-        self.cache_manager = ScannerCacheManager(cache_path, tag_refresh_days=tag_refresh_days)
-        self.web_client = SteamWebClient(db, bridge_url, bridge_api_key, api_key, language, llm_extractor=llm_extractor)
+        self.cache_manager = ScannerCacheManager(
+            cache_path,
+            tag_cache_path=tag_cache_path,
+            tag_refresh_days=tag_refresh_days,
+        )
+        self.web_client = SteamWebClient(
+            db,
+            bridge_url,
+            bridge_api_key,
+            api_key,
+            language,
+            llm_extractor=llm_extractor,
+            api_timeout=api_timeout,
+            pics_timeout=pics_timeout,
+            max_retries=max_retries,
+            retry_delay=retry_delay,
+            retry_backoff=retry_backoff,
+            throttle_delay=throttle_delay,
+        )
         
-        # 1. Discover all libraries
-        self.library_paths = self._discover_all_libraries(override_library_path)
+        # Use the explicitly configured path so mounted libraries are not inferred
+        # from Windows paths in libraryfolders.vdf.
+        self.library_path = ensure_path(library_path)
+        if not self.library_path.is_dir():
+            raise FileNotFoundError(
+                f"STEAM_LIBRARY_PATH does not exist or is not accessible: {self.library_path}"
+            )
+        if not (self.library_path / "steamapps").is_dir():
+            raise FileNotFoundError(
+                f"STEAM_LIBRARY_PATH must contain a steamapps directory: {self.library_path}"
+            )
+        self.library_paths = [self.library_path]
+        logger.info("明示されたSteamライブラリパスを使用します: %s", self.library_path)
         
         # 2. Parse appinfo.vdf
         appcache_path = self.install_path / "appcache" / "appinfo.vdf"
@@ -34,23 +81,13 @@ class SteamScanner:
             self.appinfo_dict = {}
             logger.warning(f"appinfo.vdf が {appcache_path} に見つかりません。基本スキャンにフォールバックします。")
 
-
-
-
-    def _discover_all_libraries(self, override_path: Optional[str]) -> List[Path]:
-        libs = SteamLibraryDiscovery.discover(self.install_path)
-        # CRITICAL: Convert all Windows paths from libraryfolders.vdf to WSL paths
-        wsl_libs = [ensure_path(str(p)) for p in libs]
-        
-        if override_path:
-            p = ensure_path(override_path)
-            if p not in wsl_libs:
-                wsl_libs.append(p)
-        
-        logger.info(f"{len(wsl_libs)} 個のライブラリで SteamScanner を初期化しました。")
-        return wsl_libs
-
-    def find_soundtracks(self, force: bool = False, limit: Optional[int] = None, is_processed_callback: Optional[callable] = None, target_appids: Optional[List[int]] = None) -> List[dict]:
+    def find_soundtracks(
+        self,
+        force: bool = False,
+        limit: Optional[int] = None,
+        is_processed_callback: Optional[Callable[[int], bool]] = None,
+        target_appids: Optional[List[int]] = None,
+    ) -> List[dict]:
         """
         Finds soundtrack app manifests and merges them with local appinfo metadata.
         """
@@ -127,6 +164,7 @@ class SteamScanner:
                     "store_tracklist_source": enriched.get("store_tracklist_source"),
                     "store_tracklist_language": enriched.get("store_tracklist_language"),
                     "store_credits": enriched.get("store_credits", ""),
+                    "store_description": enriched.get("store_description"),
                     "url": f"https://store.steampowered.com/app/{current_id}",
                     "header_image_url": enriched.get("header_image_url"),
                     "parent_header_image_url": enriched.get("parent_header_image_url"),
@@ -173,6 +211,7 @@ class SteamScanner:
             "store_tracklist_source": None,
             "store_tracklist_language": None,
             "store_credits": "",
+            "store_description": None,
             "parent_app_id": common.get("parent") or common.get("fullgameid"),
             "parent_genres": []
         }

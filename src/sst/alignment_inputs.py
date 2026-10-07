@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Callable, Dict, Any, List, Optional, Tuple
 from collections import Counter
 from difflib import SequenceMatcher
 
@@ -10,13 +10,21 @@ from .models import SteamMetadata
 logger = logging.getLogger("sst.alignment")
 
 class AlignmentInputBuilder:
-    def __init__(self, acoustid_client: AcoustIDIdentifier, mbz_client: MusicBrainzIdentifier, fingerprint_all: bool = False, min_mbz_search_score_threshold: int = 250):
+    def __init__(
+        self,
+        acoustid_client: AcoustIDIdentifier,
+        mbz_client: MusicBrainzIdentifier,
+        fingerprint_all: bool = False,
+        min_mbz_search_score_threshold: int = 250,
+        fingerprint_sample_size: int = 3,
+    ):
         self.acoustid = acoustid_client
         self.mbz = mbz_client
         self.fingerprint_all = fingerprint_all
         self.min_mbz_search_score_threshold = min_mbz_search_score_threshold
+        self.fingerprint_sample_size = max(1, int(fingerprint_sample_size))
 
-    def build_fingerprint_album(self, track_groups: Dict[Tuple[int, str], List[Dict[str, Any]]], on_track_complete: Optional[callable] = None) -> Optional[Dict[str, Any]]:
+    def build_fingerprint_album(self, track_groups: Dict[Tuple[int, str], List[Dict[str, Any]]], on_track_complete: Optional[Callable[[], None]] = None) -> Optional[Dict[str, Any]]:
         """
         Builds the AcoustID / MBZ_RELEASE auxiliary signals using cross-validation.
         """
@@ -29,10 +37,15 @@ class AlignmentInputBuilder:
         target_keys = list(track_groups.keys())
         sampled_keys = target_keys
         
-        # Apply sampling if not fingerprint_all and album is large
-        if not self.fingerprint_all and len(target_keys) > 3:
-            mid = len(target_keys) // 2
-            sampled_keys = [target_keys[0], target_keys[mid], target_keys[-1]]
+        # Apply sampling if not fingerprint_all and album is larger than sample size
+        if not self.fingerprint_all and len(target_keys) > self.fingerprint_sample_size:
+            n = self.fingerprint_sample_size
+            if n <= 1:
+                sampled_keys = [target_keys[0]]
+            else:
+                step = (len(target_keys) - 1) / (n - 1)
+                indices = sorted(list({int(round(i * step)) for i in range(n)}))
+                sampled_keys = [target_keys[idx] for idx in indices]
             logger.info(f"Sampling mode: Scanning {len(sampled_keys)}/{len(target_keys)} tracks.")
         else:
             logger.info(f"Full scan mode: Scanning all {len(target_keys)} tracks.")
@@ -128,6 +141,18 @@ class AlignmentInputBuilder:
             m_pos = int(medium.get("position", 1))
             for track in medium.get("track-list", []):
                 recording = track.get("recording", {})
+                recording_artist = recording.get("artist-credit-phrase")
+                if not recording_artist:
+                    artist_parts = []
+                    for credit in recording.get("artist-credit", []):
+                        if isinstance(credit, dict):
+                            artist = credit.get("name") or credit.get("artist", {}).get("name")
+                            if artist:
+                                artist_parts.append(str(artist))
+                            artist_parts.append(str(credit.get("joinphrase") or ""))
+                        elif credit:
+                            artist_parts.append(str(credit))
+                    recording_artist = "".join(artist_parts).strip() or None
                 
                 # Parse relationships (Composer, Lyricist, etc.)
                 credits = {"composer": [], "lyricist": [], "arranger": [], "remixer": []}
@@ -150,6 +175,7 @@ class AlignmentInputBuilder:
                     "title": recording.get("title") or track.get("title"),
                     "duration_ms": int(track.get("length") or recording.get("length") or 0),
                     "mbid": recording.get("id"),
+                    "recording_artist": recording_artist,
                     "credits": {k: ", ".join(v) if v else None for k, v in credits.items()}
                 })
 
@@ -165,6 +191,7 @@ class AlignmentInputBuilder:
             
             best_match = None
             best_score = -1.0
+            acoustid_mbid = top_acoustid.get("mbid")
             
             for i, mb_t in enumerate(mb_all_tracks):
                 if i in used_mb_indices:
@@ -183,6 +210,15 @@ class AlignmentInputBuilder:
             if best_match:
                 used_mb_indices.add(mb_all_tracks.index(best_match))
                 matched_count += 1
+                exact_mbz_match = next(
+                    (mb_t for mb_t in mb_all_tracks if acoustid_mbid and mb_t.get("mbid") == acoustid_mbid),
+                    None,
+                )
+                mbz_track_artist = None
+                if exact_mbz_match:
+                    mbz_track_artist = exact_mbz_match.get("recording_artist")
+                elif best_score >= 0.95:
+                    mbz_track_artist = best_match.get("recording_artist")
                 signal_bundle["tracks"].append({
                     "local_key": key,
                     "disc": best_match["disc"],
@@ -191,6 +227,7 @@ class AlignmentInputBuilder:
                     "duration_ms": best_match["duration_ms"],
                     "mbid": best_match["mbid"],
                     "recording_artist": top_acoustid.get("artist"),
+                    "mbz_track_artist": mbz_track_artist,
                     "credits": best_match["credits"],
                     "mbz_track_index": mb_all_tracks.index(best_match)
                 })
@@ -203,6 +240,7 @@ class AlignmentInputBuilder:
                     "duration_ms": None,
                     "mbid": None,
                     "recording_artist": top_acoustid.get("artist"),
+                    "mbz_track_artist": None,
                     "credits": None,
                     "mbz_track_index": None
                 })
@@ -214,7 +252,7 @@ class AlignmentInputBuilder:
 
         return signal_bundle
 
-    def build_mbz_search_album(self, app_id: int, album_name: str, expected_track_count: int, steam_meta: SteamMetadata = None, local_baseline: Dict = None) -> Optional[Dict[str, Any]]:
+    def build_mbz_search_album(self, app_id: int, album_name: str, expected_track_count: int, steam_meta: Optional[SteamMetadata] = None, local_baseline: Optional[Dict] = None) -> Optional[Dict[str, Any]]:
         """
         Builds MBZ_SEARCH auxiliary signals by explicit MusicBrainz search with scoring.
         """
@@ -266,6 +304,7 @@ class AlignmentInputBuilder:
                 "disc": 1, # Simplified, mbz text search tracks don't always retain disc cleanly in the summary list
                 "track_num": track.get("position"),
                 "title": track.get("title"),
+                "recording_artist": track.get("recording_artist"),
                 "duration_ms": None, # Search summary often lacks duration
                 "mbid": None, # Recording ID not available in brief summary
                 "mbz_track_index": idx
@@ -326,19 +365,20 @@ class AlignmentInputBuilder:
             
             if track_num is None:
                 track_num = best.get("filename_track")
-                
+
+            best_path = best.get("path")
             signal_bundle["tracks"].append({
                 "local_key": key,
                 "file_ids": [variant["file_id"] for variant in variants],
                 "disc": key[0],
                 "track_num": track_num, 
-                "title": meta.get("title") or best.get("path").stem,
+                "title": meta.get("title") or (best_path.stem if best_path is not None else ""),
                 "duration_ms": int(best["duration"] * 1000)
             })
             
-        # Sort tracks by (disc, track_num)
+        # Sort tracks by (disc, track_num, title)
         signal_bundle["tracks"].sort(
-            key=lambda t: (t["disc"], t["track_num"] if t["track_num"] is not None else 999)
+            key=lambda t: (t["disc"], t["track_num"] if t["track_num"] is not None else 999, str(t.get("title") or ""))
         )
             
         return signal_bundle

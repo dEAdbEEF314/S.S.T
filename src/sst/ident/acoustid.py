@@ -13,18 +13,28 @@ class AcoustIDIdentifier:
     _api_lock = threading.Lock()
     _last_call_time = 0.0
 
-    def __init__(self, api_key: Optional[str] = None, db=None):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        db=None,
+        rate_limit_min: float = 1.5,
+        rate_limit_max: float = 2.0,
+        timeout: float = 10.0,
+    ):
         self.api_key = api_key or os.getenv("ACOUSTID_API_KEY")
         self.db = db
+        self.rate_limit_min = float(rate_limit_min)
+        self.rate_limit_max = float(rate_limit_max)
+        self.timeout = float(timeout)
         if not self.api_key:
             logger.warning("ACOUSTID_API_KEY not found. AcoustID matching will be disabled.")
 
     def _wait_for_rate_limit(self):
-        """Ensures 1.5-2.0s between global API calls per LOGIC.md §3.3."""
+        """Ensures rate_limit_min-rate_limit_max s between global API calls per LOGIC.md §3.3."""
         with self._api_lock:
             now = time.time()
             elapsed = now - AcoustIDIdentifier._last_call_time
-            wait_time = random.uniform(1.5, 2.0) - elapsed
+            wait_time = random.uniform(self.rate_limit_min, self.rate_limit_max) - elapsed
             if wait_time > 0:
                 time.sleep(wait_time)
             AcoustIDIdentifier._last_call_time = time.time()
@@ -42,7 +52,7 @@ class AcoustIDIdentifier:
             # Generate fingerprint using fpcalc via the acoustid library
             duration, fingerprint = acoustid.fingerprint_file(str(file_path))
             fingerprint_key = fingerprint.decode("utf-8", errors="ignore") if isinstance(fingerprint, bytes) else str(fingerprint)
-            
+
             # Check DB Cache
             results = None
             if self.db:
@@ -50,18 +60,17 @@ class AcoustIDIdentifier:
                 if cached_res:
                     results = cached_res
                     logger.debug(f"AcoustID cache hit for {file_path.name}.")
-            
+
             if not results:
                 # Global Rate Limit Enforcement
                 self._wait_for_rate_limit()
-                
+
                 logger.debug(f"Fingerprint generated ({duration:.2f}s). Looking up AcoustID...")
-                
                 # Lookup AcoustID
                 # meta="recordings releases" gives us MB Recording IDs and associated Release IDs
-                results = acoustid.lookup(self.api_key, fingerprint, duration, meta="recordings releases", timeout=10.0)
+                results = acoustid.lookup(self.api_key, fingerprint, duration, meta="recordings releases", timeout=self.timeout)
                 logger.debug(f"AcoustID lookup completed for {file_path.name}.")
-                
+
                 if self.db and results.get("status") == "ok":
                     self.db.set_api_cache("acoustid", fingerprint_key, results)
 
@@ -83,6 +92,7 @@ class AcoustIDIdentifier:
                             artist_credit_text = "".join(credit_parts).strip()
                         else:
                             artist_credit_text = ", ".join(str(artist.get("name")) for artist in artists if artist.get("name"))
+
                         candidates.append({
                             "mbid": recording.get("id"),
                             "release_ids": release_ids,
@@ -98,7 +108,7 @@ class AcoustIDIdentifier:
             logger.error(f"AcoustID API Error for {file_path.name}: {e}")
         except Exception as e:
             logger.error(f"Unexpected error identifying {file_path.name} with AcoustID: {e}")
-        
+
         return []
 
     def get_best_mbid(self, file_path: Path) -> Optional[str]:

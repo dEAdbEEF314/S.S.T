@@ -150,16 +150,36 @@ def analyze_and_generate_report(db_path='data/sst_local_state.db', output_dir='r
             reviews.append(item)
             app_id_int = int(app_id) if str(app_id).isdigit() else app_id
 
+            diag = meta.get('diagnostics', {}) if isinstance(meta, dict) else {}
+            has_audio_warn = (
+                'Audio quality warning' in msg
+                or bool(diag.get('audio_quality_warnings'))
+                or bool(diag.get('conversion_warnings'))
+            )
+            is_early_review = (
+                msg == 'N/A (Early Review)'
+                or 'PRE_ALIGNMENT_REVIEW_GATE' in msg
+                or 'Steam Tracklist Missing' in msg
+                or 'No LLM response' in reason
+                or 'EARLY_REVIEW' in str(diag)
+            )
+            has_slot_or_count_mismatch = any(
+                token in msg for token in [
+                    'Slots Missing', 'Slots Unexpected', 'Track Count Mismatch',
+                    'Duplicates', 'Contradictory Slot Assignments'
+                ]
+            )
+
             if app_id_int in io_error_app_ids or 'CRITICAL: Audio Source Error' in msg:
                 reviews_io.append(item)
-            elif 'Audio quality warning' in msg or 'conversion_warning' in str(meta):
+            elif has_audio_warn:
                 reviews_audio.append(item)
-            elif item['unassigned_count'] > 0:
-                reviews_unassigned.append(item)
-            elif any(token in msg for token in ['Slots Missing', 'Slots Unexpected', 'Track Count Mismatch', 'Duplicates']):
-                reviews_slot_mismatch.append(item)
-            elif msg == 'N/A (Early Review)' or 'No LLM response' in reason or 'EARLY_REVIEW' in str(meta.get('diagnostics', {})):
+            elif is_early_review:
                 reviews_early.append(item)
+            elif has_slot_or_count_mismatch:
+                reviews_slot_mismatch.append(item)
+            elif item['unassigned_count'] > 0 or 'Unassigned Files' in msg:
+                reviews_unassigned.append(item)
             else:
                 reviews_low_conf.append(item)
 

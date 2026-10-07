@@ -12,6 +12,25 @@ from .track_grouper import TrackManager
 logger = logging.getLogger("sst.processor")
 
 
+def resolve_steam_track_index(
+    slot_key: Tuple[int, str],
+    steam_tracklist: List[Dict[str, Any]],
+) -> Optional[int]:
+    target_disc, target_number = slot_key
+    normalized_target_number = str(target_number).split("/")[0].strip().lstrip("0") or "0"
+    matching_indices = []
+    for index, steam_track in enumerate(steam_tracklist):
+        try:
+            steam_disc = int(steam_track.get("disc", 1) or 1)
+        except (TypeError, ValueError):
+            steam_disc = 1
+        steam_number = str(steam_track.get("number") or steam_track.get("track_number") or "0")
+        normalized_steam_number = steam_number.split("/")[0].strip().lstrip("0") or "0"
+        if steam_disc == target_disc and normalized_steam_number == normalized_target_number:
+            matching_indices.append(index)
+    return matching_indices[0] if len(matching_indices) == 1 else None
+
+
 def copy_with_retry(src: Path, dst: Path, retries: int = 3, initial_delay: float = 1.0) -> Dict[str, Any]:
     """Copy a file with retry, returning a structured record of attempts.
 
@@ -74,11 +93,13 @@ def process_single_track(
     album_artwork: Optional[Path],
     notifier: Any,
     on_track_complete: Optional[Callable[[], None]] = None,
+    defer_copy_failure: bool = False,
 ) -> Dict[str, Any]:
     """
     Processes one logical track end-to-end and returns result metadata plus status flags.
     """
     (disc, clean_title), adopted_info = track_data
+    io_retry_log = None
 
     try:
         track_id = f"{disc}_{clean_title}"
@@ -90,6 +111,10 @@ def process_single_track(
             instr = final_metadata.get(clean_title)
         if not instr:
             instr = {"action": "use_local_tag"}
+        if instr.get("matched_v_idx") is None:
+            steam_track_index = resolve_steam_track_index(slot_key, steam_meta.store_tracklist or [])
+            if steam_track_index is not None:
+                instr = {**instr, "matched_v_idx": steam_track_index, "reason": "STEAM_SLOT_MATCH"}
 
         slot_variants = slot_variant_index.get(slot_key)
         if slot_variants is None:
@@ -120,8 +145,29 @@ def process_single_track(
         disc_subdir = f"disc_{final_disc}"
         local_raw_dir = buffer_dir / disc_subdir
         local_raw_dir.mkdir(parents=True, exist_ok=True)
-        local_source_path = local_raw_dir / adopted_info["path"].name
+        local_source_path = local_raw_dir / adopted_info.get(
+            "staging_filename", adopted_info["path"].name
+        )
         io_retry_log = copy_with_retry(adopted_info["path"], local_source_path)
+        io_retry_log["track_id"] = track_id
+        io_retry_log["slot_key"] = f"{slot_key[0]}_{slot_key[1]}"
+        if io_retry_log.get("final_state") == "failed":
+            if on_track_complete:
+                on_track_complete()
+            if not defer_copy_failure:
+                notifier.notify_critical(
+                    f"音源コピー失敗: {steam_meta_name}",
+                    f"{clean_title}: {io_retry_log}",
+                )
+            return {
+                "track_meta": None,
+                "had_warning": False,
+                "warned_track_label": None,
+                "failed": not defer_copy_failure,
+                "copy_failed": True,
+                "copy_pending": defer_copy_failure,
+                "io_retry_log": io_retry_log,
+            }
 
         processed_path, has_warnings = tagger.convert_and_limit(
             local_source_path,
@@ -161,9 +207,9 @@ def process_single_track(
         return {
             "track_meta": {
                 "file_path": f"{disc_subdir}/{processed_path.name}",
-                "original_filename": local_source_path.name,
+                "original_filename": adopted_info["path"].name,
                 "tags": tag_map,
-                "source": instr.get("reason", "Fallback"),
+                "source": instr.get("reason") or ("STEAM" if tag_map.get("title_source") == "STEAM" else "Fallback"),
                 "title_source": tag_map.get("title_source", "UNKNOWN"),
                 "slot_key": f"{slot_key[0]}_{slot_key[1]}",
                 "tier_rank": adopted_info.get("tier_rank", 999),
@@ -171,6 +217,8 @@ def process_single_track(
             "had_warning": bool(has_warnings),
             "warned_track_label": warned_track_label,
             "failed": False,
+            "copy_failed": False,
+            "copy_pending": False,
             "io_retry_log": io_retry_log,
         }
 
@@ -182,5 +230,7 @@ def process_single_track(
             "had_warning": False,
             "warned_track_label": None,
             "failed": True,
+            "copy_failed": False,
+            "copy_pending": False,
             "io_retry_log": io_retry_log,
         }

@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional
+from typing import Callable, List, Dict, Any, Optional, Tuple
 import logging
 
 logger = logging.getLogger("sst.llm.prematch")
@@ -47,10 +47,10 @@ def resolve_prematch_signals(
 
     # 1. full_ref_fingerprint を (disc, track_num) または v_idx でインデックス化
     fingerprint_by_v_idx: Dict[int, Dict[str, Any]] = {
-        t.get("v_idx"): t for t in full_ref_fingerprint if t.get("v_idx") is not None
+        int(t["v_idx"]): t for t in full_ref_fingerprint if t.get("v_idx") is not None
     }
     mbz_search_by_v_idx: Dict[int, Dict[str, Any]] = {
-        t.get("v_idx"): t for t in full_ref_mbz_search if t.get("v_idx") is not None
+        int(t["v_idx"]): t for t in full_ref_mbz_search if t.get("v_idx") is not None
     }
     steam_by_disc_and_track: Dict[tuple[int, str], Dict[str, Any]] = {
         (int(t.get("d") or t.get("disc") or 1), str(t.get("n"))): t
@@ -149,3 +149,81 @@ def resolve_prematch_signals(
             prematch_map[file_id] = res
 
     return prematch_map
+
+
+def extract_deterministic_prematches(
+    local_tracks: List[Dict[str, Any]],
+    full_ref_steam: List[Dict[str, Any]],
+    prematch_map: Dict[str, Any],
+    global_res: Dict[str, Any],
+    *,
+    resolve_slot_key: Callable[[str, Optional[List[Dict[str, Any]]]], Optional[int]],
+) -> Tuple[
+    Dict[str, Dict[str, Any]],
+    set[int],
+    List[Dict[str, Any]],
+    List[Dict[str, Any]],
+]:
+    deterministic_instructions: Dict[str, Dict[str, Any]] = {}
+    resolved_v_indices: set[int] = set()
+    resolved_local_indices: set[int] = set()
+
+    fid_to_track_idx = {}
+    for index, track in enumerate(local_tracks):
+        for file_id in track.get("file_ids", []):
+            fid_to_track_idx[str(file_id)] = index
+
+    for file_id, prematch in prematch_map.items():
+        if not prematch or not prematch.is_deterministic:
+            continue
+        matched_v_idx = prematch.target_v_idx
+        if matched_v_idx is None and prematch.deterministic_steam_slot is not None:
+            matched_v_idx = resolve_slot_key(
+                str(prematch.deterministic_steam_slot),
+                full_ref_steam,
+            )
+
+        if matched_v_idx is None or not 0 <= matched_v_idx < len(full_ref_steam):
+            continue
+
+        resolved_v_indices.add(matched_v_idx)
+        track_index = fid_to_track_idx.get(file_id)
+        if track_index is None:
+            continue
+        resolved_local_indices.add(track_index)
+        matching_track = local_tracks[track_index]
+        track_id = f"{matching_track['local_key'][0]}_{matching_track['local_key'][1]}"
+        tags = global_res.get("global_tags", {})
+        if not isinstance(tags, dict):
+            tags = {}
+        steam_slot = full_ref_steam[matched_v_idx]
+        slot_number = steam_slot.get("n") or prematch.override_track or (matched_v_idx + 1)
+        deterministic_instructions[track_id] = {
+            "matched_v_idx": matched_v_idx,
+            "mbz_track_index": prematch.mbz_track_index,
+            "override_title": None,
+            "override_track": str(slot_number),
+            "override_disc": str(steam_slot.get("d") or steam_slot.get("disc") or 1),
+            "reason": f"SYSTEM: Deterministic match ({prematch.evidence[0] if prematch.evidence else 'exact'})",
+            "TPE2": tags.get("canonical_album_artist"),
+            "TCON": tags.get("canonical_genre"),
+            "TDRC": tags.get("canonical_year"),
+            "TPUB": tags.get("canonical_label"),
+        }
+
+    unmatched_local_tracks = [
+        track
+        for index, track in enumerate(local_tracks)
+        if index not in resolved_local_indices
+    ]
+    unfilled_steam_slots = [
+        slot
+        for slot in full_ref_steam
+        if slot.get("v_idx") not in resolved_v_indices
+    ]
+    return (
+        deterministic_instructions,
+        resolved_v_indices,
+        unmatched_local_tracks,
+        unfilled_steam_slots,
+    )

@@ -1,14 +1,25 @@
 import logging
-import json
-import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Optional, Tuple, Callable
 
 from ..config import DEFAULT_METADATA_SOURCE_PRIORITY
 from .client import LLMClient
-from .prompts import build_mapping_prompt, build_identity_prompt, build_steam_tracklist_extraction_prompt
-from .prematch import resolve_prematch_signals
-from ..steam_tracklist import validate_llm_tracklist
+from .normalization import (
+    build_slot_view,
+    build_slot_view_from_final_instructions,
+    normalize_identity_result,
+    normalize_track_mapping_result,
+    resolve_slot_key_to_v_idx,
+)
+from .prompts import build_mapping_prompt
+from .identity import resolve_album_identity
+from .coherence import merge_track_instructions, resolve_mapping_references
+from .alignment_segments import run_differential_segments
+from .prematch import extract_deterministic_prematches, resolve_prematch_signals
+from .assignment_validation import (
+    reject_contradictory_slot_assignments,
+    titles_are_compatible,
+)
+from .tracklist_extractor import extract_steam_tracklist
 
 logger = logging.getLogger('sst.llm.organizer')
 
@@ -24,6 +35,7 @@ class LLMOrganizer:
                  llm_cloud_max_tokens: int = 8192,
                  ollama_num_ctx: int = 32768,
                  ollama_num_predict: int = 4096,
+                 ollama_think: bool = False,
                  llm_vram_scheduling_enabled: bool = True,
                  llm_request_parallelism_enabled: bool = True,
                  llm_request_parallelism_max_workers: int = 4,
@@ -35,9 +47,16 @@ class LLMOrganizer:
                  chunk_output_tokens_per_track: int = 180,
                  chunk_output_safety_ratio: float = 0.75,
                  metadata_source_priority: str = DEFAULT_METADATA_SOURCE_PRIORITY,
+                 max_retries: int = 3,
+                 output_budget_safety_ratio: float = 0.25,
+                 adaptive_degraded_prompt_enabled: bool = True,
                  llm_cache_enabled: bool = True,
                  llm_cache_ttl_seconds: int = 86400,
-                 llm_cache_path: str = "data/llm_cache.json"):
+                 llm_cache_path: str = "data/llm_cache.json",
+                 retry_delay: float = 5.0,
+                 retry_backoff: float = 1.5,
+                 health_check_timeout: float = 10.0,
+                 **kwargs):
         self.user_language = user_language
         self.llm_backend = llm_backend.upper()
         self.llm_request_parallelism_enabled = llm_request_parallelism_enabled
@@ -60,8 +79,15 @@ class LLMOrganizer:
             api_key=api_key, base_url=base_url, model=model, rpm=rpm, tpm=tpm, rpd=rpd,
             llm_backend=llm_backend, draft_model=draft_model, llm_cloud_max_tokens=llm_cloud_max_tokens,
             ollama_num_ctx=ollama_num_ctx, ollama_num_predict=ollama_num_predict,
+            ollama_think=ollama_think,
             llm_vram_scheduling_enabled=llm_vram_scheduling_enabled,
-            request_timeout=request_timeout, chunk_output_tokens_per_track=chunk_output_tokens_per_track
+            request_timeout=request_timeout, chunk_output_tokens_per_track=chunk_output_tokens_per_track,
+            max_retries=max_retries,
+            output_budget_safety_ratio=output_budget_safety_ratio,
+            adaptive_degraded_prompt_enabled=adaptive_degraded_prompt_enabled,
+            retry_delay=retry_delay,
+            retry_backoff=retry_backoff,
+            health_check_timeout=health_check_timeout,
         )
 
     def set_vram_manager(self, vram_manager: Any):
@@ -98,35 +124,14 @@ class LLMOrganizer:
         description_text: str,
         progress_callback: Optional[ProgressCallback] = None,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-        cache_key_input = description_text or ""
-        cached = self.llm_cache.get(cache_key_input, "steam_tracklist_extraction", self.user_language)
-        if cached is not None:
-            log_entry: Dict[str, Any] = {
-                "request_kind": "steam_tracklist_extraction",
-                "cache": self.llm_cache.audit_hit(cache_key_input, "steam_tracklist_extraction", self.user_language),
-                "response": cached,
-            }
-            tracks, errors = validate_llm_tracklist(cached)
-            log_entry["validation_errors"] = errors
-            if tracks:
-                log_entry["tracklist_source"] = "STEAM_TEXT_TRACKLIST_LLM"
-            return tracks, log_entry
-
-        prompt = build_steam_tracklist_extraction_prompt(description_text, self.user_language)
-        response, log_entry = self._call_llm(
+        return extract_steam_tracklist(
             app_id,
-            prompt,
-            request_kind="steam_tracklist_extraction",
-            request_units=1,
-            progress_callback=progress_callback,
+            description_text,
+            self.user_language,
+            self.llm_cache,
+            self._call_llm,
+            progress_callback,
         )
-        tracks, errors = validate_llm_tracklist(response)
-        log_entry["validation_errors"] = errors
-        if not tracks:
-            return [], log_entry
-        log_entry["tracklist_source"] = "STEAM_TEXT_TRACKLIST_LLM"
-        log_entry["cache"] = self.llm_cache.put(cache_key_input, "steam_tracklist_extraction", self.user_language, response)
-        return tracks, log_entry
 
     def _call_llm(
         self,
@@ -153,28 +158,12 @@ class LLMOrganizer:
         full_ref_fingerprint: List[Dict[str, Any]],
         coherence_mappings: Optional[Dict[str, Any]],
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        ref_steam = full_ref_steam
-        ref_fingerprint = full_ref_fingerprint
-
-        if coherence_mappings:
-            c_key = f"Segment_{(start_idx // 30) + 1}"
-            cmap = coherence_mappings.get(c_key, {})
-            if cmap:
-                s_start = cmap.get("steam_start_v_idx")
-                s_end = cmap.get("steam_end_v_idx")
-                if s_start is not None and s_end is not None:
-                    ref_steam = [t for t in full_ref_steam if s_start <= t.get("v_idx", 0) <= s_end]
-                else:
-                    ref_steam = []
-
-                f_start = cmap.get("fingerprint_start_v_idx")
-                f_end = cmap.get("fingerprint_end_v_idx")
-                if f_start is not None and f_end is not None:
-                    ref_fingerprint = [t for t in full_ref_fingerprint if f_start <= t.get("v_idx", 0) <= f_end]
-                else:
-                    ref_fingerprint = []
-
-        return ref_steam, ref_fingerprint
+        return resolve_mapping_references(
+            start_idx,
+            full_ref_steam,
+            full_ref_fingerprint,
+            coherence_mappings,
+        )
 
     def _merge_track_instructions(
         self,
@@ -188,135 +177,22 @@ class LLMOrganizer:
         full_ref_steam: Optional[List[Dict[str, Any]]] = None,
         prematch_map: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Dict[str, Any]]:
-        merged: Dict[str, Dict[str, Any]] = {}
-        normalized_track_res = self._normalize_track_mapping_result(track_res, full_ref_steam, prematch_map=prematch_map)
-        if not normalized_track_res or "track_instructions" not in normalized_track_res:
-            return merged
-
-        assigned_file_ids: set[str] = set()
-        known_file_ids = {
-            str(file_id)
-            for track in local_tracks
-            for file_id in track.get("file_ids", [])
-        }
-        for c_idx_str, data in normalized_track_res["track_instructions"].items():
-            file_id = str(c_idx_str)
-            if known_file_ids:
-                if file_id not in known_file_ids or file_id in assigned_file_ids:
-                    continue
-                matching_track = next(
-                    (track for track in local_tracks if file_id in {str(value) for value in track.get("file_ids", [])}),
-                    None,
-                )
-                assigned_file_ids.add(file_id)
-            else:
-                try:
-                    c_idx = int(c_idx_str)
-                    if c_idx < 0 or c_idx >= len(local_tracks):
-                        continue
-                    matching_track = local_tracks[c_idx]
-                except ValueError:
-                    matching_track = next((t for t in chunk if t["title"] == c_idx_str), None)
-
-            if not matching_track:
-                continue
-
-            tid = f"{matching_track['local_key'][0]}_{matching_track['local_key'][1]}"
-
-            mv_idx = data.get("matched_v_idx")
-            # 互換性フォールバック（旧形式のtrack_instructionsが渡された場合）
-            if data.get("mbz_track_index") is None:
-                if data.get("action") == "use_fingerprint" and mv_idx is not None and mv_idx < len(ref_fingerprint):
-                    ref_track = ref_fingerprint[mv_idx]
-                    data["mbz_track_index"] = ref_track.get("mbz_idx")
-                    if data.get("override_track") is None and ref_track.get("n") is not None:
-                        data["override_track"] = str(ref_track.get("n"))
-                elif data.get("action") == "use_mbz_search" and mv_idx is not None and v_mbz_search and mv_idx < len(full_ref_mbz_search):
-                    ref_track = full_ref_mbz_search[mv_idx]
-                    data["mbz_track_index"] = ref_track.get("mbz_idx")
-                    if data.get("override_track") is None and ref_track.get("n") is not None:
-                        data["override_track"] = str(ref_track.get("n"))
-                elif mv_idx is not None and full_ref_steam and mv_idx < len(full_ref_steam):
-                    ref_track = full_ref_steam[mv_idx]
-                    if data.get("override_track") is None and ref_track.get("n") is not None:
-                        data["override_track"] = str(ref_track.get("n"))
-
-            tags = global_res.get("global_tags", {})
-            if not isinstance(tags, dict):
-                tags = {}
-            data.update({
-                "TPE2": tags.get("canonical_album_artist") or global_res.get("canonical_album_artist"),
-                "TCON": tags.get("canonical_genre") or global_res.get("canonical_genre"),
-                "TDRC": tags.get("canonical_year") or global_res.get("canonical_year"),
-                "TPUB": tags.get("canonical_label") or global_res.get("canonical_label"),
-                "TEXT": data.get("lyricist"),
-                "TCOM": data.get("composer"),
-                "TPE4": data.get("arranger"),
-                "identity_confidence": global_res["identity_confidence"],
-                "integrity_quality": global_res.get("integrity_quality", 0),
-                "archive_vs_review_ratio": global_res.get("archive_vs_review_ratio", {"archive": 0, "review": 100}),
-                "confidence_score": global_res.get("identity_confidence", 0),
-                "strategy": global_res.get("strategy", "UNKNOWN"),
-                "semantic_label": global_res.get("semantic_label", "Review")
-            })
-            merged[tid] = data
-
-        return merged
+        return merge_track_instructions(
+            track_res,
+            local_tracks,
+            chunk,
+            global_res,
+            ref_fingerprint,
+            full_ref_mbz_search,
+            v_mbz_search,
+            full_ref_steam,
+            prematch_map,
+            normalize_mapping_result=self._normalize_track_mapping_result,
+        )
 
     @staticmethod
     def _resolve_slot_key_to_v_idx(slot_key: str, full_ref_steam: Optional[List[Dict[str, Any]]]) -> Optional[int]:
-        if not full_ref_steam:
-            return None
-
-        def _norm_key(k: Any) -> str:
-            s = str(k).strip()
-            return s.lstrip('0') or '0'
-
-        normalized_slot_key = str(slot_key).strip()
-        norm_key = _norm_key(normalized_slot_key)
-        direct_matches = [
-            track.get("v_idx") for track in full_ref_steam
-            if _norm_key(track.get("n", "")) == norm_key
-        ]
-        direct_matches = [match for match in direct_matches if match is not None]
-        if len(direct_matches) == 1:
-            return int(direct_matches[0])
-
-        # プレフィックス除去 / 数字抽出 (例: "STEAM_SLOT_0" -> "0", "SLOT_1" -> "1", "Track 2" -> "2")
-        extracted_digits = None
-        digits_match = re.search(r'\d+', normalized_slot_key)
-        if digits_match:
-            extracted_digits = digits_match.group(0)
-            norm_extracted = _norm_key(extracted_digits)
-            direct_matches_ext = [
-                track.get("v_idx") for track in full_ref_steam
-                if _norm_key(track.get("n", "")) == norm_extracted
-            ]
-            direct_matches_ext = [m for m in direct_matches_ext if m is not None]
-            if len(direct_matches_ext) == 1:
-                return int(direct_matches_ext[0])
-
-        # 数値インデックスとしてのフォールバック解決
-        num_str = extracted_digits if extracted_digits is not None else normalized_slot_key
-        try:
-            val = int(num_str)
-        except (TypeError, ValueError):
-            return None
-
-        # 0-indexed キー（"0"〜）: 0 は先頭スロット（インデックス 0）
-        if val == 0 and len(full_ref_steam) > 0:
-            return int(full_ref_steam[0].get("v_idx", 0))
-
-        # 1-indexed キー（"1"〜）: fallback_index = val - 1
-        fallback_index = val - 1
-        if 0 <= fallback_index < len(full_ref_steam):
-            return int(full_ref_steam[fallback_index].get("v_idx", fallback_index))
-
-        # 0-indexed で直接範囲内にある場合
-        if 0 <= val < len(full_ref_steam):
-            return int(full_ref_steam[val].get("v_idx", val))
-
-        return None
+        return resolve_slot_key_to_v_idx(slot_key, full_ref_steam)
 
     @classmethod
     def _normalize_track_mapping_result(
@@ -325,122 +201,15 @@ class LLMOrganizer:
         full_ref_steam: Optional[List[Dict[str, Any]]],
         prematch_map: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        if not isinstance(track_res, dict):
-            return {}
-        if "track_instructions" in track_res:
-            return track_res
-        if not isinstance(track_res.get("slots"), dict):
-            return track_res
-
-        track_instructions: Dict[str, Dict[str, Any]] = {}
-        rejected_slot_keys: List[str] = []
-        for slot_key, slot_data in track_res.get("slots", {}).items():
-            if not isinstance(slot_data, dict):
-                continue
-            matched_v_idx = cls._resolve_slot_key_to_v_idx(str(slot_key), full_ref_steam)
-            if matched_v_idx is None:
-                rejected_slot_keys.append(str(slot_key))
-                continue
-            for file_idx in slot_data.get("files", []):
-                file_key = str(file_idx)
-                pm = prematch_map.get(file_key) if prematch_map else None
-                track_instructions[file_key] = {
-                    "matched_v_idx": matched_v_idx,
-                    "mbz_track_index": pm.mbz_track_index if pm else None,
-                    "override_title": None,
-                    "override_track": str(slot_key) if str(slot_key).isdigit() else (pm.override_track if pm else None),
-                    "override_disc": None,
-                    "composer": None,
-                    "lyricist": None,
-                    "arranger": None,
-                    "reason": slot_data.get("reason"),
-                }
-
-        normalized = dict(track_res)
-        normalized["track_instructions"] = track_instructions
-        normalized["rejected_slot_keys"] = rejected_slot_keys
-        return normalized
+        return normalize_track_mapping_result(track_res, full_ref_steam, prematch_map)
 
     @staticmethod
     def _normalize_identity_result(global_res: Dict[str, Any]) -> Dict[str, Any]:
-        if not isinstance(global_res, dict):
-            return {}
-
-        normalized = dict(global_res)
-        album_confidence = int(normalized.get("album_confidence", normalized.get("identity_confidence", 0) or 0))
-        data_quality = int(normalized.get("data_quality", normalized.get("integrity_quality", 0) or 0))
-        normalized["identity_confidence"] = int(normalized.get("identity_confidence", album_confidence) or album_confidence)
-        normalized["integrity_quality"] = int(normalized.get("integrity_quality", data_quality) or data_quality)
-        normalized["album_confidence"] = album_confidence
-        normalized["data_quality"] = data_quality
-        normalized.setdefault("mapping_confidence", 0)
-        normalized.setdefault("concerns", [])
-        return normalized
+        return normalize_identity_result(global_res)
 
     @staticmethod
     def _build_slot_view(track_res: Dict[str, Any], local_tracks: List[Dict[str, Any]]) -> Dict[str, Any]:
-        if not isinstance(track_res, dict):
-            return {"slots": {}, "unassigned_files": [], "unassigned_reason": None}
-
-        if isinstance(track_res.get("slots"), dict):
-            known_file_ids = {
-                str(file_id)
-                for track in local_tracks
-                for file_id in track.get("file_ids", [])
-            }
-            seen_file_ids: set[str] = set()
-            rejected_file_ids: List[str] = []
-            validated_slots: Dict[str, Dict[str, Any]] = {}
-            for slot_key, slot_data in track_res.get("slots", {}).items():
-                if not isinstance(slot_data, dict):
-                    continue
-                valid_files = []
-                for file_id in slot_data.get("files", []):
-                    normalized_file_id = str(file_id)
-                    if known_file_ids and (
-                        normalized_file_id not in known_file_ids
-                        or normalized_file_id in seen_file_ids
-                    ):
-                        rejected_file_ids.append(normalized_file_id)
-                        continue
-                    valid_files.append(normalized_file_id)
-                    seen_file_ids.add(normalized_file_id)
-                validated_slots[str(slot_key)] = {**slot_data, "files": valid_files}
-            local_file_ids = [
-                str(file_id)
-                for track in local_tracks
-                for file_id in track.get("file_ids", [])
-            ]
-            return {
-                "slots": validated_slots,
-                "unassigned_files": [file_id for file_id in local_file_ids if file_id not in seen_file_ids],
-                "unassigned_reason": track_res.get("unassigned_reason"),
-                "rejected_file_ids": sorted(set(rejected_file_ids)),
-            }
-
-        slots: Dict[str, Dict[str, Any]] = {}
-        assigned_files: set[str] = set()
-        for file_id, data in (track_res.get("track_instructions") or {}).items():
-            if not isinstance(data, dict):
-                continue
-            matched_v_idx = data.get("matched_v_idx")
-            if matched_v_idx is None:
-                continue
-            try:
-                slot_key = str(int(matched_v_idx) + 1)
-            except (TypeError, ValueError):
-                continue
-            slots.setdefault(slot_key, {"files": [], "confidence": 0.9, "reason": data.get("reason")})
-            slots[slot_key]["files"].append(str(file_id))
-            assigned_files.add(str(file_id))
-
-        local_file_ids = [file_id for track in local_tracks for file_id in track.get("file_ids", [])]
-        unassigned_files = [str(file_id) for file_id in local_file_ids if str(file_id) not in assigned_files]
-        return {
-            "slots": slots,
-            "unassigned_files": unassigned_files,
-            "unassigned_reason": "No slot assignment returned" if unassigned_files else None,
-        }
+        return build_slot_view(track_res, local_tracks)
 
     @staticmethod
     def _build_alignment_diagnostics(
@@ -504,31 +273,29 @@ class LLMOrganizer:
         }
 
     @staticmethod
+    def _titles_are_compatible(left: str, right: str) -> bool:
+        return titles_are_compatible(left, right)
+
+    @classmethod
+    def _reject_contradictory_slot_assignments(
+        cls,
+        final_instructions: Dict[str, Dict[str, Any]],
+        local_tracks: List[Dict[str, Any]],
+        full_ref_steam: List[Dict[str, Any]],
+    ) -> Tuple[Dict[str, Dict[str, Any]], List[Dict[str, Any]]]:
+        return reject_contradictory_slot_assignments(
+            final_instructions,
+            local_tracks,
+            full_ref_steam,
+            title_compatibility=cls._titles_are_compatible,
+        )
+
+    @staticmethod
     def _build_slot_view_from_final_instructions(
         final_instructions: Dict[str, Dict[str, Any]],
         local_tracks: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        track_instruction_map: Dict[str, Dict[str, Any]] = {}
-        local_file_ids_by_tid: Dict[str, List[str]] = {}
-
-        for track in local_tracks:
-            local_key = track.get("local_key")
-            if not local_key:
-                continue
-            tid = f"{local_key[0]}_{local_key[1]}"
-            local_file_ids_by_tid[tid] = [str(file_id) for file_id in track.get("file_ids", [])]
-
-        for tid, data in final_instructions.items():
-            file_ids = local_file_ids_by_tid.get(tid)
-            if not file_ids:
-                continue
-            for file_id in file_ids:
-                track_instruction_map[file_id] = {
-                    "matched_v_idx": data.get("matched_v_idx"),
-                    "reason": data.get("reason"),
-                }
-
-        return LLMOrganizer._build_slot_view({"track_instructions": track_instruction_map}, local_tracks)
+        return build_slot_view_from_final_instructions(final_instructions, local_tracks)
 
     @staticmethod
     def _prepare_chunk_payload(
@@ -675,7 +442,7 @@ class LLMOrganizer:
 
         return start_idx, segment_instructions, segment_logs
 
-    def _adaptive_chunk_size(self, base_chunk_size: int) -> int:
+    def _adaptive_chunk_size(self, base_chunk_size: int, execution_profile: Optional[Any] = None) -> int:
         if not self.chunk_adaptive:
             return max(1, base_chunk_size)
 
@@ -689,18 +456,22 @@ class LLMOrganizer:
         by_output = max(1, safe_output_budget // self.chunk_output_tokens_per_track)
         
         if self.llm_backend == "OLLAMA":
-            # Ollamaの場合: VRAMはセマフォで管理されるため、出力限界までOne-shot化
-            return by_output
+            dynamic_limit = by_output
         else:
             # 外部APIの場合: 毎分トークン(TPM)の枯渇による429エラーを防止する
             # 1曲あたりの総消費見積もり(入力150+出力180=330)、オーバーヘッド約1000
             tpm_limit = self.llm_limit_tpm
             safe_tpm_budget = int(tpm_limit * 0.8) # 80%の安全マージン
             by_tpm = max(1, (safe_tpm_budget - 1000) // 330)
-            
-            # 出力破綻限界とTPM枯渇限界の、より厳しい方（小さい方）を最終的な限界チャンクとして採用
             dynamic_limit = min(by_output, by_tpm)
-            return dynamic_limit
+
+        prefer_one_shot = getattr(execution_profile, "prefer_one_shot", False) if execution_profile else False
+        if not prefer_one_shot:
+            return max(1, min(base_chunk_size, dynamic_limit))
+        else:
+            # One-shot を選好する場合でも、1リクエストの巨大化によるトークン爆発とモデル精度劣化を防ぐため安全上限(50曲)を設ける
+            max_safe_one_shot = max(base_chunk_size, min(50, dynamic_limit))
+            return max(1, max_safe_one_shot)
 
     def _is_truncation_log(self, log_data: Dict[str, Any]) -> bool:
         if not isinstance(log_data, dict):
@@ -759,99 +530,23 @@ class LLMOrganizer:
         progress_callback: Optional[ProgressCallback],
         full_logs: List[Dict[str, Any]],
     ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
-        identity_prompt = build_identity_prompt(s_steam, s_fingerprint, s_mbz_search, s_local, self.user_language)
-        local_tracks = v_local.get("tracks", [])
-        cache_key_input = json.dumps(
-            {"steam": s_steam, "fingerprint": s_fingerprint, "mbz_search": s_mbz_search, "local": s_local},
-            sort_keys=True, ensure_ascii=False,
+        return resolve_album_identity(
+            app_id,
+            s_steam,
+            s_fingerprint,
+            s_mbz_search,
+            s_local,
+            v_steam,
+            v_local,
+            v_fingerprint,
+            resolved_num_ctx,
+            progress_callback,
+            full_logs,
+            user_language=self.user_language,
+            cache=self.llm_cache,
+            call_llm=self._call_llm,
+            normalize_result=self._normalize_identity_result,
         )
-        cached_identity = self.llm_cache.get(cache_key_input, "identity", self.user_language)
-        if cached_identity is not None:
-            global_log: Dict[str, Any] = {
-                "request_kind": "identity",
-                "cache": self.llm_cache.audit_hit(cache_key_input, "identity", self.user_language),
-                "response": cached_identity,
-            }
-            full_logs.append(global_log)
-            global_res = cached_identity
-        else:
-            global_res, global_log = self._call_llm(
-                app_id,
-                identity_prompt,
-                num_ctx=resolved_num_ctx,
-                request_kind="identity",
-                request_units=len(local_tracks),
-                progress_callback=progress_callback,
-            )
-            full_logs.append(global_log)
-            if global_res:
-                global_log["cache"] = self.llm_cache.put(cache_key_input, "identity", self.user_language, global_res)
-
-        steam_count = len(v_steam.get("tracks", []))
-        local_count = len(v_local.get("tracks", []))
-
-        if not global_res:
-            if steam_count > 0 and steam_count == local_count:
-                logger.warning(f"[{app_id}] Identity LLM call failed/truncated. Activating STEAM-TRUST fallback ({steam_count} tracks).")
-                global_res = {
-                    "album_confidence": 100,
-                    "mapping_confidence": 90,
-                    "data_quality": 80,
-                    "identity_confidence": 100,
-                    "integrity_quality": 100,
-                    "archive_vs_review_ratio": {"archive": 100, "review": 0},
-                    "confidence_reason": "SYSTEM: STEAM-TRUSTフォールバック (LLM応答切断のため構造一致を採用)",
-                    "strategy": "STEAM_BASED",
-                    "semantic_label": "Steam Tracklist",
-                    "global_tags": {
-                        "canonical_album_artist": v_steam.get("artist"),
-                        "canonical_genre": "Soundtrack",
-                        "canonical_year": v_steam.get("year"),
-                        "canonical_label": v_steam.get("label"),
-                        "chosen_mbz_id": None,
-                    },
-                    "concerns": ["LLM identity truncated; fallen back to Steam metadata"],
-                }
-            else:
-                return None, {"phase1_res": None, "phase1_log": global_log}
-
-        global_res = self._normalize_identity_result(global_res)
-
-        unique_local_slots = len({
-            (
-                str(track.get("disc", 1)),
-                str(track.get("track_num") or track.get("filename_track") or track.get("title") or track.get("norm_stem") or "")
-            )
-            for track in local_tracks
-        }) if local_tracks else 0
-        structural_match = (steam_count > 0 and (steam_count == local_count or steam_count == unique_local_slots))
-        current_conf = global_res.get("identity_confidence", 0)
-
-        if structural_match:
-            if current_conf < 100 and (not v_fingerprint or current_conf >= 80):
-                logger.info(f"[{app_id}] Applying STEAM-TRUST: Structural match detected (Steam: {steam_count}, Local: {local_count}, Unique: {unique_local_slots}). Boosting confidence to 100%.")
-                global_res["identity_confidence"] = 100
-                global_res["album_confidence"] = 100
-                global_res["mapping_confidence"] = 100
-                global_res["integrity_quality"] = 100
-                global_res["data_quality"] = 100
-                global_res["archive_vs_review_ratio"] = {"archive": 100, "review": 0}
-                global_res["strategy"] = "STEAM_BASED"
-                global_res["confidence_reason"] = f"SYSTEM: STEAM-TRUSTにより確信度を100%に引き上げました ({steam_count}トラックとの構造的一致)"
-
-        conf = int(global_res.get("identity_confidence", 0))
-        if 0 < conf <= 1:
-            conf = int(conf * 100)
-            global_res["identity_confidence"] = conf
-
-        ratio = global_res.get("archive_vs_review_ratio", {})
-        if not isinstance(ratio, dict) or not ratio:
-            global_res["archive_vs_review_ratio"] = {"archive": 0, "review": 100}
-        if conf < 85:
-            concerns = global_res.setdefault("concerns", [])
-            concerns.append("Low album confidence before slot alignment")
-
-        return global_res, None
 
     def _extract_deterministic_prematches(
         self,
@@ -860,54 +555,13 @@ class LLMOrganizer:
         prematch_map: Dict[str, Any],
         global_res: Dict[str, Any],
     ) -> Tuple[Dict[str, Dict[str, Any]], set[int], List[Dict[str, Any]], List[Dict[str, Any]]]:
-        deterministic_instructions: Dict[str, Dict[str, Any]] = {}
-        resolved_v_indices: set[int] = set()
-        resolved_local_indices: set[int] = set()
-
-        fid_to_track_idx = {}
-        for idx, track in enumerate(local_tracks):
-            for fid in track.get("file_ids", []):
-                fid_to_track_idx[str(fid)] = idx
-
-        for fid_str, pm in prematch_map.items():
-            if not pm or not pm.is_deterministic:
-                continue
-            matched_v_idx = pm.target_v_idx
-            if matched_v_idx is None and pm.deterministic_steam_slot is not None:
-                matched_v_idx = self._resolve_slot_key_to_v_idx(str(pm.deterministic_steam_slot), full_ref_steam)
-
-            if matched_v_idx is not None and 0 <= matched_v_idx < len(full_ref_steam):
-                resolved_v_indices.add(matched_v_idx)
-                track_idx = fid_to_track_idx.get(fid_str)
-                if track_idx is not None:
-                    resolved_local_indices.add(track_idx)
-                    matching_track = local_tracks[track_idx]
-                    tid = f"{matching_track['local_key'][0]}_{matching_track['local_key'][1]}"
-                    tags = global_res.get("global_tags", {}) if isinstance(global_res.get("global_tags"), dict) else {}
-                    steam_slot = full_ref_steam[matched_v_idx]
-                    slot_n = steam_slot.get("n") or pm.override_track or (matched_v_idx + 1)
-                    deterministic_instructions[tid] = {
-                        "matched_v_idx": matched_v_idx,
-                        "mbz_track_index": pm.mbz_track_index,
-                        "override_title": None,
-                        "override_track": str(slot_n),
-                        "override_disc": str(steam_slot.get("d") or steam_slot.get("disc") or 1),
-                        "reason": f"SYSTEM: Deterministic match ({pm.evidence[0] if pm.evidence else 'exact'})",
-                        "TPE2": tags.get("canonical_album_artist"),
-                        "TCON": tags.get("canonical_genre"),
-                        "TDRC": tags.get("canonical_year"),
-                        "TPUB": tags.get("canonical_label"),
-                    }
-
-        unmatched_local_tracks = [
-            track for idx, track in enumerate(local_tracks)
-            if idx not in resolved_local_indices
-        ]
-        unfilled_steam_slots = [
-            slot for slot in full_ref_steam
-            if slot.get("v_idx") not in resolved_v_indices
-        ]
-        return deterministic_instructions, resolved_v_indices, unmatched_local_tracks, unfilled_steam_slots
+        return extract_deterministic_prematches(
+            local_tracks,
+            full_ref_steam,
+            prematch_map,
+            global_res,
+            resolve_slot_key=self._resolve_slot_key_to_v_idx,
+        )
 
     def _run_differential_segments(
         self,
@@ -926,63 +580,32 @@ class LLMOrganizer:
         progress_callback: Optional[ProgressCallback],
         prematch_map: Optional[Dict[str, Any]],
     ) -> Dict[int, Tuple[Dict[str, Dict[str, Any]], List[Dict[str, Any]]]]:
-        segment_results: Dict[int, Tuple[Dict[str, Dict[str, Any]], List[Dict[str, Any]]]] = {}
-        dynamic_chunk_size = max(1, self._adaptive_chunk_size(self.chunk_size_virtual))
-        segments = [
-            (start_idx, unmatched_local_tracks[start_idx:start_idx + dynamic_chunk_size])
-            for start_idx in range(0, len(unmatched_local_tracks), dynamic_chunk_size)
-        ]
-        should_parallelize = self.llm_backend == "OLLAMA" and self.llm_request_parallelism_enabled and len(segments) > 1
-
-        if should_parallelize:
-            worker_count = self._resolve_phase2_worker_count(execution_profile, len(segments))
-            logger.info(f"[{app_id}] Phase 2 differential mapping chunk を並列実行します。segments={len(segments)} workers={worker_count}")
-            with ThreadPoolExecutor(max_workers=worker_count) as executor:
-                future_map = {
-                    executor.submit(
-                        self._process_track_mapping_segment,
-                        app_id,
-                        start_idx,
-                        segment_tracks,
-                        local_tracks,
-                        global_res,
-                        s_mbz_search,
-                        v_mbz_search,
-                        unfilled_steam_slots,
-                        full_ref_fingerprint,
-                        full_ref_mbz_search,
-                        coherence_mappings,
-                        resolved_num_ctx,
-                        dynamic_chunk_size,
-                        progress_callback,
-                        prematch_map=prematch_map,
-                    ): start_idx
-                    for start_idx, segment_tracks in segments
-                }
-                for future in as_completed(future_map):
-                    start_idx, instructions, segment_logs = future.result()
-                    segment_results[start_idx] = (instructions, segment_logs)
-        else:
-            for start_idx, segment_tracks in segments:
-                start_idx, instructions, segment_logs = self._process_track_mapping_segment(
-                    app_id,
-                    start_idx,
-                    segment_tracks,
-                    local_tracks,
-                    global_res,
-                    s_mbz_search,
-                    v_mbz_search,
-                    unfilled_steam_slots,
-                    full_ref_fingerprint,
-                    full_ref_mbz_search,
-                    coherence_mappings,
-                    resolved_num_ctx,
-                    dynamic_chunk_size,
-                    progress_callback,
-                    prematch_map=prematch_map,
-                )
-                segment_results[start_idx] = (instructions, segment_logs)
-        return segment_results
+        dynamic_chunk_size = max(1, self._adaptive_chunk_size(self.chunk_size_virtual, execution_profile))
+        segments = (len(unmatched_local_tracks) + dynamic_chunk_size - 1) // dynamic_chunk_size
+        return run_differential_segments(
+            app_id,
+            unmatched_local_tracks,
+            local_tracks,
+            unfilled_steam_slots,
+            global_res,
+            s_mbz_search,
+            v_mbz_search,
+            full_ref_fingerprint,
+            full_ref_mbz_search,
+            coherence_mappings,
+            resolved_num_ctx,
+            dynamic_chunk_size,
+            progress_callback,
+            prematch_map,
+            should_parallelize=(
+                self.llm_backend == "OLLAMA"
+                and self.llm_request_parallelism_enabled
+                and segments > 1
+            ),
+            resolve_worker_count=self._resolve_phase2_worker_count,
+            execution_profile=execution_profile,
+            process_segment=self._process_track_mapping_segment,
+        )
 
     def align_slots(
         self,
@@ -1088,12 +711,19 @@ class LLMOrganizer:
                 final_instructions.update(instructions)
                 full_logs.extend(segment_logs)
 
+        final_instructions, contradictory_slot_assignments = self._reject_contradictory_slot_assignments(
+            final_instructions,
+            local_tracks,
+            full_ref_steam,
+        )
         alignment_res = self._build_slot_view_from_final_instructions(final_instructions, local_tracks)
+        alignment_res["contradictory_slot_assignments"] = contradictory_slot_assignments
         alignment_res["diagnostics"] = self._build_alignment_diagnostics(
             final_instructions,
             local_tracks,
             segment_results,
         )
+        alignment_res["diagnostics"]["contradictory_slot_assignments"] = contradictory_slot_assignments
         if alignment_res.get("slots"):
             slot_confidences = [slot.get("confidence", 0) for slot in alignment_res["slots"].values() if isinstance(slot, dict)]
             if slot_confidences:

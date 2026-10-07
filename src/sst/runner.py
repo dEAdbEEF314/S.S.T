@@ -24,7 +24,9 @@ class JobRunner:
         if self.config.llm_backend == "OLLAMA":
             self.vram_manager = VramResourceManager(
                 base_url=self.config.llm_base_url,
-                model=self.config.llm_model
+                model=self.config.llm_model,
+                preflight_timeout=self.config.llm_preflight_timeout,
+                health_check_timeout=self.config.llm_health_check_timeout,
             )
 
     def run(self, soundtracks: List[dict]) -> List[LocalProcessResult]:
@@ -38,9 +40,11 @@ class JobRunner:
                 install_dir = Path(ost["install_dir"])
                 audio_files = TrackManager.list_audio_files(install_dir)
                 ost["_track_count"] = len(audio_files)
+                ost["_audio_files"] = audio_files
             except Exception as e:
                 logger.error(f"[{ost.get('app_id')}] 初期トラック数スキャン中にエラーが発生しました: {e}")
                 ost["_track_count"] = 0
+                ost["_audio_files"] = []
 
         # Sort soundtracks by track count to process small ones first (better packing)
         soundtracks.sort(key=lambda x: x["_track_count"])
@@ -97,8 +101,7 @@ class JobRunner:
                 # Use dict unpacking to ensure all fields from ost are included in SteamMetadata
                 steam_meta = SteamMetadata(**ost)
 
-                all_files = TrackManager.list_audio_files(install_dir)
-                progress.update(album_task, total=len(all_files))
+                progress.update(album_task, total=ost["_track_count"])
 
                 result = self.processor.process_album(
                     app_id,
@@ -106,6 +109,8 @@ class JobRunner:
                     steam_meta,
                     on_track_complete=lambda: progress.advance(album_task),
                     llm_progress_callback=_llm_progress,
+                    defer_copy_retries=True,
+                    pre_scanned_files=ost.get("_audio_files"),
                 )
                 
                 if result is None:
@@ -128,7 +133,7 @@ class JobRunner:
             progress.remove_task(album_task)
             progress.update(overall_task, advance=1)
             
-            status_color = "green" if result.status == "archive" else ("yellow" if result.status == "review" else "red")
+            status_color = "cyan" if result.status == "deferred" else ("green" if result.status == "archive" else ("yellow" if result.status == "review" else "red"))
             self.console.print(f"[bold {status_color}]✓[/bold {status_color}] {ost['name']} -> [bold]{result.status.upper()}[/bold]")
 
         try:
@@ -141,6 +146,21 @@ class JobRunner:
                 
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     list(executor.map(lambda ost: _process_single_album(ost, progress, overall_task), soundtracks))
+
+                deferred_resolver = getattr(type(self.processor), "resolve_deferred_copy_retries", None)
+                if deferred_resolver is not None:
+                    delay_seconds = max(
+                        0,
+                        int(getattr(self.config, "sst_deferred_copy_delay_seconds", 600)),
+                    )
+                    resolved_results = deferred_resolver(self.processor, delay_seconds)
+                    if resolved_results:
+                        results = [resolved_results.get(result.app_id, result) for result in results]
+                        for result in resolved_results.values():
+                            status_color = "green" if result.status == "archive" else ("yellow" if result.status == "review" else "red")
+                            self.console.print(
+                                f"[bold {status_color}]✓[/bold {status_color}] {result.album_name} -> [bold]{result.status.upper()}[/bold]"
+                            )
                     
         finally:
             self.console.show_cursor(True)

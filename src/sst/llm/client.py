@@ -1,4 +1,3 @@
-import re
 import json
 import hashlib
 import logging
@@ -9,7 +8,10 @@ from typing import cast, Dict, Any, Optional, Tuple, Callable
 from datetime import UTC, datetime
 
 from ..rate_limit import DistributedRateLimiter
-from .prompts import get_system_prompt
+from .prompts import get_system_prompt, build_degraded_prompt
+from .backend_request import execute_llm_backend_request
+from .response_parser import parse_llm_response
+from .retry_policy import LLMRetryPolicy
 
 logger = logging.getLogger("sst.llm.client")
 
@@ -24,9 +26,18 @@ class LLMClient:
                  llm_cloud_max_tokens: int = 8192,
                  ollama_num_ctx: int = 32768,
                  ollama_num_predict: int = 4096,
+                 ollama_think: bool = False,
                  llm_vram_scheduling_enabled: bool = True,
                  request_timeout: int = 3600,
-                 chunk_output_tokens_per_track: int = 180):
+                 chunk_output_tokens_per_track: int = 180,
+                 max_retries: int = 3,
+                 output_budget_safety_ratio: float = 0.25,
+                 adaptive_degraded_prompt_enabled: bool = True,
+                 user_language: str = "ja",
+                 retry_delay: float = 5.0,
+                 retry_backoff: float = 1.5,
+                 health_check_timeout: float = 10.0,
+                 **kwargs):
         self.base_url = base_url.rstrip('/')
         self.api_key = api_key
         self.model = model
@@ -35,10 +46,18 @@ class LLMClient:
         self.llm_limit_tpm = tpm
         self.ollama_num_ctx = ollama_num_ctx
         self.ollama_num_predict = ollama_num_predict
+        self.ollama_think = ollama_think
         self.llm_vram_scheduling_enabled = llm_vram_scheduling_enabled
         self.request_timeout = request_timeout
         self.chunk_output_tokens_per_track = max(1, chunk_output_tokens_per_track)
         self.llm_backend = llm_backend.upper()
+        self.max_retries = max(0, max_retries)
+        self.output_budget_safety_ratio = max(0.0, output_budget_safety_ratio)
+        self.adaptive_degraded_prompt_enabled = adaptive_degraded_prompt_enabled
+        self.user_language = user_language
+        self.retry_delay = float(retry_delay)
+        self.retry_backoff = float(retry_backoff)
+        self.health_check_timeout = float(health_check_timeout)
         self.limiter = DistributedRateLimiter(rpm, tpm, rpd)
         self.vram_manager = None
 
@@ -66,7 +85,7 @@ class LLMClient:
         try:
             if self.llm_backend == "OLLAMA":
                 url = f"{self.base_url}/api/tags"
-                response = requests.get(url, timeout=5)
+                response = requests.get(url, timeout=self.health_check_timeout)
                 if response.status_code == 200:
                     logger.info(f"Ollamaサーバーとの接続に成功しました: {self.base_url}")
                     return True
@@ -93,7 +112,7 @@ class LLMClient:
                     url = f"{self.base_url}/v1/models"
                     
                 headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-                response = requests.get(url, headers=headers, timeout=10)
+                response = requests.get(url, headers=headers, timeout=self.health_check_timeout)
                 
                 if response.status_code == 200:
                     logger.info(f"{self.llm_backend} との接続およびAPIキーの有効性を確認しました。")
@@ -143,8 +162,14 @@ class LLMClient:
             log_entry["error"] = "Rate limit reached"
             return None, log_entry
 
-        max_retries = 3
-        retry_delay = 5
+        retry_policy = LLMRetryPolicy(
+            max_retries=self.max_retries,
+            retry_delay=self.retry_delay,
+            retry_backoff=self.retry_backoff,
+            adaptive_degraded_prompt_enabled=self.adaptive_degraded_prompt_enabled,
+            llm_backend=self.llm_backend,
+            max_output_tokens=self.ollama_num_predict,
+        )
         effective_num_ctx = num_ctx or self.ollama_num_ctx
         request_enqueued = time.monotonic()
         request_started = request_enqueued
@@ -158,38 +183,45 @@ class LLMClient:
         )
 
         output_budget = max(1, self._estimate_expected_output_tokens(request_kind, request_units))
+        # 動的出力トークン天井（安全マージン 25% 天井規約）
+        dynamic_budget_ceiling = max(256, int(output_budget * (1.0 + self.output_budget_safety_ratio)))
+        current_messages = list(messages)
+        is_degraded_active = False
+        url: Optional[str] = None
+        payload: Dict[str, Any] = {}
+        headers: Dict[str, str] = {}
+
         try:
             if self.llm_backend == "OLLAMA":
                 url = f"{self.base_url}/api/chat"
-                # Keep the backend output budget aligned with the adaptive
-                # chunk planner. Unlimited generation caused repeated backend
-                # truncation at the server's context boundary.
+                effective_output_budget = dynamic_budget_ceiling
                 if effective_num_ctx:
                     approx_prompt_tokens = max(512, len(prompt) // 3)
                     max_safe_output = max(256, effective_num_ctx - approx_prompt_tokens - 256)
-                    output_budget = min(output_budget, max_safe_output)
-                options = {"temperature": 0.0, "num_predict": output_budget}
+                    effective_output_budget = min(effective_output_budget, max_safe_output)
+                options = {"temperature": 0.0, "num_predict": effective_output_budget}
                 if effective_num_ctx:
                     options["num_ctx"] = effective_num_ctx
                 payload = {
-                    "model": self.model, "messages": messages, "stream": False, "format": "json",
-                    "options": options
+                    "model": self.model, "messages": current_messages, "stream": False, "format": "json",
+                    "options": options, "think": self.ollama_think
                 }
                 if self.draft_model:
                     payload["draft_model"] = self.draft_model
                 headers = {"Content-Type": "application/json"}
             elif self.llm_backend != "LITELLM":
                 url = f"{self.base_url}/v1beta/openai/chat/completions" if self.llm_backend == "GEMINI" else f"{self.base_url}/v1/chat/completions"
+                effective_cloud_max = min(self.llm_cloud_max_tokens, dynamic_budget_ceiling)
                 payload = {
                     "model": self.model,
-                    "messages": messages,
+                    "messages": current_messages,
                     "temperature": 0.0,
                     "response_format": {"type": "json_object"}
                 }
-                payload["max_tokens"] = self.llm_cloud_max_tokens
+                payload["max_tokens"] = effective_cloud_max
                 headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
 
-            for attempt in range(max_retries + 1):
+            for attempt in range(retry_policy.max_retries + 1):
                 self._notify_progress(
                     progress_callback,
                     phase="llm_request_running",
@@ -200,27 +232,25 @@ class LLMClient:
                     num_ctx=effective_num_ctx,
                 )
                 try:
-                    if self.llm_backend == "LITELLM":
-                        sdk_response = litellm.completion(
-                            model=self.model,
-                            messages=messages,
-                            api_key=self.api_key or None,
-                            api_base=None if self.base_url.lower() == "auto" else self.base_url,
-                            timeout=self.request_timeout,
-                            temperature=0.0,
-                            max_tokens=self.llm_cloud_max_tokens,
-                            response_format={"type": "json_object"},
-                            drop_params=True,
-                            num_retries=0,
-                        )
-                        res_json = sdk_response.model_dump() if hasattr(sdk_response, "model_dump") else dict(sdk_response)
-                        status_code = 200
-                        response_text = ""
-                    else:
-                        response = requests.post(url, headers=headers, json=payload, timeout=self.request_timeout)
-                        res_json = response.json() if response.status_code == 200 else {}
-                        status_code = response.status_code
-                        response_text = getattr(response, "text", "")
+                    effective_cloud_max = min(
+                        self.llm_cloud_max_tokens,
+                        dynamic_budget_ceiling,
+                    )
+                    res_json, status_code, response_text = execute_llm_backend_request(
+                        self.llm_backend,
+                        self.model,
+                        current_messages,
+                        self.api_key,
+                        self.base_url,
+                        self.request_timeout,
+                        effective_cloud_max,
+                        self.ollama_think,
+                        url,
+                        headers,
+                        payload,
+                        completion=litellm.completion,
+                        post=requests.post,
+                    )
 
                     if status_code == 200:
                         message = res_json.get("message", {})
@@ -248,12 +278,61 @@ class LLMClient:
                             "total_duration_ns": res_json.get("total_duration"),
                         }
 
+                        if self.llm_backend == "LITELLM":
+                            response_message = choice.get("message")
+                            if not isinstance(response_message, dict):
+                                response_message = {}
+                            response_content = response_message.get("content")
+                            reasoning_content = response_message.get("reasoning_content")
+                            tool_calls = response_message.get("tool_calls")
+                            response_shape = {
+                                "choice_count": len(choices) if isinstance(choices, list) else None,
+                                "message_keys": sorted(str(key) for key in response_message),
+                                "content_type": type(response_content).__name__,
+                                "content_length": len(response_content) if isinstance(response_content, (str, list)) else None,
+                                "content_empty": not response_content if isinstance(response_content, (str, list)) else response_content is None,
+                                "reasoning_content_present": reasoning_content is not None,
+                                "reasoning_content_length": len(reasoning_content) if isinstance(reasoning_content, str) else None,
+                                "tool_calls_count": len(tool_calls) if isinstance(tool_calls, list) else None,
+                                "refusal_present": response_message.get("refusal") is not None,
+                                "finish_reason": done_reason,
+                                "prompt_tokens": prompt_eval_count,
+                                "completion_tokens": eval_count,
+                            }
+                            log_entry["meta"]["response_shape"] = response_shape
+                            logger.info(
+                                "LLM_RESPONSE_SHAPE %s",
+                                json.dumps({
+                                    "app_id": app_id,
+                                    "request_id": log_entry["request_id"],
+                                    "request_kind": request_kind,
+                                    "attempt": attempt + 1,
+                                    **response_shape,
+                                }, ensure_ascii=False),
+                            )
+
                         if done_reason in {"length", "max_tokens"}:
-                            if self.llm_backend == "OLLAMA" and attempt < max_retries:
-                                # 仕様書 §11.5: Truncation 発生時は出力トークン上限（num_predict）を倍増してリトライ
+                            if retry_policy.can_retry(attempt) and retry_policy.should_degrade_for_truncation(is_degraded_active):
+                                logger.warning(
+                                    f"[{app_id}] 出力上限到達 (done_reason={done_reason}) を検知。縮退プロンプト（最小JSON指示）へ切り替えて再試行します..."
+                                )
+                                current_prompt = build_degraded_prompt(prompt, request_kind, self.user_language)
+                                current_messages = [
+                                    {"role": "system", "content": system_prompt},
+                                    {"role": "user", "content": current_prompt}
+                                ]
+                                is_degraded_active = True
+                                if self.llm_backend == "OLLAMA":
+                                    payload["messages"] = current_messages
+                                elif self.llm_backend != "LITELLM":
+                                    payload["messages"] = current_messages
+                                retry_policy.wait_before_retry()
+                                continue
+
+                            if retry_policy.can_retry(attempt):
                                 current_predict = payload.get("options", {}).get("num_predict", output_budget)
-                                new_predict = min(current_predict * 2, self.ollama_num_predict)
-                                if new_predict > current_predict:
+                                new_predict = retry_policy.next_output_tokens(current_predict)
+                                if new_predict is not None:
                                     logger.warning(
                                         f"[{app_id}] LLM output truncated (done_reason={done_reason}). "
                                         f"Doubling num_predict ({current_predict} -> {new_predict}) and retrying..."
@@ -289,67 +368,52 @@ class LLMClient:
                         log_entry["response"] = content
 
                         try:
-                            clean_content = re.sub(r'```json\s*(.*?)\s*```', r'\1', content, flags=re.DOTALL)
-                            clean_content = re.sub(r'<(thought|reasoning)>.*?</\1>', '', clean_content, flags=re.DOTALL | re.IGNORECASE)
-                            start_idx = clean_content.find('{')
-                            end_idx = clean_content.rfind('}')
-                            if start_idx != -1 and end_idx != -1:
-                                json_str = clean_content[start_idx:end_idx + 1]
-                                json_str = re.sub(r',\s*([\]}])', r'\1', json_str)
-                                parsed = json.loads(json_str)
-                                if not isinstance(parsed, dict):
-                                    raise ValueError("LLM response JSON must be an object")
-                                if request_kind == "identity" and isinstance(parsed, dict):
-                                    def lower_keys(d):
-                                        if isinstance(d, dict):
-                                            return {k.lower(): lower_keys(v) for k, v in d.items()}
-                                        if isinstance(d, list):
-                                            return [lower_keys(v) for v in d]
-                                        return d
-
-                                    parsed = lower_keys(parsed)
-                                total_duration = round(time.monotonic() - request_started, 3)
-                                prompt_eval_count = log_entry.get("meta", {}).get("prompt_eval_count")
-                                eval_count = log_entry.get("meta", {}).get("eval_count")
-                                # 提案6: prompt cache ヒット判定（概算・監査用途）
-                                expected_prompt_tokens = self._estimate_expected_output_tokens(request_kind, request_units) + len(prompt) // 4
-                                cache_hit = bool(prompt_eval_count) and prompt_eval_count < expected_prompt_tokens * 0.9
-                                log_entry["attempts"].append({
+                            parsed = parse_llm_response(
+                                content,
+                                request_kind,
+                                is_degraded_active,
+                            )
+                            total_duration = round(time.monotonic() - request_started, 3)
+                            prompt_eval_count = log_entry.get("meta", {}).get("prompt_eval_count")
+                            eval_count = log_entry.get("meta", {}).get("eval_count")
+                            # 提案6: prompt cache ヒット判定（概算・監査用途）
+                            expected_prompt_tokens = self._estimate_expected_output_tokens(request_kind, request_units) + len(prompt) // 4
+                            cache_hit = bool(prompt_eval_count) and prompt_eval_count < expected_prompt_tokens * 0.9
+                            log_entry["attempts"].append({
+                                "attempt": attempt + 1,
+                                "done_reason": done_reason,
+                                "duration_seconds": total_duration,
+                                "prompt_eval_count": prompt_eval_count,
+                                "eval_count": eval_count,
+                                "cache_hit": cache_hit,
+                            })
+                            logger.info(
+                                "LLM_REQUEST_DONE %s",
+                                json.dumps({
+                                    "app_id": app_id,
+                                    "request_kind": request_kind,
+                                    "request_units": request_units,
                                     "attempt": attempt + 1,
-                                    "done_reason": done_reason,
                                     "duration_seconds": total_duration,
+                                    "num_ctx": effective_num_ctx,
                                     "prompt_eval_count": prompt_eval_count,
                                     "eval_count": eval_count,
+                                    "total_tokens": (prompt_eval_count or 0) + (eval_count or 0),
+                                    "output_budget": output_budget,
+                                    "wait_seconds": round(request_started - request_enqueued, 3),
                                     "cache_hit": cache_hit,
-                                })
-                                logger.info(
-                                    "LLM_REQUEST_DONE %s",
-                                    json.dumps({
-                                        "app_id": app_id,
-                                        "request_kind": request_kind,
-                                        "request_units": request_units,
-                                        "attempt": attempt + 1,
-                                        "duration_seconds": total_duration,
-                                        "num_ctx": effective_num_ctx,
-                                        "prompt_eval_count": prompt_eval_count,
-                                        "eval_count": eval_count,
-                                        "total_tokens": (prompt_eval_count or 0) + (eval_count or 0),
-                                        "output_budget": output_budget,
-                                        "wait_seconds": round(request_started - request_enqueued, 3),
-                                        "cache_hit": cache_hit,
-                                        "request_id": log_entry.get("request_id"),
-                                    }, ensure_ascii=False),
-                                )
-                                self._notify_progress(
-                                    progress_callback,
-                                    phase="llm_request_done",
-                                    app_id=app_id,
-                                    request_kind=request_kind,
-                                    request_units=request_units,
-                                    duration_seconds=total_duration,
-                                )
-                                return cast(Dict[str, Any], parsed), log_entry
-                            raise ValueError("No valid JSON object found in response")
+                                    "request_id": log_entry.get("request_id"),
+                                }, ensure_ascii=False),
+                            )
+                            self._notify_progress(
+                                progress_callback,
+                                phase="llm_request_done",
+                                app_id=app_id,
+                                request_kind=request_kind,
+                                request_units=request_units,
+                                duration_seconds=total_duration,
+                            )
+                            return cast(Dict[str, Any], parsed), log_entry
                         except Exception as e:
                             logger.warning(f"[{app_id}] JSON strict parsing failed: {e}")
                             log_entry["error_code"] = "json_parse_error"
@@ -357,7 +421,7 @@ class LLMClient:
 
                     log_entry["error"] = f"HTTP {status_code}"
                     logger.warning(f"[{app_id}] LLM {self.llm_backend} attempt {attempt+1} failed with HTTP {status_code}: {response_text}")
-                    if attempt < max_retries:
+                    if retry_policy.can_retry(attempt):
                         self._notify_progress(
                             progress_callback,
                             phase="llm_request_retry",
@@ -367,13 +431,24 @@ class LLMClient:
                             attempt=attempt + 1,
                             reason=log_entry["error"],
                         )
-                        time.sleep(retry_delay)
-                        retry_delay *= 1.5
+                        if retry_policy.should_degrade_for_http(status_code, is_degraded_active):
+                            logger.info(f"[{app_id}] タイムアウト/エラー(HTTP {status_code})を検知。縮退プロンプトへ切り替えて再試行します...")
+                            current_prompt = build_degraded_prompt(prompt, request_kind, self.user_language)
+                            current_messages = [
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": current_prompt}
+                            ]
+                            is_degraded_active = True
+                            if self.llm_backend == "OLLAMA":
+                                payload["messages"] = current_messages
+                            elif self.llm_backend != "LITELLM":
+                                payload["messages"] = current_messages
+                        retry_policy.wait_before_retry()
                         continue
                     return None, log_entry
 
                 except Exception as e:
-                    if attempt < max_retries:
+                    if retry_policy.can_retry(attempt):
                         logger.warning(f"[{app_id}] LLM {self.llm_backend} attempt {attempt+1} failed: {e}")
                         self._notify_progress(
                             progress_callback,
@@ -384,8 +459,19 @@ class LLMClient:
                             attempt=attempt + 1,
                             reason=str(e),
                         )
-                        time.sleep(retry_delay)
-                        retry_delay *= 1.5
+                        if retry_policy.should_degrade_for_exception(e, is_degraded_active):
+                            logger.info(f"[{app_id}] タイムアウト/JSON破損例外を検知。縮退プロンプトへ切り替えて再試行します...")
+                            current_prompt = build_degraded_prompt(prompt, request_kind, self.user_language)
+                            current_messages = [
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": current_prompt}
+                            ]
+                            is_degraded_active = True
+                            if self.llm_backend == "OLLAMA":
+                                payload["messages"] = current_messages
+                            elif self.llm_backend != "LITELLM":
+                                payload["messages"] = current_messages
+                        retry_policy.wait_before_retry()
                         continue
                     log_entry["error"] = str(e)
                     logger.info(

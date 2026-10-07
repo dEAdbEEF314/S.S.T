@@ -63,7 +63,10 @@ AcoustID は全ファイル一律ではなく、一次候補フォーマット�
 - この集約はスロット候補の同定にのみ用いられ、変換元音源には最高 Tier のファイルが自動採用されます。
 - **単曲アルバムのトラック番号保持**: 単曲アルバム（曲数=1）において、Steam上のトラック番号がアルバム通番（例: Track 07）である場合、破損と誤判定せず Steam のトラック番号を正本としてそのまま出力タグへ反映します。
 - **監査レポートの理由表示整合性**: Fast-Track を通過したアルバムであっても、後段のバリデーションや音声変換で REVIEW に倒れた場合は、Fast-Track メッセージで上書きせず、実際の REVIEW 原因（音声破損、スロット不一致等）を明示します。
-- **APIC の部分例外**: FAST-TRACK のスロット判定・タグ決定は変えません。埋め込み画像が見つからない場合に限り、AcoustID を使わず MBZ_SEARCH をアート専用に実行し、Cover Art Archive の画像を試します。候補スコアは既存の閾値で判定し、画像を取得できなければ Steam 画像へフォールバックします。この検索結果はタグ用 MBZ 候補や監査上の選択候補には加えません。
+- **TPE1 の部分例外**: FAST-TRACKではAcoustID全曲走査を追加しません。埋め込み画像がないため遅延MBZ_SEARCHを実行したとき、閾値を通過した同一release候補から、正規化後に一意一致するSteam/MBZ trackのartist-creditだけを補完できます。スロット、曲順、アルバムレベルタグは変更しません。
+- **APIC の部分例外**: FAST-TRACK のスロット判定は変えず、埋め込み画像が見つからない場合に限りMBZ_SEARCHを遅延実行してCover Art Archiveを試します。候補スコアは既存閾値で判定し、画像が得られなければSteam画像へフォールバックします。同候補のartist-credit利用は上記TPE1規則に限定します。
+- **TIT2とSteam slot index**: 確定した`matched_v_idx`をタグ生成まで保持します。未設定の場合、Steamのdisc/track番号で一意対応するindexだけを復元し、そのSteam titleをTIT2に使います。曖昧なindexは推定しません。
+- **Identity confidenceの根拠**: LLMは入力されたSTEAM/MBZ/ACOUSTID signalに基づいて支持点と未解決矛盾を監査文へ記録します。filename prefixやformat variantだけによるidentity減点を避けますが、実質的なrelease/artist/year/tracklist矛盾を消さず、validator閾値も変更しません。
 
 ### 2.5 LLM アライメント
 
@@ -135,10 +138,16 @@ APIC や既存 COMMENT のように EMBED が必要な場合、同一 STEAM ス�
 
 最終判定の強制Review条件:
 
-- STEAMトラックリストが空。
-- 最終tracksにSTEAM slotの欠落または範囲外slotがある。
-- LLMまたは決定論的整列に未割当ファイルが1件以上ある。
-- これらはconfidenceやSTEAM-TRUST文字列によって上書きしてはならない。
+- Steamトラックリストが空、または最終tracksにSteam slotの欠落・範囲外slot・重複slot・出力track数不一致がある。
+- 未割当ファイル、LLMが拒否したslot、同一fileの重複割当、矛盾するslot割当が1件以上ある。
+- Deferred Copyの回復失敗、track number 0、Steamが正本としないUnknown title、dirty tag、過半を占める重複titleがある。
+- 最終track間で出力pathが重複する、audio source failureまたはaudio quality warningがある。
+- 通常経路でalbum < 90、mapping < 80、data < 70のいずれか。Steam-based strategyによるSTEAM-TRUST経路はalbum >= 90、mapping >= 75、data >= 60で代替できる。
+- Phase1がReview必須を示す、またはarchive判断比率が50%未満で、上記のarchive threshold経路を満たさない。
+- Archive preflightで出力path欠落、出力file欠落・0 byte、必須tag欠落、Steam slot集合不一致のいずれかがある。
+- confidenceやSTEAM-TRUST表示で、上記の物理・整合性・音声Review条件を上書きしてはならない。
+
+Fast-Trackはconfidence thresholdを迂回できますが、slot・割当・audio・Archive preflightのReview条件は引き続き適用されます。実装上のroute名とvalidator経路・結果の区別は [data_flow_diagram.md §2](data_flow_diagram.md) を参照してください。
 
 指標の意味:
 
@@ -171,6 +180,19 @@ STEAM の曲構造が不在な場合でも処理は継続できますが、全�
 ### 2.12 未割当file IDの隔離
 
 LLMの`alignment_res.unassigned_files`は、track groupの有無ではなくfile IDを正として扱う。未割当file IDは全件を物理候補へ逆引きし、同一未割当論理群からTier最高の1ファイルを選出して変換し、`unassigned/`へ隔離する。
+
+slot identityの安全条件:
+
+- 1 slotに複数の物理候補を割り当てる場合、正規化タイトルが一致し、時間情報がある候補間の再生時間差が1秒未満であることを確認する。複数の異なる論理タイトルが混在した場合は、Steamタイトルまたは決定論的根拠で支持されない候補を除外し、矛盾を記録してReviewとする。
+- ローカル番号だけの推定はSteam構造とタイトルで検証する。番号が合うだけの効果音や余剰ファイルはSteam slotへ割り当てない。
+- 異disc間の形式バリアント統合は、タイトルが一意なSteam slotを示し、形式・時間条件を満たす場合だけ許可する。
+- 別slotの変換先stemが衝突する場合はslot識別子付き作業名を使用し、最終track間で物理パスを共有させない。
+
+一時copy障害の処理:
+
+- 通常trackのcopyが有限回再試行後も失敗した場合、その音源をFFmpegへ渡さず居残りキューに保留する。他のアルバムの通常処理を継続する。
+- `JobRunner`の通常アルバムworker終了後、`SST_DEFERRED_COPY_DELAY_SECONDS`（既定600秒）だけ一度待機し、保留trackを一回だけ再処理する。保留がない場合は待たず、0秒指定では待機だけを省略する。
+- copyが回復した場合も通常のValidator/Archive preflightを通す。回復しない場合は再キューせず、そのAppIDをReview確定して残りのバッチを継続する。
 
 - 未割当file IDが1件でもあれば必ずReview。
 - `metadata.json`と`review_manifest.json`の未割当件数はalignmentの未割当件数と一致させる。

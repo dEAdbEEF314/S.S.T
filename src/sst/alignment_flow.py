@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Any, Optional, Tuple
+from typing import Callable, Dict, Any, List, Optional, Tuple
 from .models import SteamMetadata
 from .alignment_inputs import AlignmentInputBuilder
 
@@ -10,8 +10,8 @@ def collect_alignment_inputs(
     steam_meta: SteamMetadata,
     track_groups: Dict,
     alignment_input_builder: AlignmentInputBuilder,
-    _diag: callable,
-    on_track_complete: Optional[callable] = None,
+    _diag: Callable[..., Any],
+    on_track_complete: Optional[Callable[..., Any]] = None,
  ) -> Tuple[Dict[str, Any], Dict[str, Any], Optional[Dict[str, Any]], Optional[Dict[str, Any]], Dict[str, Any]]:
     """
     Builds the canonical STEAM structure plus local and auxiliary signal bundles.
@@ -60,8 +60,8 @@ def consolidate_alignment_inputs(
     v_local: Dict[str, Any],
     v_fingerprint: Optional[Dict[str, Any]],
     v_mbz_search: Optional[Dict[str, Any]],
-    _diag: callable,
-    llm_progress_callback: Optional[callable] = None,
+    _diag: Callable[..., Any],
+    llm_progress_callback: Optional[Callable[..., Any]] = None,
 ) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
     final_metadata, llm_log = llm.align_slots(
         app_id,
@@ -89,9 +89,9 @@ def collect_alignment_inputs_and_consolidate(
     alignment_input_builder: AlignmentInputBuilder,
     llm: Any,
     execution_profile: Any,
-    _diag: callable,
-    on_track_complete: Optional[callable] = None,
-    llm_progress_callback: Optional[callable] = None,
+    _diag: Callable[..., Any],
+    on_track_complete: Optional[Callable[..., Any]] = None,
+    llm_progress_callback: Optional[Callable[..., Any]] = None,
 ) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any], Dict[str, Any], Dict[str, Any], Optional[Dict[str, Any]], Optional[Dict[str, Any]], Dict[str, Any]]:
     v_steam, v_local, v_fingerprint, v_mbz_search, mbz_log = collect_alignment_inputs(
         app_id,
@@ -113,3 +113,143 @@ def collect_alignment_inputs_and_consolidate(
         llm_progress_callback=llm_progress_callback,
     )
     return final_metadata, llm_log, v_steam, v_local, v_fingerprint, v_mbz_search, mbz_log
+
+
+def execute_alignment_flow(
+    app_id: int,
+    steam_meta: SteamMetadata,
+    track_groups: Dict,
+    execution_profile: Any,
+    alignment_input_builder: AlignmentInputBuilder,
+    llm: Any,
+    diagnostics: Dict[str, Any],
+    diag: Callable[..., Any],
+    on_track_complete: Optional[Callable[[], None]],
+    llm_progress_callback: Optional[Callable[[Dict[str, Any]], None]],
+    check_fast_track: Callable[..., Any],
+    build_fast_track_alignment_result: Callable[..., Dict[str, Any]],
+    build_mbz_candidates: Callable[..., List[Dict[str, Any]]],
+    resolve_duplicate_mappings: Callable[..., None],
+    reconcile_unassigned_slots: Callable[..., List[Dict[str, Any]]],
+    build_slot_variant_index: Callable[..., Any],
+    collect_inputs: Callable[..., Any],
+    consolidate_inputs: Callable[..., Any],
+) -> Tuple[
+    Dict[str, Any],
+    Dict[str, Any],
+    List[Dict[str, Any]],
+    Dict[tuple[int, str], List[Dict[str, Any]]],
+    Dict[str, tuple[int, str]],
+    str,
+    Dict[str, Any],
+    Dict[str, Any],
+    Optional[Dict[str, Any]],
+    Optional[Dict[str, Any]],
+    Optional[Dict[str, Any]],
+    Optional[Dict[str, Any]],
+]:
+    fast_track_ok, fast_track_map, fast_track_identity = check_fast_track(
+        app_id, steam_meta, track_groups, mbz_candidates=[], fingerprint_bundle=None
+    )
+
+    if fast_track_ok:
+        processing_route = "FAST_TRACK"
+        diagnostics["processing_route"] = processing_route
+        v_steam = alignment_input_builder.build_steam_album(steam_meta)
+        v_local = alignment_input_builder.build_local_album(track_groups)
+        v_fingerprint = None
+        mbz_log = {"status": "fast_track_artist_from_lazy_artwork_search"}
+        v_mbz_search = None
+        mbz_candidates = []
+        final_metadata = fast_track_map or {}
+        fast_track_alignment_res = build_fast_track_alignment_result(final_metadata, v_local)
+        llm_log = {
+            "fast_track": True,
+            "processing_route": processing_route,
+            "phase1_res": {
+                "album_confidence": 100,
+                "mapping_confidence": 100,
+                "data_quality": 100,
+                "identity_confidence": 100,
+                "integrity_quality": 100,
+                "archive_vs_review_ratio": {"archive": 100, "review": 0},
+                "confidence_reason": "SYSTEM: Deterministic fast-track (LLM/API bypassed)",
+                "strategy": "FAST_TRACK",
+                "semantic_label": "Archive",
+                "global_tags": fast_track_identity or {},
+                "concerns": [],
+            },
+            "alignment_res": fast_track_alignment_res,
+        }
+        diag("FAST_TRACK_SELECTED", mapped_track_count=len(final_metadata))
+    else:
+        processing_route = "LLM_ONE_SHOT" if execution_profile.prefer_one_shot else "LLM_CHUNKED"
+        diagnostics["processing_route"] = processing_route
+        diag("ON_DEMAND_SIGNAL_GATHERING_START")
+        v_steam, v_local, v_fingerprint, v_mbz_search, mbz_log = collect_inputs(
+            app_id, steam_meta, track_groups, alignment_input_builder, diag, on_track_complete
+        )
+        mbz_candidates = build_mbz_candidates(v_fingerprint, v_mbz_search)
+
+        final_metadata, llm_log = consolidate_inputs(
+            app_id,
+            llm,
+            execution_profile,
+            v_steam,
+            v_local,
+            v_fingerprint,
+            v_mbz_search,
+            diag,
+            llm_progress_callback=llm_progress_callback,
+        )
+        llm_log["processing_route"] = processing_route
+
+    final_metadata = final_metadata or {}
+
+    if final_metadata:
+        resolve_duplicate_mappings(app_id, final_metadata, steam_meta, track_groups)
+
+    phase1_result = llm_log.get("phase1_res", {})
+    global_identity = phase1_result.get("global_tags", {}) if phase1_result else {}
+
+    if final_metadata:
+        reconciled = reconcile_unassigned_slots(
+            final_metadata, track_groups, steam_meta, global_identity
+        )
+        if reconciled:
+            diag("DETERMINISTIC_RECONCILED", reconciled_count=len(reconciled))
+
+    slot_variant_index, track_to_slot_index = build_slot_variant_index(
+        final_metadata, track_groups, steam_meta
+    )
+    multi_variant_slot_count = sum(
+        1 for variants in slot_variant_index.values() if len(variants) > 1
+    )
+    diag(
+        "SLOT_VARIANT_BUILT",
+        slot_count=len(slot_variant_index),
+        variant_count=sum(len(variants) for variants in slot_variant_index.values()),
+        multi_variant_slot_count=multi_variant_slot_count,
+    )
+
+    alignment_inputs_bundle = {
+        "STEAM": v_steam,
+        "ACOUSTID_MBID": v_fingerprint,
+        "MBZ_SEARCH": v_mbz_search,
+        "LOCAL_SIGNALS": v_local,
+    }
+
+    return (
+        final_metadata,
+        llm_log,
+        mbz_candidates,
+        slot_variant_index,
+        track_to_slot_index,
+        processing_route,
+        alignment_inputs_bundle,
+        mbz_log,
+        v_steam,
+        v_local,
+        v_fingerprint,
+        v_mbz_search,
+    )

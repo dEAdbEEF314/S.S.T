@@ -7,7 +7,6 @@ Executes S.S.T in --dev mode for all 69 Review AppIDs.
 import subprocess
 import sys
 import time
-from pathlib import Path
 
 REVIEW_APP_IDS = [
     221001, 335370, 336860, 457840, 459851, 461050, 467300, 467870,
