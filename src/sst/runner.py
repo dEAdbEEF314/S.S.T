@@ -24,7 +24,9 @@ class JobRunner:
         if self.config.llm_backend == "OLLAMA":
             self.vram_manager = VramResourceManager(
                 base_url=self.config.llm_base_url,
-                model=self.config.llm_model
+                model=self.config.llm_model,
+                preflight_timeout=self.config.llm_preflight_timeout,
+                health_check_timeout=self.config.llm_health_check_timeout,
             )
 
     def run(self, soundtracks: List[dict]) -> List[LocalProcessResult]:

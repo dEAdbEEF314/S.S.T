@@ -1,10 +1,11 @@
 import logging
 from pathlib import Path
 from typing import Dict, Any
-from mutagen import File
+import mutagen
 from mutagen.id3 import ID3
 
 logger = logging.getLogger(__name__)
+File = getattr(mutagen, "File")
 
 class EmbeddedMetadataExtractor:
     """Extracts existing metadata and artwork from audio files."""
@@ -65,7 +66,7 @@ class EmbeddedMetadataExtractor:
 
                 if hasattr(audio, 'pictures') and audio.pictures:
                     metadata["has_artwork"] = True
-                elif isinstance(raw_tags, ID3) or hasattr(raw_tags, "getall"):
+                elif raw_tags is not None and (isinstance(raw_tags, ID3) or hasattr(raw_tags, "getall")):
                     if hasattr(raw_tags, "getall") and raw_tags.getall("APIC"):
                         metadata["has_artwork"] = True
                 elif raw_tags is not None and hasattr(raw_tags, "keys"):

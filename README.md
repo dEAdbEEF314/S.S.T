@@ -4,7 +4,7 @@
 S.S.T は、Steamで購入したゲームサウンドトラックを自動的に識別・整列し、極めて高品質なメタデータを補完・付与してライブラリ化する、高精度なスタンドアロンCLIツールです。
 Steam ストア情報、MusicBrainz、AcoustID、およびローカル音源のタグ情報を、LLM（大規模言語モデル）を用いた「事実に基づくメタデータ整列」によって統合します。
 
-仕様策定からアーキテクチャ設計、コード実装、全数データ分析、そしてテスト構築に至るまで、開発者と Google DeepMind の **Gemini** による濃密なペアプログラミングによって徹底的に鍛え上げられており、Steam実戦環境（全344アルバム）において **処理成功（自動アーカイブ）率 90.99% (313/344件)** という極めて高いスループットと信頼性を達成しています（残る 9.01% / 31件も、音源物理欠落・公式リスト不在・微細音声破損を正しく防御した健全なReviewです）。
+2026年9月3日の全件実測では、走査した344アルバムのうち音源を保有する304件を処理し、248件をArchive（81.58%）、56件をReview、40件を音源なしとしてSkipしました。実行環境・経路別集計は[実測レポート](report/batch_analysis_all_soundtracks_20260903.md)を参照してください。この値は当該環境の履歴値であり、現在の成功率を保証するものではありません。
 
 ---
 
@@ -24,7 +24,7 @@ S.S.T は **Steam を構造の絶対的な正本（Ground Truth）とするロ�
 
 ### コア・パイプライン
 1. **STEAM 骨格構築**: AppID から PICS / Store API 経由で公式アルバム情報とトラック一覧を取得し、正規スロット（Disc, Track, Title）を定義します。
-2. **Fast-Track 先行判定（オンデマンド信号収集）**: 音源ファイル数と Steam スロット数が 1:1 完全一致する場合、重い外部 API（MusicBrainz/AcoustID）や LLM を完全バイパスして即座に決定論的確定（全体の約75%以上が瞬時に通過）。
+2. **Fast-Track 先行判定（オンデマンド信号収集）**: 音源ファイル数と Steam スロット数が 1:1 完全一致する場合、重い外部 API（MusicBrainz/AcoustID）や LLM を完全バイパスして即座に決定論的確定します。2026年9月3日の音源あり304件では230件（75.66%）がこの経路でした。
 3. **プレマッチ & 差分推論 (Differential Alignment)**: Fast-Track を満たさない複雑なアルバムでは、番号・タイトル完全一致や AcoustID で事前確定したスロットを LLM 入出力から除外し、未確定トラックと空きスロットのみを差分で 1-shot 推論。
 4. **フォーマットバリアント自動統合**: FLAC + MP3 + WAV など複数フォーマットが混在する場合でも、拡張子・Stem・トラック番号・再生時間差（<1.0s）の厳格な照合により同一スロットのバリアントとして自動統合。
 5. **タグ構築 & アーカイブ事前検証 (Zero-padding Normalization)**: DJ機材互換の ID3v2.3 タグを構築。トラック番号のゼロ埋め正規化（`01` と `1` の表記ブレ解消）を適用した上で、物理成果物の存在・タグ・スロット充足度を完全事前検証し、ZIP アーカイブを出力。
@@ -34,7 +34,7 @@ S.S.T は **Steam を構造の絶対的な正本（Ground Truth）とするロ�
 ## ✨ 主な特徴と改善機能
 
 - **STEAM First (構造の絶対的正)**: タイトル、トラック順、ディスク構造の骨格は常に Steam 公式情報を絶対基準とし、ハルシネーションによるタグ創作を原理的に排除。
-- **実戦処理成功率 90.99%**: 344件の実戦バッチにおいて 313件を完全自動アーカイブ。
+- **実測履歴**: 2026年9月3日の音源あり304件中248件（81.58%）をArchive。条件とReview/Skip内訳はリンク先の実測レポートに記録。
 - **差分推論 (Differential Alignment)**: LLM トークン消費と推論時間を最小化し、トークン枯渇（Truncation）による不当な Review 落ちを防止。
 - **スロットキー解決の堅牢化**: LLM が `"STEAM_SLOT_0"` などのプレフィックス付きキーを出力した場合でも、パーサーが数値を安全に抽出して解決。
 - **トラック番号ゼロ埋め正規化契約**: Steam側（`1`）とタグ側（`01`）の表記ブレを `lstrip('0') or '0'` で一貫して正規化し、偽の不一致（Missing/Unexpected）を根絶。
@@ -84,7 +84,7 @@ docker run --name sst-pics-bridge -d -p 8080:8000 --restart unless-stopped steam
 # 依存関係の同期 (プロジェクトルートで実行)
 uv sync
 
-# 単体テストの実行 (166件全PASSを確認)
+# 単体テストの実行
 uv run pytest tests/
 
 # 10件のアルバムをテスト実行
@@ -130,7 +130,7 @@ DJ機材（CDJ等）との完全互換性を確保するため、以下のID3v2.
 
 S.S.T is a high-precision, standalone CLI tool that automatically identifies, enriches, and tags soundtracks purchased on Steam. It consolidates metadata from the Steam store, MusicBrainz, AcoustID, and local audio files using LLM-assisted "Factual Metadata Alignment."
 
-Jointly architected, implemented, and verified through intensive pair programming between the developer and Google DeepMind's **Gemini**, S.S.T achieves an outstanding **90.99% automated archive success rate (313 out of 344 albums)** across full real-world Steam soundtrack runs. The remaining 9.01% (31 albums) are healthy, legitimate Review quarantine cases (missing tracks, missing official store lists, or corrupt frames).
+In the full-library run on September 3, 2026, S.S.T processed 304 albums with local audio from 344 scanned entries: 248 were archived (81.58%), 56 sent to Review, and 40 skipped for having no audio. See the [measured run report](report/batch_analysis_all_soundtracks_20260903.md) for hardware, routing, and detailed outcomes. This is a historical result for that environment, not a current success-rate guarantee.
 
 ---
 
@@ -143,7 +143,7 @@ Jointly architected, implemented, and verified through intensive pair programmin
 
 ## 🚀 System Architecture & Pipeline
 1. **Steam Skeleton**: Constructs the canonical structure (Disc, Track, Title) directly from Steam PICS and Store API.
-2. **Fast-Track Gate (On-demand Signals)**: If track counts and numbers match 1:1, deterministically finalizes without LLM inference (~75%+ pass rate).
+2. **Fast-Track Gate (On-demand Signals)**: If track counts and numbers match 1:1, deterministically finalizes without LLM inference. This route handled 230 of 304 audio-bearing albums (75.66%) in the September 3, 2026 run.
 3. **Differential Alignment**: Pre-matches deterministic tracks (AcoustID, exact numbers/titles) and prompts the LLM only for remaining unaligned slots.
 4. **Format Variant Consolidation**: Automatically groups FLAC, MP3, and WAV files for the same track under one slot based on 4-way matching (extension, stem, track number, duration delta <1.0s).
 5. **Tagging & Preflight Check (Zero-padding Normalization)**: Applies strict ID3v2.3 tagging, normalizes zero-padded track numbers (`01` vs `1`), and performs an artifact preflight check before archive packaging.
@@ -152,7 +152,7 @@ Jointly architected, implemented, and verified through intensive pair programmin
 
 ## ✨ Key Capabilities
 - **STEAM as Truth**: Canonical track titles and numbering follow Steam strictly to eliminate hallucinations.
-- **90.99% Real-world Throughput**: Proven on 344 diverse Steam soundtracks.
+- **Measured Run**: 248 of 304 audio-bearing albums (81.58%) archived in the September 3, 2026 full-library run; see the linked report for conditions and the Review/Skip breakdown.
 - **Zero-padding Normalization**: Resolves discrepancies between Steam (`1`) and local tags (`01`) across validation and preflight checks.
 - **Audio Warning Separation**: Quarantines Rice-encoding or decode-warning tracks to Review while explicitly listing the affected track numbers (e.g., `Track 03, 08`) in logs, Discord alerts, and `AUDIT_REPORT.html`.
 - **High-Resolution Cover Art Priority**: Prioritizes parent game header/capsule images and resolves multi-soundtrack exclusivity.
@@ -164,7 +164,7 @@ Jointly architected, implemented, and verified through intensive pair programmin
 # Install dependencies
 uv sync
 
-# Run all automated tests (166 passed)
+# Run all automated tests
 uv run pytest tests/
 
 # Process 10 albums

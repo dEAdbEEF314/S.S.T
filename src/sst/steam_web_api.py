@@ -24,6 +24,8 @@ class SteamWebClient:
         pics_timeout: float = 30.0,
         max_retries: int = 3,
         throttle_delay: float = 2.0,
+        retry_delay: float = 2.0,
+        retry_backoff: float = 2.0,
     ):
         self.db = db
         self.bridge_url = bridge_url if bridge_url.endswith("/") else bridge_url + "/"
@@ -35,6 +37,8 @@ class SteamWebClient:
         self.pics_timeout = float(pics_timeout)
         self.max_retries = int(max_retries)
         self.throttle_delay = float(throttle_delay)
+        self.retry_delay = float(retry_delay)
+        self.retry_backoff = float(retry_backoff)
 
     @staticmethod
     def _parse_text_tracklist(description: str) -> list[Dict[str, Any]]:
@@ -105,6 +109,8 @@ class SteamWebClient:
         """Fetches metadata from 3 tiers of APIs (Official Store, PICS Bridge, Official Tags) with DB persistence."""
         # 1. Check Database first
         db_data = None if force else self.db.get_store_data(app_id)
+        app_pics = None
+        pics_change_num = None
         
         result = {
             "genres": [],
@@ -146,6 +152,7 @@ class SteamWebClient:
                 store_url = f"https://store.steampowered.com/api/appdetails?appids={app_id}&l={self.language}"
                 app_data = None
                 tier1_started = time.monotonic()
+                retry_delay = self.retry_delay
                 for attempt in range(self.max_retries):
                     attempt_started = time.monotonic()
                     failure_reason = "http_status"
@@ -165,45 +172,50 @@ class SteamWebClient:
                             else:
                                 app_data = app_entry["data"]
                                 logger.debug(
-                                    "STORE_API_RESULT tier=1 app_id=%s attempt=%s/3 outcome=success "
+                                    "STORE_API_RESULT tier=1 app_id=%s attempt=%s/%s outcome=success "
                                     "status_code=%s duration_seconds=%.3f total_seconds=%.3f",
                                     app_id,
                                     attempt + 1,
+                                    self.max_retries,
                                     status_code,
                                     time.monotonic() - attempt_started,
                                     time.monotonic() - tier1_started,
                                 )
                                 break
-                        delay = 2 ** (attempt + 1) if attempt < 2 else 0
+                        delay = retry_delay if attempt < self.max_retries - 1 else 0
                         logger.debug(
-                            "STORE_API_RESULT tier=1 app_id=%s attempt=%s/3 outcome=retryable_failure "
+                            "STORE_API_RESULT tier=1 app_id=%s attempt=%s/%s outcome=retryable_failure "
                             "reason=%s status_code=%s duration_seconds=%.3f retry_delay_seconds=%s",
                             app_id,
                             attempt + 1,
+                            self.max_retries,
                             failure_reason,
                             status_code,
                             time.monotonic() - attempt_started,
                             delay,
                         )
                     except Exception as e:
-                        delay = 2 ** (attempt + 1) if attempt < 2 else 0
+                        delay = retry_delay if attempt < self.max_retries - 1 else 0
                         logger.debug(
-                            "STORE_API_RESULT tier=1 app_id=%s attempt=%s/3 outcome=exception "
+                            "STORE_API_RESULT tier=1 app_id=%s attempt=%s/%s outcome=exception "
                             "error_type=%s status_code=%s duration_seconds=%.3f retry_delay_seconds=%s",
                             app_id,
                             attempt + 1,
+                            self.max_retries,
                             type(e).__name__,
                             status_code,
                             time.monotonic() - attempt_started,
                             delay,
                         )
-                    if attempt < 2:
-                        time.sleep(2 ** (attempt + 1))
+                    if attempt < self.max_retries - 1:
+                        time.sleep(retry_delay)
+                        retry_delay *= self.retry_backoff
 
                 if app_data is None:
                     logger.debug(
-                        "STORE_API_RESULT tier=1 app_id=%s outcome=exhausted attempts=3 total_seconds=%.3f",
+                        "STORE_API_RESULT tier=1 app_id=%s outcome=exhausted attempts=%s total_seconds=%.3f",
                         app_id,
+                        self.max_retries,
                         time.monotonic() - tier1_started,
                     )
                 
@@ -230,6 +242,7 @@ class SteamWebClient:
 
                 # Retry logic for Tier 2 (Critical for structured data)
                 tier2_started = time.monotonic()
+                retry_delay = self.retry_delay
                 for attempt in range(self.max_retries):
                     attempt_started = time.monotonic()
                     failure_reason = "http_status"
@@ -243,46 +256,51 @@ class SteamWebClient:
                             app_pics = pics_data.get(str(app_id), {}) if isinstance(pics_data, dict) else {}
                             if app_pics:
                                 logger.debug(
-                                    "STORE_API_RESULT tier=2 app_id=%s attempt=%s/3 outcome=success "
+                                    "STORE_API_RESULT tier=2 app_id=%s attempt=%s/%s outcome=success "
                                     "status_code=%s duration_seconds=%.3f total_seconds=%.3f",
                                     app_id,
                                     attempt + 1,
+                                    self.max_retries,
                                     status_code,
                                     time.monotonic() - attempt_started,
                                     time.monotonic() - tier2_started,
                                 )
                                 break  # Success
                             failure_reason = "app_id_missing_or_empty"
-                        delay = 2 ** (attempt + 1) if attempt < 2 else 0
+                        delay = retry_delay if attempt < self.max_retries - 1 else 0
                         logger.debug(
-                            "STORE_API_RESULT tier=2 app_id=%s attempt=%s/3 outcome=retryable_failure "
+                            "STORE_API_RESULT tier=2 app_id=%s attempt=%s/%s outcome=retryable_failure "
                             "reason=%s status_code=%s duration_seconds=%.3f retry_delay_seconds=%s",
                             app_id,
                             attempt + 1,
+                            self.max_retries,
                             failure_reason,
                             status_code,
                             time.monotonic() - attempt_started,
                             delay,
                         )
                     except Exception as e:
-                        delay = 2 ** (attempt + 1) if attempt < 2 else 0
+                        delay = retry_delay if attempt < self.max_retries - 1 else 0
                         logger.debug(
-                            "STORE_API_RESULT tier=2 app_id=%s attempt=%s/3 outcome=exception "
+                            "STORE_API_RESULT tier=2 app_id=%s attempt=%s/%s outcome=exception "
                             "error_type=%s status_code=%s duration_seconds=%.3f retry_delay_seconds=%s",
                             app_id,
                             attempt + 1,
+                            self.max_retries,
                             type(e).__name__,
                             status_code,
                             time.monotonic() - attempt_started,
                             delay,
                         )
-                    if attempt < 2:
-                        time.sleep(2 ** (attempt + 1))
+                    if attempt < self.max_retries - 1:
+                        time.sleep(retry_delay)
+                        retry_delay *= self.retry_backoff
                 else:
                     app_pics = {} # All retries failed
                     logger.debug(
-                        "STORE_API_RESULT tier=2 app_id=%s outcome=exhausted attempts=3 total_seconds=%.3f",
+                        "STORE_API_RESULT tier=2 app_id=%s outcome=exhausted attempts=%s total_seconds=%.3f",
                         app_id,
+                        self.max_retries,
                         time.monotonic() - tier2_started,
                     )
 
@@ -355,7 +373,7 @@ class SteamWebClient:
                             "context": json.dumps({"language": self.language, "country_code": "JP"}),
                             "data_request": json.dumps({"include_tag_count": 20})
                         }
-                        tr = session.get(tag_url, params=params, timeout=10)
+                        tr = session.get(tag_url, params=params, timeout=self.api_timeout)
                         if tr.status_code == 200:
                             t_json = tr.json()
                             store_items = t_json.get("response", {}).get("store_items", [])
@@ -371,8 +389,8 @@ class SteamWebClient:
                         app_id, 
                         result["store_tracklist"], 
                         result["store_credits"], 
-                        change_number=locals().get("pics_change_num"), 
-                        raw_pics=locals().get("app_pics"),
+                        change_number=pics_change_num,
+                        raw_pics=app_pics,
                         tracklist_language=result.get("store_tracklist_language")
                     )
             

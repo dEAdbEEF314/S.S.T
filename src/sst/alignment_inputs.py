@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Callable, Dict, Any, List, Optional, Tuple
 from collections import Counter
 from difflib import SequenceMatcher
 
@@ -24,7 +24,7 @@ class AlignmentInputBuilder:
         self.min_mbz_search_score_threshold = min_mbz_search_score_threshold
         self.fingerprint_sample_size = max(1, int(fingerprint_sample_size))
 
-    def build_fingerprint_album(self, track_groups: Dict[Tuple[int, str], List[Dict[str, Any]]], on_track_complete: Optional[callable] = None) -> Optional[Dict[str, Any]]:
+    def build_fingerprint_album(self, track_groups: Dict[Tuple[int, str], List[Dict[str, Any]]], on_track_complete: Optional[Callable[[], None]] = None) -> Optional[Dict[str, Any]]:
         """
         Builds the AcoustID / MBZ_RELEASE auxiliary signals using cross-validation.
         """
@@ -252,7 +252,7 @@ class AlignmentInputBuilder:
 
         return signal_bundle
 
-    def build_mbz_search_album(self, app_id: int, album_name: str, expected_track_count: int, steam_meta: SteamMetadata = None, local_baseline: Dict = None) -> Optional[Dict[str, Any]]:
+    def build_mbz_search_album(self, app_id: int, album_name: str, expected_track_count: int, steam_meta: Optional[SteamMetadata] = None, local_baseline: Optional[Dict] = None) -> Optional[Dict[str, Any]]:
         """
         Builds MBZ_SEARCH auxiliary signals by explicit MusicBrainz search with scoring.
         """
@@ -365,13 +365,14 @@ class AlignmentInputBuilder:
             
             if track_num is None:
                 track_num = best.get("filename_track")
-                
+
+            best_path = best.get("path")
             signal_bundle["tracks"].append({
                 "local_key": key,
                 "file_ids": [variant["file_id"] for variant in variants],
                 "disc": key[0],
                 "track_num": track_num, 
-                "title": meta.get("title") or best.get("path").stem,
+                "title": meta.get("title") or (best_path.stem if best_path is not None else ""),
                 "duration_ms": int(best["duration"] * 1000)
             })
             

@@ -3,6 +3,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Dict, Any, Optional
+from datetime import UTC, datetime
 
 logger = logging.getLogger("sst.db")
 
@@ -74,7 +75,6 @@ class DatabaseManager:
 
     def save_store_data(self, app_id: int, tracklist: list, credits: str, change_number: Optional[int] = None, raw_pics: Optional[Dict] = None, tracklist_language: Optional[str] = None):
         """Saves comprehensive Steam store and PICS data."""
-        from datetime import datetime
         with self._connect() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO steam_store_data (app_id, change_number, tracklist_json, credits_text, raw_pics_json, scraped_at, tracklist_language) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -84,7 +84,7 @@ class DatabaseManager:
                     json.dumps(tracklist, ensure_ascii=False), 
                     credits, 
                     json.dumps(raw_pics, ensure_ascii=False) if raw_pics else None,
-                    datetime.utcnow().isoformat(),
+                    datetime.now(UTC).isoformat(),
                     tracklist_language
                 )
             )

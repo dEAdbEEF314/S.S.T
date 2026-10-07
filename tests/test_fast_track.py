@@ -1,5 +1,7 @@
 from pathlib import Path
+from datetime import UTC, datetime
 from typing import Any
+from unittest.mock import patch
 
 import sst.processor as processor_module
 from sst.db import DatabaseManager
@@ -9,6 +11,7 @@ from sst.alignment_inputs import AlignmentInputBuilder
 from sst.models import SteamMetadata
 from sst.processor import LocalProcessor
 from sst.processor_tracks import resolve_steam_track_index
+from sst.ident.mbz import MusicBrainzIdentifier
 
 
 class MockDB(DatabaseManager):
@@ -39,6 +42,19 @@ def make_steam_meta() -> SteamMetadata:
             {"number": 2, "title": "Battle Theme", "disc": 1},
         ],
     )
+
+
+def test_musicbrainz_search_log_timestamp_is_utc_aware():
+    identifier = MusicBrainzIdentifier("test", "1", "test@example.invalid", rate_limit_delay=0)
+    with patch(
+        "sst.ident.mbz.musicbrainzngs.search_releases",
+        return_value={"release-list": []},
+    ):
+        _, log_data = identifier.search_release("Synthetic Album", 0)
+
+    parsed = datetime.fromisoformat(log_data["timestamp"])
+    assert parsed.tzinfo is not None
+    assert parsed.utcoffset() == UTC.utcoffset(parsed)
 
 
 def make_track_groups(duration_gap: float = 0.4):

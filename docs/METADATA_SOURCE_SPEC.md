@@ -67,15 +67,18 @@
 
 ## 2.1 処理経路 (Pipeline Route) の定義と監査証跡
 
-アルバム処理の透明性と監査性を担保するため、各アルバムの処理経路を以下の5区分で厳密に分類し、**「Discord通知」** および **「各アルバムZIP内の AUDIT_REPORT.html」** に明記しなければならない。
+アルバム処理の透明性と監査性を担保するため、実行route、validatorの昇格経路、終端結果を区別して分類し、**「Discord通知」** および **「各アルバムZIP内の AUDIT_REPORT.html」** に明記しなければならない。`processing_route`は実行routeを示し、終端結果やvalidatorの昇格経路とは別の値である。
 
-| 経路コード | 表示名称 | 判定条件 | 外部API / LLMの挙動 |
+| 名称 | 分類 | 判定条件 | 外部API / LLMの挙動 |
 | :--- | :--- | :--- | :--- |
-| `FAST_TRACK` | `⚡ FAST_TRACK` | Steamスロットとローカルファイル名・トラック番号・音源長が1:1完全一致 | **LLM・独立AcoustID照会・通常のMBZ候補選定をバイパス**。埋め込みAPICがない場合のみMBZ_SEARCHを遅延実行し、同じ候補のtrack artistを厳格な一意一致で任意補完 |
-| `LLM_ONE_SHOT` | `🧠 LLM_ONE_SHOT` | Fast-Track不成立（揺れ・バリアントあり）かつ150曲以下 | オンデマンドで信号収集し、**1回のOne-Shot LLM推論**で全曲確定 |
-| `LLM_CHUNKED` | `🧩 LLM_CHUNKED` | 超特大アルバムで分割チャンク処理が発動した場合 | 複数回の分割チャンク推論で段階的整列 |
-| `SKIP_NO_AUDIO` | `⏩ SKIP_NO_AUDIO` | ディレクトリ内に音声ファイルが存在しない場合 | スキップ（DB保存なし） |
-| `ERROR` | `❌ ERROR` | ファイル破損や致命的エラーが発生した場合 | エラー記録 |
+| `FAST_TRACK` | `⚡ FAST_TRACK` | 実行route (`processing_route`) | Steamスロットとローカルファイル名・トラック番号・音源長が1:1完全一致。**LLM・独立AcoustID照会・通常のMBZ候補選定をバイパス**。埋め込みAPICがない場合のみMBZ_SEARCHを遅延実行し、同じ候補のtrack artistを厳格な一意一致で任意補完 |
+| `LLM_ONE_SHOT` | `🧠 LLM_ONE_SHOT` | 実行route (`processing_route`) | Fast-Track不成立かつexecution profileの`prefer_one_shot=true`。profileはConfig tier境界から選ばれる。これはOne-Shot優先profileを示すroute labelであり、token budgetや安全上限による内部segment分割を否定しない |
+| `LLM_CHUNKED` | `🧩 LLM_CHUNKED` | 実行route (`processing_route`) | Fast-Track不成立かつexecution profileの`prefer_one_shot=false`。chunk sizeはtoken budget等で調整される |
+| `STEAM_TRUST` | `🛡️ STEAM-TRUST` | validatorの昇格経路 | Phase1 strategyがSteam-based条件に合致し、album/mapping/data confidenceが90/75/60以上の場合に通常thresholdの代替経路として使う。物理・整合性Review条件は引き続き適用 |
+| `REVIEW` | `🔍 REVIEW` | 終端結果 | validatorまたはArchive preflightにReview条件が1つ以上ある場合 |
+| `EARLY_REVIEW` | `🔍 EARLY_REVIEW` | 早期終端結果 (`review_phase`) | alignment後の通常検証へ進まず、早期Review返却処理が成果物を生成 |
+| `SKIP_NO_AUDIO` | `⏩ SKIP_NO_AUDIO` | スキャン結果 | ディレクトリ内に音声ファイルが存在しない場合にスキップ（DB保存なし） |
+| `ERROR` | `❌ ERROR` | 終端結果 | ファイル破損や致命的エラーが発生した場合にエラー記録 |
 
 FAST_TRACK のTPE1補完では、APIC欠落時にだけ実行される遅延MBZ_SEARCHの選択候補を再利用し、追加のAcoustID全曲走査やMBZ API要求は行わない。Steam slot titleとMBZ recording titleが正規化後に双方で一意一致し、artist-creditが存在する場合だけそのTPE1へ適用する。候補は既存の`min_mbz_search_score_threshold`を通過した場合に限り、候補選定やアルバムレベルメタデータには使わない。埋め込みAPICがある場合、候補が閾値未満の場合、一意一致しない場合、またはartist-creditがない場合はartistを補完しない。検索失敗はFAST_TRACKの成立・検証結果へ影響しない。
 

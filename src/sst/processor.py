@@ -7,7 +7,6 @@ from typing import Callable, List, Dict, Any, Optional, Tuple
 from datetime import datetime
 
 from .models import SteamMetadata, LocalProcessResult
-from .tagger import AudioTagger
 from .llm import LLMOrganizer
 from .ident.mbz import MusicBrainzIdentifier
 from .notify import NotificationManager
@@ -16,13 +15,26 @@ from .packager import PackageManager
 from .alignment_inputs import AlignmentInputBuilder
 
 # New functional modules
-from .track_grouper import TrackManager
-from .validator import ResultValidator
-from .report_generator import ReportGenerator
-from .processor_support import adopt_best_file_per_slot, apply_mbz_track_artists_to_fast_track, build_slot_variant_index, fetch_album_artwork, send_notifications, resolve_duplicate_mappings, select_best_unassigned_files, reconcile_deterministic_unassigned_slots
+from .track_grouper import TrackManager as _TrackManager
+from .processor_support import build_slot_variant_index, fetch_album_artwork, send_notifications, resolve_duplicate_mappings, reconcile_deterministic_unassigned_slots
 from .processor_tracks import process_single_track
-from .alignment_flow import collect_alignment_inputs, consolidate_alignment_inputs
+from .alignment_flow import (
+    collect_alignment_inputs,
+    consolidate_alignment_inputs,
+    execute_alignment_flow,
+)
 from .processor_pipeline import handle_early_review_return
+from .processing.fast_track import (
+    build_fast_track_group_map,
+    build_fast_track_slot_map,
+    normalize_slot_key,
+)
+from .processing.track_batch import encode_and_tag_tracks
+from .processing.album_context import initialize_album_context
+from .processing.deferred_copy import retry_and_finalize_deferred_copy
+from .processing.package_output import save_album_package
+from .processing.package_metadata import build_album_summary_metadata
+from .processing.package_validation import validate_album_package
 
 from dataclasses import dataclass
 
@@ -37,6 +49,7 @@ class AlbumExecutionProfile:
     force_coherence: bool = False
 
 logger = logging.getLogger("sst.processor")
+TrackManager = _TrackManager
 
 class LocalProcessor:
     def __init__(self, config: Any, db: DatabaseManager, preserve_working_files: bool = False):
@@ -153,93 +166,13 @@ class LocalProcessor:
 
     @staticmethod
     def _normalize_slot_key(disc_number: Any, track_number: Any) -> Optional[tuple[int, str]]:
-        if track_number in (None, "", "0", 0):
-            return None
-        try:
-            disc_value = int(disc_number or 1)
-        except (TypeError, ValueError):
-            disc_value = 1
-        track_value = str(track_number).split("/")[0].strip()
-        if not track_value.isdigit():
-            return None
-        normalized_track = str(int(track_value))
-        if normalized_track == "0":
-            return None
-        return disc_value, normalized_track
+        return normalize_slot_key(disc_number, track_number)
 
     def _build_fast_track_slot_map(self, steam_meta: SteamMetadata) -> Optional[Dict[tuple[int, str], int]]:
-        slot_map: Dict[tuple[int, str], int] = {}
-        for idx, track in enumerate(steam_meta.store_tracklist or []):
-            slot_key = self._normalize_slot_key(track.get("disc", 1), track.get("number"))
-            if slot_key is None or slot_key in slot_map:
-                return None
-            slot_map[slot_key] = idx
-        return slot_map
+        return build_fast_track_slot_map(steam_meta)
 
     def _build_fast_track_group_map(self, track_groups: Dict, steam_meta: Optional[SteamMetadata] = None) -> Optional[Dict[str, tuple[tuple[int, str], str]]]:
-        group_map: Dict[str, tuple[tuple[int, str], str]] = {}
-        slot_durations: Dict[tuple[int, str], List[float]] = {}
-        steam_title_map: Dict[str, List[tuple[int, str]]] = {}
-        steam_tracks_by_slot: Dict[tuple[int, str], Dict[str, Any]] = {}
-        
-        for track in (steam_meta.store_tracklist if steam_meta else []):
-            title = TrackManager.normalize_title(str(track.get("title") or track.get("name") or ""))
-            slot_key = self._normalize_slot_key(track.get("disc", 1), track.get("number"))
-            if slot_key is None:
-                continue
-            if title:
-                steam_title_map.setdefault(title, []).append(slot_key)
-            steam_tracks_by_slot[slot_key] = track
-
-        for (disc_num, record_title), variants in track_groups.items():
-            track_numbers = {variant.get("t_num_val") for variant in variants if variant.get("t_num_val") not in (None, "", "0")}
-            slot_key: Optional[tuple[int, str]] = None
-            
-            clean_title_part = record_title.split("::")[0] if "::" in record_title else record_title
-            norm_local_title = TrackManager.normalize_title(clean_title_part)
-            norm_stem_title = TrackManager.normalize_title(Path(clean_title_part).stem)
-            norm_meta_title = TrackManager.normalize_title(str((variants[0].get("meta") or {}).get("title") or "")) if variants else ""
-            norm_titles = [t for t in (norm_local_title, norm_stem_title, norm_meta_title) if t]
-
-            candidate_slot_key = None
-            if len(track_numbers) == 1:
-                candidate_slot_key = self._normalize_slot_key(disc_num, next(iter(track_numbers)))
-                if candidate_slot_key is not None and candidate_slot_key not in steam_tracks_by_slot:
-                    # An explicit track number exists but is outside valid Steam slots -> cannot fast-track
-                    return None
-
-            # If track number points to a valid steam slot and title matches or is not conflicting
-            if candidate_slot_key is not None and candidate_slot_key in steam_tracks_by_slot:
-                steam_track = steam_tracks_by_slot[candidate_slot_key]
-                steam_title = TrackManager.normalize_title(str((steam_track or {}).get("title") or (steam_track or {}).get("name") or ""))
-                if not norm_titles or steam_title in norm_titles:
-                    slot_key = candidate_slot_key
-
-            # If track number was wrong or didn't match title, try unique title match
-            if slot_key is None and steam_meta:
-                for norm_c in norm_titles:
-                    title_matches = steam_title_map.get(norm_c, [])
-                    if len(title_matches) == 1:
-                        slot_key = title_matches[0]
-                        break
-
-            # If still not resolved, fallback to candidate slot key if valid
-            if slot_key is None and candidate_slot_key is not None and candidate_slot_key in steam_tracks_by_slot:
-                slot_key = candidate_slot_key
-
-            if slot_key is None:
-                return None
-
-            slot_durations.setdefault(slot_key, []).extend(
-                float(variant.get("duration", 0.0) or 0.0) for variant in variants
-            )
-            group_map[f"{disc_num}_{record_title}"] = (slot_key, record_title)
-
-        # Physical integrity check: Duration delta among variants mapped to the same slot must be < 1.0s
-        if any(max(durations) - min(durations) >= 1.0 for durations in slot_durations.values() if durations):
-            return None
-            
-        return group_map
+        return build_fast_track_group_map(track_groups, steam_meta)
 
     def _check_fast_track(self, app_id: int, steam_meta: SteamMetadata, track_groups: Dict, mbz_candidates: List[Dict], fingerprint_bundle: Optional[Dict[str, Any]] = None) -> Tuple[bool, Optional[Dict], Optional[Dict]]:
         if not steam_meta.store_tracklist:
@@ -360,42 +293,16 @@ class LocalProcessor:
         _diag: Callable,
         pre_scanned_files: Optional[List[Path]] = None,
     ) -> Optional[Tuple[List[Path], Dict, int, int, Any]]:
-        _diag("PROCESS_START", install_dir=str(install_dir))
-        all_files = pre_scanned_files if pre_scanned_files is not None else TrackManager.list_audio_files(install_dir)
-        _diag("FILES_SCANNED", audio_file_count=len(all_files))
-        if not all_files:
-            _diag("SKIP_NO_AUDIO")
-            return None
-
-        track_groups = TrackManager.build_file_records(all_files, album_name=steam_meta.name)
-        _diag("FILE_RECORDS_BUILT", file_count=len(track_groups))
-
-        if not steam_meta.store_tracklist and getattr(steam_meta, "store_description", None):
-            from .steam_web_api import SteamWebClient
-            desc_text = SteamWebClient._description_text(steam_meta.store_description)
-            if desc_text:
-                logger.info(f"[{app_id}] ストアトラックリスト未設定のため、オンデマンドLLM抽出を実行します。")
-                llm_tracks, llm_log = self.llm.extract_steam_tracklist(app_id, desc_text)
-                if llm_tracks:
-                    steam_meta.store_tracklist = llm_tracks
-                    steam_meta.store_tracklist_source = "STEAM_TEXT_TRACKLIST_LLM"
-                    self.db.save_store_data(
-                        app_id,
-                        llm_tracks,
-                        steam_meta.store_credits or "",
-                        tracklist_language=getattr(steam_meta, "store_tracklist_language", None)
-                    )
-                    logger.info(f"[{app_id}] オンデマンドLLM抽出成功: {len(llm_tracks)} トラックを取得しました。")
-                    _diag("STORE_TRACKLIST_EXTRACTED_ON_DEMAND", track_count=len(llm_tracks))
-
-        max_local_disc = max((d for d, _ in track_groups.keys()), default=1) if track_groups else 1
-        max_store_disc = max((int(t.get("disc", 1)) for t in steam_meta.store_tracklist), default=1) if steam_meta.store_tracklist else 1
-        total_discs = max(max_local_disc, max_store_disc)
-
-        track_count = max(len(track_groups), len(steam_meta.store_tracklist) if steam_meta.store_tracklist else 0)
-        execution_profile = self._build_album_execution_profile(track_count)
-        logger.info(f"[{app_id}] 実行プロファイル: {execution_profile.tier_name} (Tracks: {track_count}, num_ctx: {execution_profile.num_ctx_cap}, workers: {execution_profile.phase2_parallel_workers})")
-        return all_files, track_groups, total_discs, track_count, execution_profile
+        return initialize_album_context(
+            app_id=app_id,
+            install_dir=install_dir,
+            steam_meta=steam_meta,
+            diag=_diag,
+            llm=getattr(self, "llm", None),
+            db=getattr(self, "db", None),
+            build_execution_profile=self._build_album_execution_profile,
+            pre_scanned_files=pre_scanned_files,
+        )
 
     def _execute_alignment_flow(
         self,
@@ -421,104 +328,25 @@ class LocalProcessor:
         Optional[Dict[str, Any]],
         Optional[Dict[str, Any]],
     ]:
-        fast_track_ok, fast_track_map, fast_track_identity = self._check_fast_track(
-            app_id, steam_meta, track_groups, mbz_candidates=[], fingerprint_bundle=None
-        )
-
-        if fast_track_ok:
-            processing_route = "FAST_TRACK"
-            diagnostics["processing_route"] = processing_route
-            v_steam = self.alignment_input_builder.build_steam_album(steam_meta)
-            v_local = self.alignment_input_builder.build_local_album(track_groups)
-            v_fingerprint = None
-            mbz_log = {"status": "fast_track_artist_from_lazy_artwork_search"}
-            v_mbz_search = None
-            mbz_candidates = []
-            final_metadata = fast_track_map or {}
-            fast_track_alignment_res = self._build_fast_track_alignment_res(final_metadata, v_local)
-            llm_log = {
-                "fast_track": True,
-                "processing_route": processing_route,
-                "phase1_res": {
-                    "album_confidence": 100,
-                    "mapping_confidence": 100,
-                    "data_quality": 100,
-                    "identity_confidence": 100,
-                    "integrity_quality": 100,
-                    "archive_vs_review_ratio": {"archive": 100, "review": 0},
-                    "confidence_reason": "SYSTEM: Deterministic fast-track (LLM/API bypassed)",
-                    "strategy": "FAST_TRACK",
-                    "semantic_label": "Archive",
-                    "global_tags": fast_track_identity or {},
-                    "concerns": [],
-                },
-                "alignment_res": fast_track_alignment_res,
-            }
-            _diag("FAST_TRACK_SELECTED", mapped_track_count=len(final_metadata))
-        else:
-            processing_route = "LLM_ONE_SHOT" if execution_profile.prefer_one_shot else "LLM_CHUNKED"
-            diagnostics["processing_route"] = processing_route
-            _diag("ON_DEMAND_SIGNAL_GATHERING_START")
-            v_steam, v_local, v_fingerprint, v_mbz_search, mbz_log = collect_alignment_inputs(
-                app_id, steam_meta, track_groups, self.alignment_input_builder, _diag, on_track_complete
-            )
-            mbz_candidates = self._build_mbz_candidates_from_alignment_inputs(v_fingerprint, v_mbz_search)
-
-            final_metadata, llm_log = consolidate_alignment_inputs(
-                app_id,
-                self.llm,
-                execution_profile,
-                v_steam,
-                v_local,
-                v_fingerprint,
-                v_mbz_search,
-                _diag,
-                llm_progress_callback=llm_progress_callback,
-            )
-            llm_log["processing_route"] = processing_route
-
-        final_metadata = final_metadata or {}
-
-        if final_metadata:
-            self._resolve_duplicate_mappings(app_id, final_metadata, steam_meta, track_groups)
-
-        p1_res = llm_log.get("phase1_res", {})
-        global_identity = p1_res.get("global_tags", {}) if p1_res else {}
-
-        if final_metadata:
-            reconciled = reconcile_deterministic_unassigned_slots(final_metadata, track_groups, steam_meta, global_identity)
-            if reconciled:
-                _diag("DETERMINISTIC_RECONCILED", reconciled_count=len(reconciled))
-
-        slot_variant_index, track_to_slot_index = build_slot_variant_index(final_metadata, track_groups, steam_meta)
-        multi_variant_slot_count = sum(1 for variants in slot_variant_index.values() if len(variants) > 1)
-        _diag(
-            "SLOT_VARIANT_BUILT",
-            slot_count=len(slot_variant_index),
-            variant_count=sum(len(v) for v in slot_variant_index.values()),
-            multi_variant_slot_count=multi_variant_slot_count,
-        )
-
-        alignment_inputs_bundle = {
-            "STEAM": v_steam,
-            "ACOUSTID_MBID": v_fingerprint,
-            "MBZ_SEARCH": v_mbz_search,
-            "LOCAL_SIGNALS": v_local,
-        }
-
-        return (
-            final_metadata,
-            llm_log,
-            mbz_candidates,
-            slot_variant_index,
-            track_to_slot_index,
-            processing_route,
-            alignment_inputs_bundle,
-            mbz_log,
-            v_steam,
-            v_local,
-            v_fingerprint,
-            v_mbz_search,
+        return execute_alignment_flow(
+            app_id=app_id,
+            steam_meta=steam_meta,
+            track_groups=track_groups,
+            execution_profile=execution_profile,
+            alignment_input_builder=self.alignment_input_builder,
+            llm=self.llm,
+            diagnostics=diagnostics,
+            diag=_diag,
+            on_track_complete=on_track_complete,
+            llm_progress_callback=llm_progress_callback,
+            check_fast_track=self._check_fast_track,
+            build_fast_track_alignment_result=self._build_fast_track_alignment_res,
+            build_mbz_candidates=self._build_mbz_candidates_from_alignment_inputs,
+            resolve_duplicate_mappings=self._resolve_duplicate_mappings,
+            reconcile_unassigned_slots=reconcile_deterministic_unassigned_slots,
+            build_slot_variant_index=build_slot_variant_index,
+            collect_inputs=collect_alignment_inputs,
+            consolidate_inputs=consolidate_alignment_inputs,
         )
 
     def _encode_and_tag_tracks(
@@ -554,136 +382,30 @@ class LocalProcessor:
         List[Tuple[Tuple[int, str], Dict[str, Any]]],
         Optional[Path],
     ]:
-        tagger = AudioTagger(temp_output)
-
-        def _apply_fast_track_mbz_artists(candidate: Optional[Dict[str, Any]]) -> None:
-            if llm_log.get("processing_route") != "FAST_TRACK" or not candidate:
-                return
-
-            applied = apply_mbz_track_artists_to_fast_track(
-                final_metadata,
-                steam_meta.store_tracklist or [],
-                candidate,
-            )
-            _diag("FAST_TRACK_MBZ_ARTISTS_APPLIED", enriched_track_count=applied)
-
-        if artwork_prepared:
-            album_artwork_path = prepared_album_artwork_path
-        else:
-            raw_album_artwork = self._fetch_album_artwork(
-                steam_meta,
-                mbz_candidates,
-                track_groups,
-                allow_mbz_artwork_search=llm_log.get("processing_route") == "FAST_TRACK",
-                on_mbz_candidate=_apply_fast_track_mbz_artists,
-            )
-            album_artwork_path = tagger.process_artwork(raw_album_artwork) if raw_album_artwork else None
-
-        track_sources = TrackManager.prepare_llm_track_context(track_groups)
-        p1_res = llm_log.get("phase1_res", {})
-        global_identity = p1_res.get("global_tags", {}) if p1_res else {}
-
-        def _process_single_track(track_data):
-            return process_single_track(
-                app_id=app_id,
-                steam_meta_name=steam_meta.name,
-                track_data=track_data,
-                final_metadata=final_metadata,
-                config=self.config,
-                steam_meta=steam_meta,
-                mbz_candidates=mbz_candidates,
-                track_sources=track_sources,
-                global_identity=global_identity,
-                total_discs=total_discs,
-                buffer_dir=buffer_dir,
-                tagger=tagger,
-                track_groups=track_groups,
-                slot_variant_index=slot_variant_index,
-                track_to_slot_index=track_to_slot_index,
-                album_artwork=album_artwork_path,
-                notifier=self.notifier,
-                on_track_complete=on_track_complete,
-                defer_copy_failure=defer_copy_failures,
-            )
-
-        from concurrent.futures import ThreadPoolExecutor
-        if adopted_file_subset is None:
-            adopted_files = adopt_best_file_per_slot(track_groups, slot_variant_index, track_to_slot_index)
-            _diag(
-                "TRACKS_ADOPTED",
-                adopted_slot_count=len(adopted_files),
-                adopted_file_count=len(adopted_files),
-            )
-        else:
-            adopted_files = dict(adopted_file_subset)
-            _diag("DEFERRED_COPY_RETRY_TRACKS", track_count=len(adopted_files))
-        with ThreadPoolExecutor(max_workers=self.config.max_encoding_tasks) as executor:
-            track_results = list(executor.map(_process_single_track, adopted_files.items()))
-        deferred_track_data = [
-            track_data
-            for track_data, result in zip(adopted_files.items(), track_results)
-            if result.get("copy_pending")
-        ]
-
-        processed_tracks_meta = self._normalize_processed_tracks(
-            [r["track_meta"] for r in track_results if r.get("track_meta")]
-        )
-        io_retry_logs = [r["io_retry_log"] for r in track_results if r.get("io_retry_log")]
-        io_retry_count = sum(1 for log in io_retry_logs if log.get("retried"))
-        alignment_unassigned_ids = {
-            str(file_id)
-            for file_id in (llm_log.get("alignment_res", {}) or {}).get("unassigned_files", [])
-        }
-        unassigned_manifest = []
-        unassigned_candidates = select_best_unassigned_files(
-            track_groups,
-            final_metadata,
-            alignment_unassigned_ids or None,
+        return encode_and_tag_tracks(
+            config=self.config,
+            notifier=self.notifier,
+            process_track=process_single_track,
+            fetch_artwork=self._fetch_album_artwork,
+            normalize_processed_tracks=self._normalize_processed_tracks,
+            app_id=app_id,
+            steam_meta=steam_meta,
+            final_metadata=final_metadata,
+            mbz_candidates=mbz_candidates,
+            track_groups=track_groups,
             slot_variant_index=slot_variant_index,
             track_to_slot_index=track_to_slot_index,
-        ) if include_unassigned else []
-        for unassigned in unassigned_candidates:
-            manifest = {
-                "track_id": unassigned["track_id"],
-                "original_filename": unassigned["path"].name,
-                "file_id": unassigned.get("file_id"),
-                "unassigned_file_ids": unassigned.get("unassigned_file_ids", []),
-                "tier_rank": unassigned["tier_rank"],
-                "original_tags": unassigned.get("original_tags", {}),
-                "reason": "No matching Steam slot",
-            }
-            try:
-                converted_path, conversion_warning = tagger.convert_and_limit(
-                    unassigned["path"], unassigned["tier"], subdir="unassigned"
-                )
-                tagger.mark_unassigned(converted_path, manifest["reason"])
-                manifest["file_path"] = f"unassigned/{converted_path.name}"
-                manifest["converted"] = True
-                manifest["conversion_warning"] = bool(conversion_warning)
-            except Exception as error:
-                manifest["converted"] = False
-                manifest["conversion_error"] = str(error)
-            unassigned_manifest.append(manifest)
-
-        any_audio_warnings = any(r.get("had_warning") for r in track_results)
-        any_audio_failures = any(r.get("failed") for r in track_results)
-        audio_warned_tracks = [
-            r.get("warned_track_label") for r in track_results
-            if r.get("had_warning") and r.get("warned_track_label")
-        ]
-
-        return (
-            processed_tracks_meta,
-            any_audio_failures,
-            any_audio_warnings,
-            audio_warned_tracks,
-            unassigned_manifest,
-            io_retry_count,
-            io_retry_logs,
-            len(adopted_files),
-            len(track_results),
-            deferred_track_data,
-            album_artwork_path,
+            llm_log=llm_log,
+            total_discs=total_discs,
+            temp_output=temp_output,
+            buffer_dir=buffer_dir,
+            on_track_complete=on_track_complete,
+            diag=_diag,
+            adopted_file_subset=adopted_file_subset,
+            defer_copy_failures=defer_copy_failures,
+            include_unassigned=include_unassigned,
+            artwork_prepared=artwork_prepared,
+            prepared_album_artwork_path=prepared_album_artwork_path,
         )
 
     @staticmethod
@@ -723,33 +445,19 @@ class LocalProcessor:
     ) -> LocalProcessResult:
         p1_res = llm_log.get("phase1_res", {})
         final_duplicate_slot_count = self._count_duplicate_slot_keys(processed_tracks_meta)
-        status, message, score, quality, reason = ResultValidator.validate(
+        status, message, score, quality, reason, artifact_issues = validate_album_package(
             app_id,
+            steam_meta,
             processed_tracks_meta,
             llm_log,
             mbz_candidates,
-            steam_meta,
             any_audio_failures,
             any_audio_warnings,
-            audio_warned_tracks=audio_warned_tracks,
-            unassigned_manifest=unassigned_manifest,
-        )
-        if audio_warned_tracks:
-            logger.info(
-                f"[{app_id}] {steam_meta.name}: 本来Archive相当ですが、微小問題（音声品質警告）を含むためReview送りとなりました。対象トラック: {', '.join(audio_warned_tracks)}"
-            )
-        artifact_issues = self._validate_archive_artifacts(
-            app_id,
+            audio_warned_tracks,
+            unassigned_manifest,
             temp_output,
-            processed_tracks_meta,
-            steam_meta,
+            self._validate_archive_artifacts,
         )
-        if status == "archive" and artifact_issues:
-            status = "review"
-            existing_message = message.strip("[]") if message else ""
-            all_issues = [part for part in [existing_message, *artifact_issues] if part]
-            message = f"[{', '.join(all_issues)}]"
-            reason = f"{reason}; archive artifact preflight failed"
         _diag(
             "VALIDATION_DONE",
             status=status,
@@ -760,197 +468,65 @@ class LocalProcessor:
             processed_track_count=len(processed_tracks_meta),
         )
 
-        multi_variant_slot_count = sum(1 for variants in slot_variant_index.values() if len(variants) > 1)
-        llm_diagnostics = llm_log.get("diagnostics") or {}
-        deferred_copy_diagnostics = {
-            key: llm_diagnostics.get(key, default)
-            for key, default in (
-                ("deferred_copy_count", 0),
-                ("deferred_copy_success_count", 0),
-                ("deferred_copy_failure_count", 0),
-                ("deferred_copy_failures", []),
-            )
-        }
-        failed_copy_logs = [
-            log for log in io_retry_logs if log.get("final_state") == "failed"
-        ]
-        successful_copy_logs = [
-            log for log in io_retry_logs if log.get("final_state") != "failed"
-        ][:5]
-        audit_copy_logs = failed_copy_logs + successful_copy_logs
-        summary_meta = {
-            "app_id": app_id, 
-            "album_name": steam_meta.name, 
-            "status": status, 
-            "processing_route": processing_route,
-            "message": message,
-            "confidence_score": score, 
-            "album_confidence": score,
-            "mapping_confidence": p1_res.get("mapping_confidence"),
-            "data_quality": quality,
-            "integrity_quality": quality,
-            "archive_vs_review_ratio": p1_res.get("archive_vs_review_ratio"),
-            "audit": {
-                "steam_expected_slots": len(steam_meta.store_tracklist or []),
-                "final_adopted_slots": len(processed_tracks_meta),
-                "final_duplicate_slots": final_duplicate_slot_count,
-                "steam_legitimate_unknown": (llm_log.get("diagnostics") or {}).get("steam_unknown_count", 0),
-                "anomalous_unknown": (llm_log.get("diagnostics") or {}).get("anomalous_unknown_count", 0),
-                "input_file_count": all_files_count,
-                "adopted_file_count": adopted_file_count,
-                "unassigned_file_count": len(unassigned_manifest),
-                "archive_artifact_issues": artifact_issues,
-                "track_group_count": len(track_groups),
-                "slot_variant_count": len(slot_variant_index),
-                "multi_variant_slot_count": multi_variant_slot_count,
-                "adopted_slot_count": adopted_file_count,
-                "io_retry_count": io_retry_count,
-                "io_retry_logs": audit_copy_logs,
-                **deferred_copy_diagnostics,
-            },
-            "strategy": p1_res.get("strategy"),
-            "confidence_reason": reason, 
-            "processed_at": self._get_localized_now().isoformat(), 
-            "tracks": processed_tracks_meta, 
-            "unassigned_files": unassigned_manifest,
-            "steam_info": steam_meta.model_dump(),
-            "diagnostics": {**diagnostics, **deferred_copy_diagnostics},
-        }
+        summary_meta = build_album_summary_metadata(
+            app_id=app_id,
+            steam_meta=steam_meta,
+            status=status,
+            processing_route=processing_route,
+            message=message,
+            score=score,
+            quality=quality,
+            mapping_confidence=p1_res.get("mapping_confidence"),
+            archive_vs_review_ratio=p1_res.get("archive_vs_review_ratio"),
+            reason=reason,
+            processed_at=self._get_localized_now().isoformat(),
+            processed_tracks_meta=processed_tracks_meta,
+            final_duplicate_slot_count=final_duplicate_slot_count,
+            llm_log=llm_log,
+            all_files_count=all_files_count,
+            adopted_file_count=adopted_file_count,
+            unassigned_manifest=unassigned_manifest,
+            artifact_issues=artifact_issues,
+            track_groups=track_groups,
+            slot_variant_index=slot_variant_index,
+            io_retry_count=io_retry_count,
+            io_retry_logs=io_retry_logs,
+            diagnostics=diagnostics,
+        )
         discord_msg = self._send_notifications(app_id, steam_meta.name, status, message, score, reason, llm_log, any_audio_failures, len(processed_tracks_meta), mbz_candidates)
 
-        localized_now_str = self._get_localized_now().strftime('%Y-%m-%d %H:%M:%S')
-        log_bundle = {
-            "mbz_log.json": mbz_log, 
-            "metadata.json": summary_meta,
-            "llm_log.json": llm_log,
-            "AUDIT_REPORT.html": ReportGenerator.generate_html_report(app_id, steam_meta, status, message, score, reason, processed_tracks_meta, llm_log, mbz_candidates, localized_now_str, self.config.resolved_metadata_source_priority, quality=quality, alignment_inputs=alignment_inputs_bundle)
-        }
-        if unassigned_manifest:
-            log_bundle["review_manifest.json"] = {
-                "app_id": app_id,
-                "album_name": steam_meta.name,
-                "status": status,
-                "unassigned_files": unassigned_manifest,
-            }
-        if discord_msg:
-            log_bundle["DISCORD_MESSAGE.md"] = discord_msg
-
-        p1_log = llm_log.get("phase1_log", {})
-        if p1_log.get("human_prompt"):
-            log_bundle["LLM_PROMPT.md"] = p1_log["human_prompt"]
-        elif p1_log.get("prompt"):
-            log_bundle["LLM_PROMPT.md"] = p1_log["prompt"]
-
-        diagnostics["packager_invoked"] = True
-        _diag("PACKAGE_SAVE_START", status=status, output_root=self.config.sst_output_dir)
-        PackageManager.save_local_package(
+        return save_album_package(
             app_id,
             status,
-            steam_meta.name,
+            steam_meta,
+            summary_meta,
+            llm_log,
+            mbz_log,
+            processed_tracks_meta,
+            mbz_candidates,
+            self._get_localized_now().strftime('%Y-%m-%d %H:%M:%S'),
+            message,
+            score,
+            reason,
+            alignment_inputs_bundle,
+            quality,
+            unassigned_manifest,
+            discord_msg,
             temp_output,
-            log_bundle,
-            self.config.sst_output_dir,
-            compression_strategy=getattr(self.config, "zip_compression_strategy", "auto"),
-            deflate_level=getattr(self.config, "zip_deflate_level", 1),
+            config=self.config,
+            db=self.db,
+            package_manager=PackageManager,
+            get_localized_now=self._get_localized_now,
+            diagnostics=diagnostics,
+            diag=_diag,
         )
-        _diag("PACKAGE_SAVE_DONE", status=status)
-        self.db.record_processed(app_id, status, steam_meta.name, self._get_localized_now().isoformat(), summary_meta)
-        return LocalProcessResult(app_id=app_id, status=status, album_name=steam_meta.name, confidence_score=score, confidence_reason=reason, message=message, metadata=summary_meta)
 
     def _retry_and_finalize_deferred_copy(self, context: Dict[str, Any]) -> LocalProcessResult:
-        retry_result = self._encode_and_tag_tracks(
-            context["app_id"],
-            context["steam_meta"],
-            context["final_metadata"],
-            context["mbz_candidates"],
-            context["track_groups"],
-            context["slot_variant_index"],
-            context["track_to_slot_index"],
-            context["llm_log"],
-            context["total_discs"],
-            context["temp_output"],
-            context["buffer_dir"],
-            None,
-            context["_diag"],
-            adopted_file_subset=context["deferred_track_data"],
-            defer_copy_failures=False,
-            include_unassigned=False,
-            artwork_prepared=True,
-            prepared_album_artwork_path=context["album_artwork_path"],
-        )
-        (
-            retried_tracks,
-            retry_audio_failures,
-            retry_audio_warnings,
-            retry_warned_tracks,
-            _,
-            retry_count,
-            retry_logs,
-            _,
-            _,
-            still_deferred,
-            _,
-        ) = retry_result
-
-        recovered_track_ids = {
-            log.get("track_id")
-            for log in retry_logs
-            if log.get("final_state") == "success" and log.get("track_id")
-        }
-        for log in context["io_retry_logs"]:
-            if log.get("track_id") in recovered_track_ids:
-                log["recovered_after_defer"] = True
-
-        final_copy_failures = [
-            log for log in retry_logs if log.get("final_state") == "failed"
-        ]
-        llm_diagnostics = context["llm_log"].setdefault("diagnostics", {})
-        llm_diagnostics["deferred_copy_count"] = len(context["deferred_track_data"])
-        llm_diagnostics["deferred_copy_success_count"] = len(recovered_track_ids)
-        llm_diagnostics["deferred_copy_failure_count"] = len(final_copy_failures)
-        llm_diagnostics["deferred_copy_failures"] = [
-            {
-                "track_id": log.get("track_id"),
-                "slot_key": log.get("slot_key"),
-                "source": log.get("source"),
-                "attempts": log.get("attempts", []),
-            }
-            for log in final_copy_failures
-        ]
-        context["_diag"](
-            "DEFERRED_COPY_RETRY_DONE",
-            succeeded=len(recovered_track_ids),
-            failed=len(final_copy_failures),
-            requeued=bool(still_deferred),
-        )
-
-        processed_tracks_meta = self._normalize_processed_tracks(
-            context["processed_tracks_meta"] + retried_tracks
-        )
-        combined_io_retry_logs = context["io_retry_logs"] + retry_logs
-        return self._finalize_album_package(
-            context["app_id"],
-            context["steam_meta"],
-            processed_tracks_meta,
-            context["llm_log"],
-            context["mbz_candidates"],
-            context["any_audio_failures"] or retry_audio_failures or bool(still_deferred),
-            context["any_audio_warnings"] or retry_audio_warnings,
-            context["audio_warned_tracks"] + retry_warned_tracks,
-            context["unassigned_manifest"],
-            context["temp_output"],
-            context["processing_route"],
-            context["all_files_count"],
-            context["adopted_file_count"],
-            context["track_groups"],
-            context["slot_variant_index"],
-            context["track_results_len"],
-            context["io_retry_count"] + retry_count,
-            combined_io_retry_logs,
-            context["alignment_inputs_bundle"],
-            context["mbz_log"],
-            context["diagnostics"],
-            context["_diag"],
+        return retry_and_finalize_deferred_copy(
+            context,
+            encode_and_tag_tracks=self._encode_and_tag_tracks,
+            normalize_processed_tracks=self._normalize_processed_tracks,
+            finalize_album_package=self._finalize_album_package,
         )
 
     def _run_deferred_copy_finalizer(self, context: Dict[str, Any]) -> LocalProcessResult:
@@ -1044,7 +620,7 @@ class LocalProcessor:
 
             if not final_metadata:
                 return handle_early_review_return(
-                    app_id, steam_meta, track_count, llm_log, v_steam, v_local, v_fingerprint, v_mbz_search,
+                    app_id, steam_meta, track_count, llm_log, v_steam or {}, v_local or {}, v_fingerprint, v_mbz_search,
                     diagnostics, _diag, self._get_localized_now, self._send_notifications,
                     self.working_dir, self.config.sst_output_dir, self.db, self.config,
                     preserve_working_files=self.preserve_working_files,

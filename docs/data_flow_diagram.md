@@ -14,8 +14,8 @@ flowchart TD
     
     %% LLM Routes
     D -->|未達| F[LLM アライメント実行判定]
-    F -->|トラック数小/中| E2[LLM One-Shot アライメント<br/>Route: LLM_ONE_SHOT]
-    F -->|トラック数大/VRAM制限| E3[LLM チャンク分割アライメント<br/>Route: LLM_CHUNKED]
+    F -->|profile: prefer_one_shot=true| E2[LLM One-Shot優先profile<br/>Route: LLM_ONE_SHOT]
+    F -->|profile: prefer_one_shot=false| E3[LLM chunk profile<br/>Route: LLM_CHUNKED]
     
     %% Early Review
     E2 -->|アライメント完全失敗/空出力| ER[早期Review返却<br/>Route: EARLY_REVIEW]
@@ -32,10 +32,10 @@ flowchart TD
     
     %% Validation & STEAM-TRUST
     J --> K{結果バリデーション}
-    K -->|構造完全一致かつ高品質| ST[STEAM-TRUST 昇格判定]
-    K -->|閾値充足| V_OK[バリデーション合格]
-    ST -->|適用| V_OK
-    K -->|不合格 / audio_warn / audio_fail / 未割当| REV[Review 隔離判定]
+    K -->|通常閾値を充足| V_OK[バリデーション合格]
+    K -->|通常閾値未達、Steam-based strategyかつ90/75/60以上| ST[STEAM-TRUST 昇格判定]
+    ST -->|他のReview条件なし| V_OK
+    K -->|Review条件あり / threshold未達| REV[Review 隔離判定]
     
     %% Preflight Check
     V_OK --> PF{成果物事前検証<br/>Preflight Check<br/>ゼロ埋め正規化スロット突合}
@@ -50,15 +50,20 @@ flowchart TD
 
 FAST-TRACK では、ローカル埋め込み画像がない場合にだけアート専用 MBZ_SEARCH を遅延実行する。AcoustID と LLM は呼び出さず、検索結果は APIC 取得専用でタグメタデータには流用しない。MBZ 画像が得られない場合は Steam 画像候補へ進む。
 
-## 2. 5つの処理経路 (Processing Routes)
+## 2. 実行route・validator経路・終端結果
 
-| 経路名 | 分岐条件 | 特徴 |
+`processing_route`は実行profileの選択を表し、実際のLLM request回数や最終結果とは別です。One-Shot優先profileでもtoken budget等により内部でsegment分割される場合があります。
+
+| 名称 | 分類 | 条件・意味 |
 | --- | --- | --- |
-| **`FAST_TRACK`** | ローカル曲数とSteam曲数が一致し、全曲がトラック番号または正規化タイトルで1:1決定論的対応 | LLM不要で最高速・最高信頼度 |
-| **`LLM_ONE_SHOT`** | ファストトラック未達で、コンテキスト上限に収まる規模のアルバム | 単一プロンプトで全曲の一括アライメントを実施 |
-| **`LLM_CHUNKED`** | 楽曲数が多く単一プロンプトでのトークン超過またはTruncationの恐れがあるアルバム | チャンク分割＋並列処理でアライメント |
-| **`STEAM_TRUST`** | ACOUSTID不在だが、異フォーマット統合後の一意トラック構造がSteamと完全一致 | 決定論的構造優位性により確信度100%としてArchive昇格 |
-| **`REVIEW` / `EARLY_REVIEW`** | 早期中断、スロット未充足、余剰未割当ファイル、音声品質警告（`audio_warn`）、変換失敗、Preflight不一致 | 不確実な成果物を絶対にArchiveせず安全に隔離保存 |
+| **`FAST_TRACK`** | 実行route (`processing_route`) | Steam slotとlocal fileが決定論的に1:1対応し、LLMを迂回 |
+| **`LLM_ONE_SHOT`** | 実行route (`processing_route`) | execution profileの`prefer_one_shot=true`。tier境界はConfig由来。request数が必ず1回とは限らない |
+| **`LLM_CHUNKED`** | 実行route (`processing_route`) | execution profileの`prefer_one_shot=false`。chunk sizeはtoken budget等で調整 |
+| **`STEAM_TRUST`** | validator昇格経路 | Steam-based strategyかつalbum/mapping/data confidenceが90/75/60以上。通常thresholdの代替条件で、他のReview条件は上書きしない |
+| **`REVIEW`** | 終端結果 | validatorまたはArchive preflightのReview条件が適用された結果 |
+| **`EARLY_REVIEW`** | 早期終端結果 (`review_phase`) | alignment後の通常validatorを通らずにReview成果物を生成 |
+| **`SKIP_NO_AUDIO`** | スキャン結果 | 音声ファイルがないため処理をスキップ |
+| **`ERROR`** | 終端結果 | 致命的エラーを記録 |
 
 ## 3. 情報ソース関係とタグ採用階層
 
@@ -94,3 +99,5 @@ flowchart TD
     G -->|合格| ARC[Archive ZIP 出力]
     G -->|不合格| R
 ```
+
+Validatorのconfidence閾値、割当・タグ整合性条件、音声条件によるReview原因一覧は [LOGIC.md §2.9](LOGIC.md) を参照してください。Archive preflightは出力path、実ファイルの存在と非空サイズ、必須タグ、Steam slot集合の一致を再確認します。

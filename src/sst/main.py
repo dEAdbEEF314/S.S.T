@@ -40,8 +40,8 @@ def setup_logging(config: Config, console: Console, is_dev: bool = False):
         )
     ]
 
-    log_dir = Path("logs")
-    log_dir.mkdir(exist_ok=True)
+    log_dir = Path(config.sst_log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
 
     if is_dev or numeric_level == logging.DEBUG:
         # Unique log file per run for auditing
@@ -112,13 +112,13 @@ def fetch_steam_userdata(config: Config, console: Console):
     url = "https://store.steampowered.com/dynamicstore/userdata/"
     cookies = {"steamLoginSecure": config.steam_login_secure}
     try:
-        r = requests.get(url, cookies=cookies, timeout=10)
+        r = requests.get(url, cookies=cookies, timeout=config.steam_userdata_timeout)
         r.raise_for_status()
         data = r.json()
 
-        data_dir = Path("data")
-        data_dir.mkdir(exist_ok=True)
-        with open(data_dir / "userdata.json", "w", encoding="utf-8") as f:
+        userdata_path = Path(config.sst_userdata_path)
+        userdata_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(userdata_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
         console.print("[green]✓ Steamのuserdata.jsonが更新されました。[/green]")
     except Exception as e:
@@ -195,7 +195,7 @@ def main():
 
     # Load configuration
     try:
-        config = Config()  # pyright: ignore[reportCallIssue]
+        config = Config().load_env_overrides()  # pyright: ignore[reportCallIssue]
 
         # Removed Fingerprint-all confirmation as it is now default
     except Exception as e:
@@ -207,7 +207,8 @@ def main():
         return handle_db_reset(Path(config.sst_db_path), console)
 
     # --- Singleton Lock ---
-    lock_file = Path("data/sst.lock")
+    lock_file = Path(config.sst_lock_path)
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
     if lock_file.exists():
         # Check if the process is actually running (simple PID check could be added, but for now just block)
         console.print(
@@ -238,13 +239,16 @@ def main():
             bridge_api_key=config.steam_pics_bridge_api_key,
             api_key=config.steam_web_api_key,
             override_library_path=config.steam_library_path,
-            cache_path="data/sst_cache.json",
+            cache_path=config.sst_steam_cache_path,
+            tag_cache_path=config.sst_steam_tag_cache_path,
             language=config.steam_language_full,
             tag_refresh_days=config.steam_tag_cache_refresh_days,
             llm_extractor=None,  # オンデマンド抽出へ移行（スキャン時のLLM呼び出しを防止）
             api_timeout=config.steam_api_timeout,
             pics_timeout=config.steam_pics_timeout,
             max_retries=config.steam_api_max_retries,
+            retry_delay=config.steam_api_retry_delay,
+            retry_backoff=config.steam_api_retry_backoff,
             throttle_delay=config.steam_throttle_delay,
         )
         runner = JobRunner(config, processor, console)
@@ -338,10 +342,11 @@ def main():
                 if spec and spec.loader:
                     gen_module = importlib.util.module_from_spec(spec)
                     spec.loader.exec_module(gen_module)
+                    audit_report_dir = Path(config.sst_audit_report_dir)
                     gen_module.analyze_and_generate_report(
-                        Path(config.sst_db_path), "report"
+                        Path(config.sst_db_path), str(audit_report_dir)
                     )
-                    audit_report_path = Path("report/batch_analysis_report.html")
+                    audit_report_path = audit_report_dir / "batch_analysis_report.html"
                     console.print(
                         f"[bold green]📊 信頼性監査レポートが生成されました: {audit_report_path}[/bold green]"
                     )

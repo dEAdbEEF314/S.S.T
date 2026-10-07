@@ -1,6 +1,6 @@
 import vdf
 import logging
-from typing import List, Optional, Any
+from typing import Any, Callable, List, Optional
 from pathlib import Path
 
 from .utils import ensure_path
@@ -24,18 +24,25 @@ class SteamScanner:
         api_key: Optional[str] = None,
         override_library_path: Optional[str] = None,
         cache_path: str = "data/scout_cache.json",
+        tag_cache_path: str = "data/steam_tags.json",
         language: str = "japanese",
         tag_refresh_days: int = 30,
         llm_extractor: Any = None,
         api_timeout: float = 15.0,
         pics_timeout: float = 30.0,
         max_retries: int = 3,
+        retry_delay: float = 2.0,
+        retry_backoff: float = 2.0,
         throttle_delay: float = 2.0,
     ):
         self.install_path = ensure_path(install_path)
         self.db = db
         
-        self.cache_manager = ScannerCacheManager(cache_path, tag_refresh_days=tag_refresh_days)
+        self.cache_manager = ScannerCacheManager(
+            cache_path,
+            tag_cache_path=tag_cache_path,
+            tag_refresh_days=tag_refresh_days,
+        )
         self.web_client = SteamWebClient(
             db,
             bridge_url,
@@ -46,6 +53,8 @@ class SteamScanner:
             api_timeout=api_timeout,
             pics_timeout=pics_timeout,
             max_retries=max_retries,
+            retry_delay=retry_delay,
+            retry_backoff=retry_backoff,
             throttle_delay=throttle_delay,
         )
         
@@ -77,7 +86,13 @@ class SteamScanner:
         logger.info(f"{len(wsl_libs)} 個のライブラリで SteamScanner を初期化しました。")
         return wsl_libs
 
-    def find_soundtracks(self, force: bool = False, limit: Optional[int] = None, is_processed_callback: Optional[callable] = None, target_appids: Optional[List[int]] = None) -> List[dict]:
+    def find_soundtracks(
+        self,
+        force: bool = False,
+        limit: Optional[int] = None,
+        is_processed_callback: Optional[Callable[[int], bool]] = None,
+        target_appids: Optional[List[int]] = None,
+    ) -> List[dict]:
         """
         Finds soundtrack app manifests and merges them with local appinfo metadata.
         """

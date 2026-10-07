@@ -24,23 +24,14 @@
 - `data/`: Local DB and caches
 - `tests/`: Tests and verification code
 
-# RTK
+## RTK
 
 Prefix every shell command with `rtk`: `rtk git status`, `rtk cargo test`,
 `rtk npm run build`, `rtk ls src/`. Keep the prefix inside chains:
 `rtk git add . && rtk git commit -m "msg"`. Commands RTK has no filter for
 run as-is, so the prefix is always safe.
 
-# Command output
-
-Command output here is condensed to save tokens, keeping every signal and
-dropping costly noise. Treat it as the complete result: run commands
-normally, and batch related commands into one call to avoid extra turns.
-Truncated results state their recovery path in their own output. Re-run a
-command as `rtk proxy <cmd>` only when its result is unusable: empty when
-output was clearly expected, contradicting its exit code, or garbled.
-
-## About RTK
+### About RTK
 
 RTK (Rust Token Killer) is a CLI proxy that filters command output to save
 tokens; behavior and exit code are unchanged.
@@ -50,9 +41,19 @@ tokens; behavior and exit code are unchanged.
 - `RTK_DISABLED=1 <cmd>` — skip RTK for one command.
 - `rtk discover` — find past commands RTK could have condensed.
 
-# OpenViking (Context & Long-term Memory)
+### Command output
+
+Command output here is condensed to save tokens, keeping every signal and
+dropping costly noise. Treat it as the complete result: run commands
+normally, and batch related commands into one call to avoid extra turns.
+Truncated results state their recovery path in their own output. Re-run a
+command as `rtk proxy <cmd>` only when its result is unusable: empty when
+output was clearly expected, contradicting its exit code, or garbled.
+
+## OpenViking (Context & Long-term Memory)
 
 Query and store persistent context via the `ov` CLI (active server: `nyarl`).
+
 - Scopes:
   - `viking://user/` — User preferences, system architecture, and long-term memory.
   - `viking://resources/` — Reference manuals, specs, and external knowledge.
@@ -62,4 +63,3 @@ Query and store persistent context via the `ov` CLI (active server: `nyarl`).
   - Search persistent knowledge: `ov search "<query>"`
 - Persistence:
   - Store key decisions and design specs using `ov add` so context survives across chat sessions.
-

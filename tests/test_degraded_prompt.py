@@ -1,6 +1,8 @@
 from sst.config import Config
 from sst.llm.prompts import build_identity_prompt, build_mapping_prompt, build_degraded_prompt
 from sst.llm.client import LLMClient
+from sst.llm.retry_policy import LLMRetryPolicy
+from unittest.mock import patch
 
 def test_build_degraded_prompt_identity():
     original = build_identity_prompt(
@@ -66,6 +68,32 @@ def test_config_llm_retries_and_budget_safety():
     assert kwargs["max_retries"] == 3
     assert kwargs["output_budget_safety_ratio"] == 0.25
     assert kwargs["adaptive_degraded_prompt_enabled"] is True
+
+
+def test_llm_retry_policy_preserves_retry_and_degradation_rules():
+    policy = LLMRetryPolicy(3, 2.0, 1.5, True, "ollama", 4096)
+
+    assert policy.can_retry(0)
+    assert policy.can_retry(2)
+    assert not policy.can_retry(3)
+    assert policy.should_degrade_for_http(503, False)
+    assert not policy.should_degrade_for_http(429, False)
+    assert not policy.should_degrade_for_http(503, True)
+    assert policy.should_degrade_for_exception(TimeoutError("request timeout"), False)
+    assert not policy.should_degrade_for_exception(ValueError("bad value"), False)
+    assert policy.should_degrade_for_truncation(False)
+    assert not policy.should_degrade_for_truncation(True)
+    assert policy.next_output_tokens(1024) == 2048
+    assert policy.next_output_tokens(2048) == 4096
+    assert policy.next_output_tokens(4096) is None
+
+    with patch("sst.llm.retry_policy.random.uniform", return_value=1.0), patch(
+        "sst.llm.retry_policy.time.sleep"
+    ) as sleep:
+        policy.wait_before_retry()
+        policy.wait_before_retry()
+
+    assert [call.args[0] for call in sleep.call_args_list] == [2.0, 3.0]
 
 def test_degraded_response_normalization():
     # Simulate minimal JSON parsed from degraded prompt response

@@ -6,7 +6,7 @@ import hashlib
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
 import os
-from mutagen import File
+import mutagen
 from .ident.embedded import EmbeddedMetadataExtractor
 
 logger = logging.getLogger("sst.track_grouper")
@@ -56,7 +56,8 @@ class TrackManager:
     def get_duration(path: Path) -> float:
         # 1. Fast path: Mutagen length extraction directly from headers (no subprocess)
         try:
-            audio = File(path)
+            file_loader = getattr(mutagen, "File")
+            audio = file_loader(path)
             if audio is not None and getattr(audio, "info", None) is not None:
                 length = getattr(audio.info, "length", None)
                 if length is not None and isinstance(length, (int, float)) and length > 0:
@@ -175,11 +176,11 @@ class TrackManager:
 
     @staticmethod
     def get_best_artwork(variants: List[Dict]) -> Optional[bytes]:
-        from mutagen import File
+        file_loader = getattr(mutagen, "File")
 
         for v in variants:
             try:
-                audio = File(v["path"])
+                audio = file_loader(v["path"])
                 if not audio:
                     continue
 

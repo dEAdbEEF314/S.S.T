@@ -210,7 +210,8 @@ def test_check_env_security_no_crash():
 
 def test_config_classified_defaults():
     """Verify default values of newly categorized configuration settings."""
-    cfg = Config(steam_install_path="/tmp/steam")
+    with patch.dict(os.environ, {}, clear=True):
+        cfg = Config(steam_install_path="/tmp/steam", _env_file=None)
 
     # Category 1: Steam API
     assert cfg.steam_api_timeout == 15.0
@@ -297,6 +298,17 @@ def test_audio_tagger_get_audio_properties_ffprobe_fallback():
             assert rate == 44100
             assert depth == 16
             assert mock_sub.called
+
+
+def test_audio_tagger_uses_configured_ffmpeg_timeout(tmp_path):
+    tagger = AudioTagger(tmp_path, ffmpeg_timeout=37.0)
+    timeout_error = subprocess.TimeoutExpired(cmd="ffmpeg", timeout=37.0)
+
+    with patch("sst.tagger.subprocess.run", side_effect=timeout_error) as mock_sub:
+        with pytest.raises(RuntimeError, match="FFmpeg conversion timed out"):
+            tagger.convert_and_limit(tmp_path / "source.mp3", "lossy")
+
+    assert mock_sub.call_args.kwargs["timeout"] == 37.0
 
 
 def test_embedded_metadata_extractor_single_pass():

@@ -3,7 +3,7 @@ import logging
 import re
 import time
 from typing import List, Optional, Dict, Any, Tuple
-from datetime import datetime
+from datetime import UTC, datetime
 from difflib import SequenceMatcher
 
 logger = logging.getLogger("sst.ident.mbz")
@@ -48,7 +48,7 @@ class MusicBrainzIdentifier:
         match = re.search(r'(\d{4})', str(date_str))
         return int(match.group(1)) if match else None
 
-    def _fetch_release(self, mbid: str, includes: List[str] = None) -> Optional[Dict[str, Any]]:
+    def _fetch_release(self, mbid: str, includes: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
         includes_str = ",".join(sorted(includes)) if includes else ""
         cache_key = f"release_{mbid}_{includes_str}"
         
@@ -68,7 +68,7 @@ class MusicBrainzIdentifier:
             logger.warning(f"Failed to fetch details for {mbid}: {e}")
             return None
 
-    def _fetch_recording(self, mbid: str, includes: List[str] = None) -> Optional[Dict[str, Any]]:
+    def _fetch_recording(self, mbid: str, includes: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
         includes_str = ",".join(sorted(includes)) if includes else ""
         cache_key = f"recording_{mbid}_{includes_str}"
         
@@ -148,7 +148,7 @@ class MusicBrainzIdentifier:
         """
         log_data = {
             "query": {"album_name": album_name, "app_id": app_id, "expected_track_count": expected_track_count},
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "attempts": []
         }
         
@@ -278,13 +278,13 @@ class MusicBrainzIdentifier:
 
             # --- Tier 2: Structural ---
             mb_tracks = 0
+            mb_labels = []
+            canonical_label = "Unknown"
             try:
                 for m in release_data.get('medium-list', []):
                     mb_tracks += len(m.get('track-list', []))
                 
                 # Publisher/Label Alignment (New Steam Anchor)
-                mb_labels = []
-                canonical_label = "Unknown"
                 for l_entry in release_data.get('label-info-list', []):
                     lname = l_entry.get('label', {}).get('name')
                     if lname:

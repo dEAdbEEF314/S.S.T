@@ -79,7 +79,7 @@ def test_embedded_artwork_skips_lazy_mbz_candidate_search():
     steam_meta = SteamMetadata(app_id=1004, name="Embedded OST")
     mbz_artwork_candidate_provider = MagicMock(return_value={"mbid": "release-id"})
 
-    with patch("sst.processor_support.TrackManager.get_best_artwork", return_value=b"embedded_art"):
+    with patch("sst.processing.artwork.TrackManager.get_best_artwork", return_value=b"embedded_art"):
         art = fetch_album_artwork(
             MagicMock(),
             MagicMock(),

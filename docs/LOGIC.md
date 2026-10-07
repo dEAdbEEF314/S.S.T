@@ -138,10 +138,16 @@ APIC や既存 COMMENT のように EMBED が必要な場合、同一 STEAM ス�
 
 最終判定の強制Review条件:
 
-- STEAMトラックリストが空。
-- 最終tracksにSTEAM slotの欠落または範囲外slotがある。
-- LLMまたは決定論的整列に未割当ファイルが1件以上ある。
-- これらはconfidenceやSTEAM-TRUST文字列によって上書きしてはならない。
+- Steamトラックリストが空、または最終tracksにSteam slotの欠落・範囲外slot・重複slot・出力track数不一致がある。
+- 未割当ファイル、LLMが拒否したslot、同一fileの重複割当、矛盾するslot割当が1件以上ある。
+- Deferred Copyの回復失敗、track number 0、Steamが正本としないUnknown title、dirty tag、過半を占める重複titleがある。
+- 最終track間で出力pathが重複する、audio source failureまたはaudio quality warningがある。
+- 通常経路でalbum < 90、mapping < 80、data < 70のいずれか。Steam-based strategyによるSTEAM-TRUST経路はalbum >= 90、mapping >= 75、data >= 60で代替できる。
+- Phase1がReview必須を示す、またはarchive判断比率が50%未満で、上記のarchive threshold経路を満たさない。
+- Archive preflightで出力path欠落、出力file欠落・0 byte、必須tag欠落、Steam slot集合不一致のいずれかがある。
+- confidenceやSTEAM-TRUST表示で、上記の物理・整合性・音声Review条件を上書きしてはならない。
+
+Fast-Trackはconfidence thresholdを迂回できますが、slot・割当・audio・Archive preflightのReview条件は引き続き適用されます。実装上のroute名とvalidator経路・結果の区別は [data_flow_diagram.md §2](data_flow_diagram.md) を参照してください。
 
 指標の意味:
 
