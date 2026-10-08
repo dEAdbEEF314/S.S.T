@@ -52,12 +52,16 @@ def save_album_package(
             alignment_inputs=alignment_inputs_bundle,
         ),
     }
-    if unassigned_manifest:
+    review_candidates = (
+        (llm_log.get("diagnostics") or {}).get("review_candidates") or []
+    )
+    if unassigned_manifest or review_candidates:
         log_bundle["review_manifest.json"] = {
             "app_id": app_id,
             "album_name": steam_meta.name,
             "status": status,
             "unassigned_files": unassigned_manifest,
+            "review_candidates": review_candidates,
         }
     if discord_msg:
         log_bundle["DISCORD_MESSAGE.md"] = discord_msg

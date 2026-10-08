@@ -77,6 +77,7 @@ def build_album_summary_metadata(
             "adopted_slot_count": adopted_file_count,
             "io_retry_count": io_retry_count,
             "io_retry_logs": audit_copy_logs,
+            "review_candidate_count": len(llm_diagnostics.get("review_candidates") or []),
             **deferred_copy_diagnostics,
         },
         "strategy": (llm_log.get("phase1_res") or {}).get("strategy"),

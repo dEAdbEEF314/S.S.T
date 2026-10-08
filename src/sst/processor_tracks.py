@@ -100,6 +100,7 @@ def process_single_track(
     """
     (disc, clean_title), adopted_info = track_data
     io_retry_log = None
+    processing_stage = "metadata"
 
     try:
         track_id = f"{disc}_{clean_title}"
@@ -148,6 +149,7 @@ def process_single_track(
         local_source_path = local_raw_dir / adopted_info.get(
             "staging_filename", adopted_info["path"].name
         )
+        processing_stage = "source_copy"
         io_retry_log = copy_with_retry(adopted_info["path"], local_source_path)
         io_retry_log["track_id"] = track_id
         io_retry_log["slot_key"] = f"{slot_key[0]}_{slot_key[1]}"
@@ -167,8 +169,18 @@ def process_single_track(
                 "copy_failed": True,
                 "copy_pending": defer_copy_failure,
                 "io_retry_log": io_retry_log,
+                "failure_stage": "source_copy",
+                "failure_type": next(
+                    (
+                        attempt.get("error_type")
+                        for attempt in reversed(io_retry_log.get("attempts", []))
+                        if attempt.get("error_type")
+                    ),
+                    "OSError",
+                ),
             }
 
+        processing_stage = "conversion"
         processed_path, has_warnings = tagger.convert_and_limit(
             local_source_path,
             adopted_info["tier"],
@@ -187,6 +199,7 @@ def process_single_track(
 
         track_art = TrackManager.get_best_artwork(slot_variants)
         final_art = tagger.process_artwork(track_art) if track_art else album_artwork
+        processing_stage = "tagging"
         tagger.write_tags(processed_path, tag_map, final_art)
 
         warned_track_label = None
@@ -233,4 +246,6 @@ def process_single_track(
             "copy_failed": False,
             "copy_pending": False,
             "io_retry_log": io_retry_log,
+            "failure_stage": processing_stage,
+            "failure_type": type(e).__name__,
         }

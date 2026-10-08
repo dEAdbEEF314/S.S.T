@@ -32,6 +32,7 @@ def adopt_best_file_per_slot(
         tier_rank = TrackManager.get_quality_tier(chosen.get("format", ""))
         adopted[record_key] = {
             "path": chosen["path"],
+            "file_id": chosen.get("file_id"),
             "tier": "lossless" if tier_rank in {0, 1} else ("lossy" if chosen.get("format") != "mp3" else "mp3"),
             "tier_rank": tier_rank,
             "filename_track": chosen.get("filename_track"),
@@ -118,4 +119,74 @@ def select_best_unassigned_files(
             "unassigned_file_ids": [variant.get("file_id") for variant in variants],
             "original_tags": chosen.get("meta", {}),
         })
+    return selected
+
+
+def select_slot_conflict_candidates(
+    track_groups: Dict,
+    slot_variant_index: Dict[tuple[int, str], List[Dict[str, Any]]],
+    adopted_files: Dict[tuple[int, str], Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Select one best physical candidate for each non-adopted title in a conflicting slot."""
+    priorities = TrackManager.get_audio_format_priority()
+    record_keys_by_file_id = {
+        variant.get("file_id"): key
+        for key, variants in track_groups.items()
+        for variant in variants
+    }
+    adopted_keys_by_slot: Dict[tuple[int, str], set] = defaultdict(set)
+    for record_key, adopted_info in adopted_files.items():
+        slot_key = adopted_info.get("slot_key")
+        if slot_key is not None:
+            adopted_keys_by_slot[tuple(slot_key)].add(record_key)
+
+    selected = []
+    for slot_key, variants in slot_variant_index.items():
+        record_keys = list(dict.fromkeys(
+            record_keys_by_file_id.get(variant.get("file_id"))
+            for variant in variants
+            if record_keys_by_file_id.get(variant.get("file_id")) is not None
+        ))
+        title_by_key = {
+            key: TrackManager.normalize_title(str(key[1]).split("::", 1)[0])
+            for key in record_keys
+        }
+        # 同一曲の形式違いではなく、別タイトルが同じslotに割り当てられた場合だけ候補化する。
+        if len({title for title in title_by_key.values() if title}) < 2:
+            continue
+
+        adopted_keys = adopted_keys_by_slot.get(slot_key, set())
+        adopted_titles = {
+            title_by_key[key]
+            for key in adopted_keys
+            if key in title_by_key and title_by_key[key]
+        }
+        candidates_by_title: Dict[str, List[tuple[Any, Dict[str, Any]]]] = defaultdict(list)
+        for record_key in record_keys:
+            title = title_by_key[record_key]
+            if not title or title in adopted_titles or record_key in adopted_keys:
+                continue
+            for variant in track_groups.get(record_key, []):
+                candidates_by_title[title].append((record_key, variant))
+
+        for title, candidates in candidates_by_title.items():
+            record_key, chosen = min(
+                candidates,
+                key=lambda item: priorities.index(str(item[1].get("format", "")).lower())
+                if str(item[1].get("format", "")).lower() in priorities
+                else len(priorities),
+            )
+            tier_rank = TrackManager.get_quality_tier(chosen.get("format", ""))
+            selected.append({
+                "track_id": f"{record_key[0]}_{record_key[1]}",
+                "path": chosen["path"],
+                "file_id": chosen.get("file_id"),
+                "format": chosen.get("format", ""),
+                "tier": "lossless" if tier_rank in {0, 1} else "mp3",
+                "tier_rank": tier_rank,
+                "original_tags": chosen.get("meta", {}),
+                "slot_key": slot_key,
+                "reason": f"Different logical title assigned to Steam slot {slot_key[0]}_{slot_key[1]}",
+                "candidate_type": "slot_conflict",
+            })
     return selected

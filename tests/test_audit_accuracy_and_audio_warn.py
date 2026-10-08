@@ -228,3 +228,76 @@ def test_audio_quality_warning_reporting():
     fields = warning_args[2]
     field_names = [f["name"] for f in fields]
     assert any("音声品質警告（本来Archive相当 / 微小異常あり）" in fn for fn in field_names)
+
+
+def test_audit_report_explains_duplicate_steam_rows_and_adoption():
+    steam_meta = SteamMetadata(
+        app_id=335370,
+        name="Synthetic Soundtrack",
+        store_tracklist=[
+            {"disc": 1, "number": "1", "title": "Opening"},
+            {"disc": 1, "number": "27", "title": "Final Boss"},
+            {"disc": 1, "number": "27", "title": "Final Boss (Extended)"},
+        ],
+    )
+    tracks = [
+        {"tags": {"disc_number": "1", "track_number": "1", "title": "Opening"}},
+        {
+            "tags": {
+                "disc_number": "1",
+                "track_number": "27",
+                "title": "Final Boss (Extended)",
+            }
+        },
+    ]
+    llm_log = {
+        "alignment_res": {
+            "slots": {
+                "1": {"files": ["synthetic-opening"]},
+                "2": {"files": []},
+                "3": {"files": ["synthetic-final-a", "synthetic-final-b"]},
+            },
+            "diagnostics": {"input_file_count": 3},
+        },
+        "diagnostics": {
+            "review_candidates": [
+                {
+                    "candidate_type": "slot_conflict",
+                    "original_filename": "27 Final Boss.mp3",
+                    "slot_key": "1_27",
+                    "reason": "Different title assigned to occupied slot",
+                    "included": True,
+                    "converted": True,
+                    "output_format": "aif",
+                    "file_path": "review_candidates/candidate_001/27 Final Boss.aif",
+                }
+            ]
+        },
+    }
+
+    report = ReportGenerator.generate_html_report(
+        app_id=335370,
+        steam_meta=steam_meta,
+        status="review",
+        message="Output Track Count Mismatch (2/3)",
+        score=100,
+        reason="Synthetic structural mismatch",
+        processed_tracks=tracks,
+        llm_log=llm_log,
+        mbz_candidates=[],
+        localized_now_str="2026-10-08 12:00:00",
+        priority_str="STEAM_STORE,STEAM_PICS",
+    )
+
+    assert "Steam行:</strong> 3" in report
+    assert "一意slot:</strong> 2" in report
+    assert "最終トラック:</strong> 2" in report
+    assert "Steam同一slotに複数行: 1キー" in report
+    assert "行2: Final Boss (LLM割当 0ファイル)" in report
+    assert "行3: Final Boss (Extended) (LLM割当 2ファイル)" in report
+    assert "最終採用タイトル" in report
+    assert "件数差だけで特定行の欠落と断定しません" in report
+    assert "Review候補ファイル (1件)" in report
+    assert "27 Final Boss.mp3" in report
+    assert "Different title assigned to occupied slot" in report
+    assert "review_candidates/candidate_001/27 Final Boss.aif" in report

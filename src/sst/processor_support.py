@@ -12,6 +12,7 @@ from .processing.slot_variants import (
 from .processing.file_selection import (
     adopt_best_file_per_slot as _adopt_best_file_per_slot,
     select_best_unassigned_files as _select_best_unassigned_files,
+    select_slot_conflict_candidates as _select_slot_conflict_candidates,
 )
 from .processing.unassigned import (
     reconcile_deterministic_unassigned_slots as _reconcile_deterministic_unassigned_slots,
@@ -26,6 +27,7 @@ build_slot_variant_index = _build_slot_variant_index
 merge_embedded_tags_for_slot = _merge_embedded_tags_for_slot
 adopt_best_file_per_slot = _adopt_best_file_per_slot
 select_best_unassigned_files = _select_best_unassigned_files
+select_slot_conflict_candidates = _select_slot_conflict_candidates
 reconcile_deterministic_unassigned_slots = _reconcile_deterministic_unassigned_slots
 send_notifications = _send_notifications
 resolve_duplicate_mappings = _resolve_duplicate_mappings

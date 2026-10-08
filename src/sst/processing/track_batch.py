@@ -1,11 +1,85 @@
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import shutil
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..tagger import AudioTagger
 from ..track_grouper import TrackManager
 from .fast_track import apply_mbz_track_artists
-from .file_selection import adopt_best_file_per_slot, select_best_unassigned_files
+from .file_selection import (
+    adopt_best_file_per_slot,
+    select_best_unassigned_files,
+    select_slot_conflict_candidates,
+)
+
+
+def _convert_review_candidates(
+    tagger: AudioTagger,
+    temp_output: Path,
+    candidates: List[Dict[str, Any]],
+    start_index: int = 0,
+) -> List[Dict[str, Any]]:
+    manifests = []
+    for index, candidate in enumerate(candidates, start=start_index + 1):
+        source_path = Path(candidate["path"])
+        candidate_subdir = Path("review_candidates") / f"candidate_{index:03d}"
+        output_dir = temp_output / candidate_subdir
+        manifest = {
+            "candidate_type": candidate.get("candidate_type", "unassigned"),
+            "original_filename": source_path.name,
+            "file_id": candidate.get("file_id"),
+            "track_id": candidate.get("track_id"),
+            "slot_key": (
+                "_".join(str(part) for part in candidate["slot_key"])
+                if candidate.get("slot_key") is not None
+                else None
+            ),
+            "reason": candidate.get("reason", "No matching Steam slot"),
+            "included": False,
+            "converted": False,
+        }
+        try:
+            converted_path, conversion_warning = tagger.convert_and_limit(
+                source_path,
+                candidate["tier"],
+                subdir=candidate_subdir.as_posix(),
+            )
+            converted_path = Path(converted_path)
+            try:
+                relative_path = converted_path.resolve().relative_to(temp_output.resolve())
+            except ValueError:
+                relative_path = candidate_subdir / converted_path.name
+            manifest.update(
+                {
+                    "file_path": relative_path.as_posix(),
+                    "output_filename": converted_path.name,
+                    "output_format": converted_path.suffix.lower().lstrip("."),
+                    "included": converted_path.is_file(),
+                    "converted": converted_path.is_file(),
+                    "conversion_warning": bool(conversion_warning),
+                }
+            )
+            if not manifest["included"]:
+                raise OSError("Converted candidate output is missing")
+        except Exception as conversion_error:
+            shutil.rmtree(output_dir, ignore_errors=True)
+            manifest["conversion_error_type"] = type(conversion_error).__name__
+            try:
+                output_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source_path, output_dir / source_path.name)
+                manifest.update(
+                    {
+                        "file_path": (candidate_subdir / source_path.name).as_posix(),
+                        "output_filename": source_path.name,
+                        "output_format": source_path.suffix.lower().lstrip("."),
+                        "included": True,
+                        "converted": False,
+                    }
+                )
+            except OSError as copy_error:
+                manifest["copy_error_type"] = type(copy_error).__name__
+        manifests.append(manifest)
+    return manifests
 
 
 def encode_and_tag_tracks(
@@ -131,7 +205,8 @@ def encode_and_tag_tracks(
         str(file_id)
         for file_id in (llm_log.get("alignment_res", {}) or {}).get("unassigned_files", [])
     }
-    unassigned_manifest = []
+    # Review候補は採用曲のslot検証から分離して、後から確認・修正できる形で保存する。
+    candidate_inputs: List[Dict[str, Any]] = []
     unassigned_candidates = select_best_unassigned_files(
         track_groups,
         final_metadata,
@@ -140,27 +215,82 @@ def encode_and_tag_tracks(
         track_to_slot_index=track_to_slot_index,
     ) if include_unassigned else []
     for unassigned in unassigned_candidates:
-        manifest = {
-            "track_id": unassigned["track_id"],
-            "original_filename": unassigned["path"].name,
-            "file_id": unassigned.get("file_id"),
-            "unassigned_file_ids": unassigned.get("unassigned_file_ids", []),
-            "tier_rank": unassigned["tier_rank"],
-            "original_tags": unassigned.get("original_tags", {}),
-            "reason": "No matching Steam slot",
-        }
-        try:
-            converted_path, conversion_warning = tagger.convert_and_limit(
-                unassigned["path"], unassigned["tier"], subdir="unassigned"
+        candidate_inputs.append(
+            {
+                **unassigned,
+                "candidate_type": "unassigned",
+                "reason": "No matching Steam slot",
+            }
+        )
+
+    if include_unassigned:
+        candidate_inputs.extend(
+            select_slot_conflict_candidates(
+                track_groups, slot_variant_index, adopted_files
             )
-            tagger.mark_unassigned(converted_path, manifest["reason"])
-            manifest["file_path"] = f"unassigned/{converted_path.name}"
-            manifest["converted"] = True
-            manifest["conversion_warning"] = bool(conversion_warning)
-        except Exception as error:
-            manifest["converted"] = False
-            manifest["conversion_error"] = str(error)
-        unassigned_manifest.append(manifest)
+        )
+
+    for (record_key, adopted_info), result in zip(adopted_files.items(), track_results):
+        if not result.get("failed"):
+            continue
+        io_retry_log = result.get("io_retry_log") or {}
+        if result.get("copy_failed"):
+            errors = [
+                attempt.get("error_type")
+                for attempt in io_retry_log.get("attempts", [])
+                if attempt.get("error_type")
+            ]
+            reason = f"Source copy failed ({errors[-1] if errors else 'OSError'})"
+            candidate_type = "copy_failure"
+        else:
+            stage = result.get("failure_stage", "track_processing")
+            failure_type = result.get("failure_type", "Error")
+            reason = f"Track processing failed during {stage} ({failure_type})"
+            candidate_type = "processing_failure"
+        candidate_inputs.append(
+            {
+                "track_id": f"{record_key[0]}_{record_key[1]}",
+                "path": adopted_info["path"],
+                "file_id": adopted_info.get("file_id"),
+                "tier": adopted_info["tier"],
+                "tier_rank": adopted_info.get("tier_rank", 999),
+                "slot_key": adopted_info.get("slot_key"),
+                "candidate_type": candidate_type,
+                "reason": reason,
+            }
+        )
+
+    llm_diagnostics = llm_log.get("diagnostics")
+    if not isinstance(llm_diagnostics, dict):
+        llm_diagnostics = {}
+        llm_log["diagnostics"] = llm_diagnostics
+    existing_review_candidates = llm_diagnostics.get("review_candidates") or []
+    seen_candidate_ids = {
+        candidate.get("file_id")
+        for candidate in existing_review_candidates
+        if candidate.get("file_id")
+    }
+    unique_candidates = []
+    for candidate in candidate_inputs:
+        candidate_id = candidate.get("file_id") or str(Path(candidate["path"]).resolve())
+        if candidate_id in seen_candidate_ids:
+            continue
+        seen_candidate_ids.add(candidate_id)
+        unique_candidates.append(candidate)
+
+    added_review_candidates = _convert_review_candidates(
+        tagger,
+        temp_output,
+        unique_candidates,
+        start_index=len(existing_review_candidates),
+    )
+    review_candidate_manifest = existing_review_candidates + added_review_candidates
+    unassigned_manifest = [
+        candidate
+        for candidate in review_candidate_manifest
+        if candidate.get("candidate_type") == "unassigned"
+    ]
+    llm_diagnostics["review_candidates"] = review_candidate_manifest
 
     any_audio_warnings = any(result.get("had_warning") for result in track_results)
     any_audio_failures = any(result.get("failed") for result in track_results)

@@ -123,6 +123,163 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
         return matrix_rows
 
     @staticmethod
+    def _normalize_audit_slot(disc: Any, number: Any) -> tuple[str, str]:
+        def normalize(value: Any, default: str) -> str:
+            raw = str(value or default).split("/", 1)[0].strip()
+            normalized = raw.lstrip("0")
+            return normalized or ("0" if raw == "0" else default)
+
+        return normalize(disc, "1"), normalize(number, "0")
+
+    @staticmethod
+    def _render_structural_audit_html(
+        steam_meta: SteamMetadata,
+        processed_tracks: List[Dict[str, Any]],
+        llm_log: Dict[str, Any],
+    ) -> str:
+        esc = ReportGenerator._esc
+        steam_rows: Dict[tuple[str, str], List[Dict[str, Any]]] = {}
+        for row_index, track in enumerate(steam_meta.store_tracklist or [], start=1):
+            key = ReportGenerator._normalize_audit_slot(
+                track.get("disc", 1), track.get("number", track.get("track_number", "0"))
+            )
+            steam_rows.setdefault(key, []).append(
+                {
+                    "row_index": row_index,
+                    "title": str(track.get("title") or track.get("name") or "Unknown"),
+                }
+            )
+
+        final_titles: Dict[tuple[str, str], List[str]] = {}
+        for track in processed_tracks:
+            tags = track.get("tags") or {}
+            key = ReportGenerator._normalize_audit_slot(
+                tags.get("disc_number", "1"), tags.get("track_number", "0")
+            )
+            final_titles.setdefault(key, []).append(str(tags.get("title") or "Unknown"))
+
+        alignment = (llm_log or {}).get("alignment_res") or {}
+        alignment_slots = alignment.get("slots") or {}
+        duplicate_steam_keys = {
+            key: rows for key, rows in steam_rows.items() if len(rows) > 1
+        }
+        expected_keys = set(steam_rows)
+        final_keys = set(final_titles)
+        missing_keys = sorted(expected_keys - final_keys)
+        unexpected_keys = sorted(final_keys - expected_keys)
+        duplicate_final_keys = sum(
+            max(0, len(titles) - 1) for titles in final_titles.values()
+        )
+
+        issue_lines = []
+        if duplicate_steam_keys:
+            issue_lines.append(f"Steam同一slotに複数行: {len(duplicate_steam_keys)}キー")
+        if missing_keys:
+            issue_lines.append(f"最終出力にない一意Steam slot: {len(missing_keys)}")
+        if unexpected_keys:
+            issue_lines.append(f"Steamにない最終slot: {len(unexpected_keys)}")
+        if duplicate_final_keys:
+            issue_lines.append(f"最終Disc/Track重複: {duplicate_final_keys}")
+        if not issue_lines:
+            issue_lines.append("Steam slot構造と最終トラックに差分なし")
+
+        collision_rows = []
+        for key, rows in sorted(duplicate_steam_keys.items()):
+            row_details = []
+            for row in rows:
+                assignment = alignment_slots.get(str(row["row_index"])) or {}
+                file_count = len(assignment.get("files") or [])
+                row_details.append(
+                    f"行{row['row_index']}: {esc(row['title'])} "
+                    f"(LLM割当 {file_count}ファイル)"
+                )
+            adopted = "<br>".join(esc(title) for title in final_titles.get(key, [])) or "なし"
+            collision_rows.append(
+                "<tr>"
+                f"<td>{esc(key[0])}:{esc(key[1])}</td>"
+                f"<td>{'<br>'.join(row_details)}</td>"
+                f"<td>{adopted}</td>"
+                "</tr>"
+            )
+
+        collision_table = ""
+        if collision_rows:
+            collision_table = f"""
+            <table class="tag-table">
+                <thead><tr><th>正規化slot</th><th>Steam行とLLM割当</th><th>最終採用タイトル</th></tr></thead>
+                <tbody>{''.join(collision_rows)}</tbody>
+            </table>
+            """
+
+        input_count = (alignment.get("diagnostics") or {}).get("input_file_count")
+        input_summary = (
+            f"<br><strong>LLM入力ファイル:</strong> {esc(input_count)}"
+            if input_count is not None
+            else ""
+        )
+        return f"""
+    <div class="card" style="margin: 20px 0;">
+        <h3>Steam構造・割当監査</h3>
+        <p><strong>Steam行:</strong> {len(steam_meta.store_tracklist or [])}
+        / <strong>一意slot:</strong> {len(expected_keys)}
+        / <strong>最終トラック:</strong> {len(processed_tracks)}
+        / <strong>最終一意slot:</strong> {len(final_keys)}{input_summary}</p>
+        <ul>{''.join(f'<li>{esc(line)}</li>' for line in issue_lines)}</ul>
+        {collision_table}
+        <p>同一slotへ正規化されるSteam複数行は、件数差だけで特定行の欠落と断定しません。LLM割当と最終採用タイトルを併記しています。</p>
+    </div>
+    """
+
+    @staticmethod
+    def _render_review_candidates_html(llm_log: Dict[str, Any]) -> str:
+        esc = ReportGenerator._esc
+        diagnostics = (llm_log or {}).get("diagnostics") or {}
+        candidates = diagnostics.get("review_candidates") or []
+        if not candidates:
+            return ""
+
+        type_labels = {
+            "unassigned": "Steam未割当",
+            "slot_conflict": "slot競合・不採用",
+            "copy_failure": "コピー失敗",
+            "processing_failure": "処理失敗",
+        }
+        rows = []
+        for candidate in candidates:
+            if candidate.get("converted"):
+                file_status = f"変換済み ({candidate.get('output_format', 'unknown')})"
+            elif candidate.get("included"):
+                file_status = "原音を格納 (変換失敗)"
+            else:
+                file_status = "格納できず"
+            if candidate.get("conversion_error_type"):
+                file_status += f" / {candidate['conversion_error_type']}"
+            if candidate.get("copy_error_type"):
+                file_status += f" / 原音コピー: {candidate['copy_error_type']}"
+            output_path = candidate.get("file_path") or "音声ファイルなし"
+            rows.append(
+                "<tr>"
+                f"<td>{esc(type_labels.get(candidate.get('candidate_type'), candidate.get('candidate_type', 'candidate')))}</td>"
+                f"<td>{esc(candidate.get('original_filename', 'Unknown'))}</td>"
+                f"<td>{esc(candidate.get('slot_key') or '-')}</td>"
+                f"<td>{esc(candidate.get('reason', '-'))}</td>"
+                f"<td>{esc(file_status)}</td>"
+                f"<td><code>{esc(output_path)}</code></td>"
+                "</tr>"
+            )
+
+        return f"""
+    <div class="card" style="margin: 20px 0; border-color: var(--accent-yellow);">
+        <h3>Review候補ファイル ({len(candidates)}件)</h3>
+        <p>採用slotに入らなかった候補、未割当ファイル、または処理に失敗した音源です。採用曲とは分離して保存しています。</p>
+        <table class="tag-table">
+            <thead><tr><th>分類</th><th>元ファイル名</th><th>関連slot</th><th>理由</th><th>状態</th><th>ZIP内パス</th></tr></thead>
+            <tbody>{''.join(rows)}</tbody>
+        </table>
+    </div>
+    """
+
+    @staticmethod
     def _render_track_rows(processed_tracks: List[Dict[str, Any]]) -> str:
         esc = ReportGenerator._esc
 
@@ -260,6 +417,10 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
         tag_rows = ReportGenerator._render_track_rows(processed_tracks)
 
         alignment_inputs_html = ReportGenerator._render_alignment_inputs_html(alignment_inputs)
+        structural_audit_html = ReportGenerator._render_structural_audit_html(
+            steam_meta, processed_tracks, llm_log
+        )
+        review_candidates_html = ReportGenerator._render_review_candidates_html(llm_log)
         unassigned_warning_html = ""
         audio_warn_html = ""
         diagnostics = (llm_log or {}).get("diagnostics", {}) if isinstance(llm_log, dict) else {}
@@ -285,7 +446,7 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
             unassigned_warning_html = f"""
     <div class="card" style="border: 2px solid var(--accent-yellow); background: #261f0d; margin-bottom: 20px;">
         <h3 style="color: var(--accent-yellow); margin-top: 0;">⚠️ Steamスロット充足（余剰未割当ファイルあり: {len(unassigned_list)}件）</h3>
-        <p style="font-size: 0.85rem; margin-top: 0; color: #c9d1d9;">以下のローカルファイルはどのSteamスロットにも割り当てられなかったため、<code>unassigned/</code> サブディレクトリへ隔離保存されました。</p>
+        <p style="font-size: 0.85rem; margin-top: 0; color: #c9d1d9;">以下のローカルファイルはどのSteamスロットにも割り当てられなかったため、Review候補として分離保存されました。</p>
         <ul style="font-size: 0.85rem; color: #8b949e; margin-bottom: 0;">
             {items_html}
         </ul>
@@ -329,6 +490,8 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
     </div>
     {unassigned_warning_html}
     {audio_warn_html}
+    {structural_audit_html}
+    {review_candidates_html}
 
     <div class="card">
         <h3>Judgment Reasoning & Strategy</h3>

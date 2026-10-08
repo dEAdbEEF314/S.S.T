@@ -6,11 +6,13 @@ from sst.processor_support import (
     build_slot_variant_index,
     adopt_best_file_per_slot,
     select_best_unassigned_files,
+    select_slot_conflict_candidates,
     reconcile_deterministic_unassigned_slots,
 )
 from sst.llm.client import LLMClient
 from sst.llm.organizer import LLMOrganizer
 from sst.processor_pipeline import handle_early_review_return
+from sst.processing.track_batch import _convert_review_candidates
 
 
 def test_multi_format_variant_consolidation():
@@ -67,6 +69,174 @@ def test_multi_format_variant_consolidation():
         track_to_slot_index=track_to_slot,
     )
     assert len(unassigned) == 0
+
+
+def test_slot_conflict_candidate_keeps_rejected_title_but_collapses_its_formats(tmp_path):
+    adopted_path = tmp_path / "27_Final Boss.aiff"
+    rejected_mp3_path = tmp_path / "27_Final Boss Extended.mp3"
+    rejected_flac_path = tmp_path / "27_Final Boss Extended.flac"
+    for path in (adopted_path, rejected_mp3_path, rejected_flac_path):
+        path.write_bytes(b"audio")
+
+    adopted_key = (1, "final boss::steam")
+    rejected_mp3_key = (1, "final boss extended::mp3")
+    rejected_flac_key = (1, "final boss extended::flac")
+    track_groups = {
+        adopted_key: [{"file_id": "adopted", "path": adopted_path, "format": "aiff"}],
+        rejected_mp3_key: [{"file_id": "rejected-mp3", "path": rejected_mp3_path, "format": "mp3"}],
+        rejected_flac_key: [{"file_id": "rejected-flac", "path": rejected_flac_path, "format": "flac"}],
+    }
+    slot_variants = {
+        (1, "27"): [
+            variant
+            for variants in track_groups.values()
+            for variant in variants
+        ]
+    }
+    adopted_files = {
+        adopted_key: {"path": adopted_path, "slot_key": (1, "27"), "tier_rank": 0}
+    }
+
+    candidates = select_slot_conflict_candidates(
+        track_groups, slot_variants, adopted_files
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0]["file_id"] == "rejected-flac"
+    assert candidates[0]["path"] == rejected_flac_path
+    assert candidates[0]["candidate_type"] == "slot_conflict"
+
+
+def test_review_candidate_conversion_preserves_basename_and_records_fallback(tmp_path):
+    source = tmp_path / "source" / "27 Final Boss Extended.flac"
+    source.parent.mkdir()
+    source.write_bytes(b"original audio")
+    output = tmp_path / "output"
+
+    class FakeTagger:
+        def __init__(self, should_fail=False):
+            self.should_fail = should_fail
+
+        def convert_and_limit(self, source_path, tier, subdir):
+            if self.should_fail:
+                raise RuntimeError("synthetic conversion failure")
+            target = output / subdir / f"{Path(source_path).stem}.aif"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"converted audio")
+            return target, False
+
+    candidate = {
+        "path": source,
+        "tier": "lossless",
+        "candidate_type": "slot_conflict",
+        "slot_key": (1, "27"),
+        "reason": "Different logical title assigned to Steam slot 1_27",
+    }
+    converted = _convert_review_candidates(FakeTagger(), output, [candidate])[0]
+
+    assert converted["original_filename"] == "27 Final Boss Extended.flac"
+    assert converted["output_filename"] == "27 Final Boss Extended.aif"
+    assert converted["converted"] is True
+    assert (output / converted["file_path"]).is_file()
+
+    fallback = _convert_review_candidates(
+        FakeTagger(should_fail=True), output, [candidate]
+    )[0]
+
+    assert fallback["original_filename"] == "27 Final Boss Extended.flac"
+    assert fallback["output_filename"] == "27 Final Boss Extended.flac"
+    assert fallback["converted"] is False
+    assert fallback["included"] is True
+    assert fallback["conversion_error_type"] == "RuntimeError"
+    assert (output / fallback["file_path"]).read_bytes() == b"original audio"
+
+    missing_source = {
+        **candidate,
+        "path": tmp_path / "missing" / "Unknown Track.flac",
+    }
+    unavailable = _convert_review_candidates(
+        FakeTagger(should_fail=True), output, [missing_source]
+    )[0]
+
+    assert unavailable["original_filename"] == "Unknown Track.flac"
+    assert unavailable["included"] is False
+    assert unavailable["conversion_error_type"] == "RuntimeError"
+    assert unavailable["copy_error_type"] == "FileNotFoundError"
+
+
+def test_review_candidate_audio_manifest_and_html_are_packaged_together(tmp_path):
+    import json
+    import zipfile
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from sst.packager import PackageManager
+    from sst.processing.package_output import save_album_package
+
+    output = tmp_path / "output"
+    temp_output = tmp_path / "work"
+    candidate_path = temp_output / "review_candidates" / "candidate_001" / "01 Theme.mp3"
+    candidate_path.parent.mkdir(parents=True)
+    candidate_path.write_bytes(b"synthetic audio")
+    candidate = {
+        "candidate_type": "slot_conflict",
+        "original_filename": "01 Theme.mp3",
+        "file_id": "synthetic-file",
+        "track_id": "1_01 theme",
+        "slot_key": "1_1",
+        "reason": "Different logical title assigned to Steam slot 1_1",
+        "included": True,
+        "converted": True,
+        "output_format": "mp3",
+        "file_path": "review_candidates/candidate_001/01 Theme.mp3",
+    }
+    steam_meta = SteamMetadata(
+        app_id=887001,
+        name="Review Candidate Test",
+        store_tracklist=[{"disc": 1, "number": "1", "title": "Theme"}],
+    )
+
+    save_album_package(
+        app_id=887001,
+        status="review",
+        steam_meta=steam_meta,
+        summary_meta={"audit": {"review_candidate_count": 1}},
+        llm_log={"diagnostics": {"review_candidates": [candidate]}},
+        mbz_log={},
+        processed_tracks_meta=[],
+        mbz_candidates=[],
+        localized_now_str="2026-10-08 12:00:00",
+        message="Synthetic review",
+        score=50,
+        reason="Synthetic candidate review",
+        alignment_inputs_bundle={},
+        quality=50,
+        unassigned_manifest=[],
+        discord_msg=None,
+        temp_output=temp_output,
+        config=SimpleNamespace(
+            resolved_metadata_source_priority="STEAM_STORE,STEAM_PICS",
+            sst_output_dir=str(output),
+            zip_compression_strategy="stored",
+            zip_deflate_level=1,
+        ),
+        db=MagicMock(),
+        package_manager=PackageManager,
+        get_localized_now=lambda: datetime(2026, 10, 8, tzinfo=timezone.utc),
+        diagnostics={},
+        diag=lambda *args, **kwargs: None,
+    )
+
+    package_path = output / "review" / "887001_Review_Candidate_Test.zip"
+    with zipfile.ZipFile(package_path) as package:
+        assert "review_candidates/candidate_001/01 Theme.mp3" in package.namelist()
+        manifest = json.loads(package.read("json/review_manifest.json"))
+        report = package.read("AUDIT_REPORT.html").decode("utf-8")
+
+    assert manifest["review_candidates"] == [candidate]
+    assert "Review候補ファイル (1件)" in report
+    assert "01 Theme.mp3" in report
+    assert "Different logical title assigned to Steam slot 1_1" in report
 
 
 def test_adopted_same_basename_slots_get_unique_staging_names():
