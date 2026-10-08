@@ -80,6 +80,8 @@
 | `SKIP_NO_AUDIO` | `⏩ SKIP_NO_AUDIO` | スキャン結果 | ディレクトリ内に音声ファイルが存在しない場合にスキップ（DB保存なし） |
 | `ERROR` | `❌ ERROR` | 終端結果 | ファイル破損や致命的エラーが発生した場合にエラー記録 |
 
+バッチ集計でFast-Track実行件数を数える場合は、実行routeの`processing_route == "FAST_TRACK"`を使用する。メッセージ文言やvalidator昇格経路の`STEAM_TRUST`から実行routeを推定してはならない。Archive事後監査はSteamのdisc/track slot集合と最終track集合を比較し、件数が同数でもmissing/unexpected slotを検出する。Steamが正規に`Unknown`を示すslotは許容し、それ以外のUnknownやtrack 0は監査対象とする。Review原因の集計は複数要因の同時存在を保持し、物理I/O、構造、未割当等の一要因へ潰してはならない。
+
 FAST_TRACK のTPE1補完では、APIC欠落時にだけ実行される遅延MBZ_SEARCHの選択候補を再利用し、追加のAcoustID全曲走査やMBZ API要求は行わない。Steam slot titleとMBZ recording titleが正規化後に双方で一意一致し、artist-creditが存在する場合だけそのTPE1へ適用する。候補は既存の`min_mbz_search_score_threshold`を通過した場合に限り、候補選定やアルバムレベルメタデータには使わない。埋め込みAPICがある場合、候補が閾値未満の場合、一意一致しない場合、またはartist-creditがない場合はartistを補完しない。検索失敗はFAST_TRACKの成立・検証結果へ影響しない。
 
 FAST_TRACK の APIC 例外では、埋め込み画像を先に検索し、見つからない場合にのみ MBZ_SEARCH を遅延実行する。既存の`min_mbz_search_score_threshold`を適用し、候補MBIDはカバーアート取得に使用する。候補または画像を取得できない場合はSteam画像へフォールバックする。

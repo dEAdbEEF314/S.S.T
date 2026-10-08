@@ -38,6 +38,15 @@ LLM 応答の `done_reason=length` / `max_tokens` は成功扱いにしない。
 
 保持時は AppID、パス、保持理由をログへ出力する。中間成果物は機密情報を含み得るため、共有フォルダへ無制限に置かず、確認後に専用 cleaner で削除する。
 
+## バッチ診断HTML
+
+- Fast-Track件数は実行routeの正本である`processing_route == "FAST_TRACK"`のみを数える。メッセージやconfidence reasonの文言からrouteを推定しない。`STEAM_TRUST`はvalidator昇格経路であり、実行route件数へ混ぜない。
+- Archiveの事後監査はSteam期待slotと最終slotの集合を直接比較し、件数が等しくてもmissing/unexpected slotがあれば報告する。最終重複、slot_key欠落・重複、track 0、Steam根拠のないUnknown、Fallback/LOCALも確認する。
+- Steamの同一slot titleが`Unknown`で始まる場合、そのslotの`Unknown`タグは正規として扱う。Steam側slotが存在しない、または通常タイトルなのに最終タグだけがUnknownの場合は異常とする。
+- Review原因は物理I/O、音声品質警告、早期Review、構造不整合、未割当、信頼度・その他を独立に分類する複数ラベルとする。原因は重複し得るため、分類件数の合計ではなくReviewアルバム実数も併記する。物理I/O分類はHTMLに表示し、ログイベントのAppIDと時刻を処理結果の`processed_at`へ照合する。結果時刻より後のイベントや6時間より古いイベントは、その結果の原因に帰属させない。
+- 未割当ファイルは余剰ボーナストラックと断定しない。上流の未割当理由を保持し、構造不整合やI/Oとの重複を隠さない。
+- バッチ診断HTMLは監査補助であり、`ResultValidator`や各ZIPの`AUDIT_REPORT.html`を置き換えない。件数一致だけで完全性を主張せず、Steam slot・採用ファイル・物理パッケージの根拠を併記する。
+
 ## 回帰テスト方針
 
-Steam の正規 Unknown、通常タイトルに対する異常 Unknown、形式違い候補、重複 slot、LLM 切り詰め、INFO/DEBUG/`--dev` の cleanup を合成 fixture で検証する。既存の実データレポートは書き換えず、将来生成されるレポートと DB metadata の契約を検証する。
+Steam の正規 Unknown、通常タイトルに対する異常 Unknown、形式違い候補、重複 slot、LLM 切り詰め、Archiveの相殺slot不整合、複数Review原因、I/O分類、明示route計数、INFO/DEBUG/`--dev` のcleanupを合成fixtureで検証する。既存の実データレポートはテストfixtureとして使わず、レポートとDB metadataの契約を検証する。

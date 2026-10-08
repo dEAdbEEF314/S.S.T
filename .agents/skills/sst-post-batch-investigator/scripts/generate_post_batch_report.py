@@ -2,46 +2,209 @@ import sqlite3
 import json
 import html
 import re
-import glob
+from collections import defaultdict
+from datetime import datetime, timedelta
 from pathlib import Path
 
+
+IO_ERROR_PATTERN = re.compile(
+    r"Host is down|Permission denied|PermissionError|(?:OSError|IOError|Errno\s*\d+)",
+    re.IGNORECASE,
+)
+APP_ID_PATTERN = re.compile(r"\[(\d+)\]")
+LOG_TIMESTAMP_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})")
+IO_ERROR_LOOKBACK = timedelta(hours=6)
+
+
+def _normalize_slot(disc, number):
+    def normalize(value, default):
+        normalized = str(value or default).split("/", 1)[0].strip().lstrip("0")
+        return normalized or ("0" if default == "0" else "1")
+
+    return normalize(disc, "1"), normalize(number, "0")
+
+
 def _track_key(track):
-    tags = track.get('tags', {})
-    disc = str(tags.get('disc_number', '1')).split('/')[0]
-    number = str(tags.get('track_number', '0')).split('/')[0]
-    return disc, number
+    tags = track.get("tags") or {}
+    return _normalize_slot(tags.get("disc_number", "1"), tags.get("track_number", "0"))
 
 
 def _integrity_snapshot(meta, tracks):
-    expected_slots = []
-    steam_info = meta.get('steam_info') or {}
-    for slot in steam_info.get('store_tracklist') or []:
-        expected_slots.append((str(slot.get('disc', 1)), str(slot.get('number', '0'))))
+    steam_info = meta.get("steam_info") or {}
+    steam_tracklist = steam_info.get("store_tracklist") or []
+    expected_slots = [
+        _normalize_slot(slot.get("disc", 1), slot.get("number", "0"))
+        for slot in steam_tracklist
+    ]
+    expected_titles = defaultdict(list)
+    for slot, key in zip(steam_tracklist, expected_slots):
+        expected_titles[key].append(str(slot.get("title") or slot.get("name") or "").strip())
 
     track_keys = [_track_key(track) for track in tracks]
-    slot_keys = [str(track.get('slot_key', '')) for track in tracks]
+    slot_keys = [str(track.get("slot_key") or "").strip() for track in tracks]
     format_counts = {}
     for track in tracks:
-        suffix = Path(str(track.get('file_path', ''))).suffix.lower() or 'unknown'
+        suffix = Path(str(track.get("file_path", ""))).suffix.lower() or "unknown"
         format_counts[suffix] = format_counts.get(suffix, 0) + 1
 
+    legitimate_unknown_count = 0
+    anomalous_unknown_count = 0
+    for track, key in zip(tracks, track_keys):
+        title = str((track.get("tags") or {}).get("title") or "Unknown").strip()
+        if title.casefold().startswith("unknown"):
+            steam_titles = expected_titles.get(key, [])
+            if steam_titles and all(value.casefold().startswith("unknown") for value in steam_titles):
+                legitimate_unknown_count += 1
+            else:
+                anomalous_unknown_count += 1
+
     return {
-        'expected_slot_count': len(expected_slots),
-        'track_keys': track_keys,
-        'duplicate_key_count': len(track_keys) - len(set(track_keys)),
-        'missing_slots': sorted(set(expected_slots) - set(track_keys)),
-        'unexpected_slots': sorted(set(track_keys) - set(expected_slots)) if expected_slots else [],
-        'slot_key_count': len(set(slot_keys)),
-        'duplicate_slot_key_count': len(slot_keys) - len(set(slot_keys)),
-        'format_counts': format_counts,
-        'fallback_count': sum(track.get('source') == 'Fallback' for track in tracks),
-        'local_title_count': sum(track.get('title_source') == 'LOCAL' for track in tracks),
-        'track_zero_count': sum(str(track.get('tags', {}).get('track_number')) == '0' for track in tracks),
-        'unknown_title_count': sum((track.get('tags', {}).get('title') or 'Unknown') == 'Unknown' for track in tracks),
+        "expected_slot_count": len(expected_slots),
+        "duplicate_expected_slot_count": len(expected_slots) - len(set(expected_slots)),
+        "track_keys": track_keys,
+        "duplicate_key_count": len(track_keys) - len(set(track_keys)),
+        "missing_slots": sorted(set(expected_slots) - set(track_keys)),
+        "unexpected_slots": sorted(set(track_keys) - set(expected_slots)) if expected_slots else [],
+        "slot_key_count": len({key for key in slot_keys if key}),
+        "missing_slot_key_count": sum(not key for key in slot_keys),
+        "duplicate_slot_key_count": sum(bool(key) for key in slot_keys) - len({key for key in slot_keys if key}),
+        "format_counts": format_counts,
+        "fallback_count": sum(track.get("source") == "Fallback" for track in tracks),
+        "local_title_count": sum(track.get("title_source") == "LOCAL" for track in tracks),
+        "track_zero_count": sum(key[1] == "0" for key in track_keys),
+        "unknown_title_count": legitimate_unknown_count + anomalous_unknown_count,
+        "legitimate_unknown_title_count": legitimate_unknown_count,
+        "anomalous_unknown_title_count": anomalous_unknown_count,
     }
 
 
-def analyze_and_generate_report(db_path='data/sst_local_state.db', output_dir='report'):
+def _archive_integrity_issues(meta, tracks, integrity):
+    issues = []
+    html_entities = []
+    for track in tracks:
+        title = str((track.get("tags") or {}).get("title", ""))
+        if any(entity in title for entity in ["&amp;", "&quot;", "&#39;", "&lt;", "&gt;"]):
+            html_entities.append(title)
+
+    if html_entities:
+        issues.append(f"HTMLエンティティ未デコード ({len(html_entities)}トラック)")
+    if not integrity["expected_slot_count"]:
+        issues.append("Steamトラックリスト不在")
+    if integrity["duplicate_expected_slot_count"]:
+        issues.append(f"Steam期待slot重複 ({integrity['duplicate_expected_slot_count']})")
+    if integrity["duplicate_key_count"]:
+        issues.append(f"最終Disc/Track重複 ({integrity['duplicate_key_count']})")
+    if integrity["duplicate_slot_key_count"]:
+        issues.append(f"最終slot_key重複 ({integrity['duplicate_slot_key_count']})")
+    if integrity["missing_slot_key_count"]:
+        issues.append(f"最終slot_key欠落 ({integrity['missing_slot_key_count']})")
+    if integrity["missing_slots"]:
+        issues.append(f"Steam slot欠落 ({len(integrity['missing_slots'])})")
+    if integrity["unexpected_slots"]:
+        issues.append(f"Steam外slot ({len(integrity['unexpected_slots'])})")
+    if integrity["expected_slot_count"] and len(tracks) != integrity["expected_slot_count"]:
+        issues.append(f"Steam slot数不一致 ({len(tracks)}/{integrity['expected_slot_count']})")
+    if integrity["track_zero_count"]:
+        issues.append(f"Track#0 ({integrity['track_zero_count']})")
+    if integrity["anomalous_unknown_title_count"]:
+        issues.append(f"Steam根拠のないUnknownタイトル ({integrity['anomalous_unknown_title_count']})")
+    if integrity["fallback_count"] or integrity["local_title_count"]:
+        issues.append(f"Fallback/LOCAL残留 ({integrity['fallback_count']}/{integrity['local_title_count']})")
+    return issues
+
+
+def _read_io_error_events(log_dir):
+    events = []
+    for log_path in sorted(Path(log_dir).glob("*.log")):
+        with log_path.open("r", encoding="utf-8", errors="ignore") as log_file:
+            for line in log_file:
+                if not IO_ERROR_PATTERN.search(line):
+                    continue
+                app_match = APP_ID_PATTERN.search(line)
+                timestamp_match = LOG_TIMESTAMP_PATTERN.search(line)
+                if app_match and timestamp_match:
+                    timestamp = datetime.fromisoformat(timestamp_match.group(1)).astimezone()
+                    events.append((int(app_match.group(1)), timestamp))
+    return events
+
+
+def _has_matching_io_error(item, io_error_events):
+    processed_at = item["meta"].get("processed_at")
+    if not processed_at:
+        return False
+    processed_time = datetime.fromisoformat(str(processed_at)).astimezone()
+    return any(
+        app_id == item["app_id"]
+        and timedelta(0) <= processed_time - event_time <= IO_ERROR_LOOKBACK
+        for app_id, event_time in io_error_events
+    )
+
+
+def _classify_review_causes(item, io_error_events):
+    meta = item["meta"]
+    diagnostics = meta.get("diagnostics") or {}
+    message = str(item["msg"])
+    reason = str(item["reason"])
+    structured_causes = [
+        diagnostics.get("primary_review_cause"),
+        diagnostics.get("upstream_cause_code"),
+        *(diagnostics.get("secondary_review_causes") or []),
+    ]
+    evidence = " ".join([message, reason, *(str(cause) for cause in structured_causes if cause)])
+    causes = []
+
+    if _has_matching_io_error(item, io_error_events) or "CRITICAL: Audio Source Error" in evidence or diagnostics.get("audio_source_failures"):
+        causes.append("physical_io")
+    if (
+        "Audio quality warning" in evidence
+        or bool(diagnostics.get("audio_quality_warnings"))
+        or bool(diagnostics.get("conversion_warnings"))
+    ):
+        causes.append("audio_warning")
+    if (
+        message == "N/A (Early Review)"
+        or "PRE_ALIGNMENT_REVIEW_GATE" in evidence
+        or "Steam Tracklist Missing" in evidence
+        or "No LLM response" in evidence
+        or "EARLY_REVIEW" in str(diagnostics)
+    ):
+        causes.append("early_review")
+
+    structural_tokens = (
+        "Slots Missing",
+        "Slots Unexpected",
+        "Track Count Mismatch",
+        "Duplicates",
+        "Contradictory Slot Assignments",
+        "Track#0",
+        "Unknown Title",
+        "Dirty Tags",
+    )
+    integrity = item["integrity"]
+    has_structural_issue = any(token in evidence for token in structural_tokens) or any(
+        integrity[key]
+        for key in (
+            "duplicate_key_count",
+            "duplicate_expected_slot_count",
+            "duplicate_slot_key_count",
+            "missing_slot_key_count",
+            "missing_slots",
+            "unexpected_slots",
+            "track_zero_count",
+            "anomalous_unknown_title_count",
+        )
+    )
+    if has_structural_issue:
+        causes.append("structural")
+
+    if item["unassigned_count"] > 0 or "Unassigned Files" in evidence:
+        causes.append("unassigned")
+    if not causes:
+        causes.append("confidence_or_other")
+    return causes
+
+
+def analyze_and_generate_report(db_path="data/sst_local_state.db", output_dir="report", log_dir="logs"):
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
@@ -60,29 +223,18 @@ def analyze_and_generate_report(db_path='data/sst_local_state.db', output_dir='r
     all_items = []
 
     unnatural_archives = []
-    reviews_unassigned = []
-    reviews_audio = []
-    reviews_slot_mismatch = []
-    reviews_low_conf = []
-    reviews_early = []
-    reviews_io = []
+    review_causes = {
+        "physical_io": [],
+        "audio_warning": [],
+        "early_review": [],
+        "structural": [],
+        "unassigned": [],
+        "confidence_or_other": [],
+    }
 
     fast_track_count = 0
-    steam_trust_count = 0
 
-    # Check debug logs for I/O errors
-    log_files = glob.glob('logs/*.log')
-    io_error_app_ids = set()
-    for lf in log_files:
-        try:
-            with open(lf, 'r', encoding='utf-8', errors='ignore') as f:
-                for line in f:
-                    if 'トラック処理の失敗' in line and ('Host is down' in line or 'Errno' in line or 'Permission denied' in line):
-                        m = re.search(r'\[(\d+)\]', line)
-                        if m:
-                            io_error_app_ids.add(int(m.group(1)))
-        except Exception:
-            pass
+    io_error_events = _read_io_error_events(log_dir)
 
     for app_id, name, status, meta_str in rows:
         meta = json.loads(meta_str) if meta_str else {}
@@ -94,10 +246,10 @@ def analyze_and_generate_report(db_path='data/sst_local_state.db', output_dir='r
         reason = meta.get('confidence_reason') or 'No reason captured'
         strategy = meta.get('strategy') or 'N/A'
 
-        if strategy == 'FAST_TRACK' or 'Deterministic Fast-Track' in str(msg) or 'Deterministic fast-track' in str(reason):
+        diagnostics = meta.get("diagnostics") or {}
+        processing_route = meta.get("processing_route") or diagnostics.get("processing_route")
+        if processing_route == "FAST_TRACK":
             fast_track_count += 1
-        elif 'STEAM-TRUST' in str(msg) or 'STEAM-TRUST' in str(reason):
-            steam_trust_count += 1
 
         item = {
             'app_id': app_id,
@@ -117,28 +269,7 @@ def analyze_and_generate_report(db_path='data/sst_local_state.db', output_dir='r
 
         if status == 'archive':
             archives.append(item)
-            # Scan for unnatural archive issues
-            issues = []
-            html_entities = []
-
-            for t in tracks:
-                tags = t.get('tags', {})
-                title = str(tags.get('title', ''))
-
-                if any(e in title for e in ['&amp;', '&quot;', '&#39;', '&lt;', '&gt;']):
-                    html_entities.append(title)
-
-            if html_entities:
-                issues.append(f"HTMLエンティティ未デコード ({len(html_entities)}トラック): 例 \"{html_entities[0]}\"")
-            if integrity['duplicate_key_count']:
-                issues.append(f"最終Disc/Track重複 ({integrity['duplicate_key_count']})")
-            if integrity['duplicate_slot_key_count']:
-                issues.append(f"最終slot_key重複 ({integrity['duplicate_slot_key_count']})")
-            if integrity['expected_slot_count'] and len(tracks) != integrity['expected_slot_count']:
-                issues.append(f"Steam slot数不一致 ({len(tracks)}/{integrity['expected_slot_count']})")
-            if integrity['fallback_count'] or integrity['local_title_count']:
-                issues.append(f"Fallback/LOCAL残留 ({integrity['fallback_count']}/{integrity['local_title_count']})")
-
+            issues = _archive_integrity_issues(meta, tracks, integrity)
             if issues:
                 unnatural_archives.append({
                     'app_id': app_id,
@@ -148,40 +279,37 @@ def analyze_and_generate_report(db_path='data/sst_local_state.db', output_dir='r
 
         else:
             reviews.append(item)
-            app_id_int = int(app_id) if str(app_id).isdigit() else app_id
+            item["review_causes"] = _classify_review_causes(item, io_error_events)
+            for cause in item["review_causes"]:
+                review_causes[cause].append(item)
 
-            diag = meta.get('diagnostics', {}) if isinstance(meta, dict) else {}
-            has_audio_warn = (
-                'Audio quality warning' in msg
-                or bool(diag.get('audio_quality_warnings'))
-                or bool(diag.get('conversion_warnings'))
-            )
-            is_early_review = (
-                msg == 'N/A (Early Review)'
-                or 'PRE_ALIGNMENT_REVIEW_GATE' in msg
-                or 'Steam Tracklist Missing' in msg
-                or 'No LLM response' in reason
-                or 'EARLY_REVIEW' in str(diag)
-            )
-            has_slot_or_count_mismatch = any(
-                token in msg for token in [
-                    'Slots Missing', 'Slots Unexpected', 'Track Count Mismatch',
-                    'Duplicates', 'Contradictory Slot Assignments'
-                ]
-            )
-
-            if app_id_int in io_error_app_ids or 'CRITICAL: Audio Source Error' in msg:
-                reviews_io.append(item)
-            elif has_audio_warn:
-                reviews_audio.append(item)
-            elif is_early_review:
-                reviews_early.append(item)
-            elif has_slot_or_count_mismatch:
-                reviews_slot_mismatch.append(item)
-            elif item['unassigned_count'] > 0 or 'Unassigned Files' in msg:
-                reviews_unassigned.append(item)
-            else:
-                reviews_low_conf.append(item)
+    review_cause_specs = (
+        ("physical_io", "物理I/O / 音声ソース障害", "Permission denied、共有ストレージ障害、または致命的な音声ソースエラー。"),
+        ("audio_warning", "音声品質警告", "変換またはデコード警告があり、物理破損の確定とは区別します。"),
+        ("early_review", "早期Review / Steam情報不足", "通常のalignment・validatorより前にReviewとなった結果です。"),
+        ("structural", "Steam構造・slot不整合", "重複、欠落・余分なslot、track 0、Steam根拠のないUnknown等。"),
+        ("unassigned", "未割当ファイル / alignment残差", "最終的な未割当マニフェストまたはReview理由に未割当が記録されています。"),
+        ("confidence_or_other", "信頼度不足・その他", "上記の物理・構造要因で説明されないReviewです。"),
+    )
+    review_cause_sections = []
+    for cause, title, description in review_cause_specs:
+        items = review_causes[cause]
+        if cause == "unassigned":
+            file_total = sum(item["unassigned_count"] for item in items)
+            description += f" 該当{len(items)}アルバム、未割当ファイル記録{file_total}件。"
+        examples = "".join(
+            f"<li><code>AppID {item['app_id']}</code>: {html.escape(item['name'])} "
+            f"(原因: {html.escape(str(item['msg']))})</li>"
+            for item in items[:5]
+        )
+        review_cause_sections.append(
+            f'<h3 class="card-subhead">{html.escape(title)} ({len(items)}件)</h3>'
+            f'<div class="highlight-box warning"><p>{html.escape(description)}</p>'
+            f'<ul>{examples}</ul></div>'
+        )
+    multi_cause_review_count = sum(
+        len(item["review_causes"]) > 1 for item in reviews
+    )
 
     # HTML Generation
     report_file = output_path / 'batch_analysis_report.html'
@@ -307,7 +435,7 @@ def analyze_and_generate_report(db_path='data/sst_local_state.db', output_dir='r
             <div class="kpi-value">{len(all_items)}</div>
         </div>
         <div class="kpi-card">
-            <div class="kpi-label">Fast-Track 発動数</div>
+            <div class="kpi-label">Fast-Track 実行route件数</div>
             <div class="kpi-value info">{fast_track_count} <span style="font-size: 0.9rem; color: var(--text-secondary);">({fast_track_count/max(len(all_items),1)*100:.1f}%)</span></div>
         </div>
         <div class="kpi-card">
@@ -339,47 +467,9 @@ def analyze_and_generate_report(db_path='data/sst_local_state.db', output_dir='r
     <!-- Section 2 -->
     <section>
         <h2 class="section-title review-title">2. Review 送りの要因別分類と精査</h2>
-        <p>Validatorのメッセージ、最終タグ、Steam slot、物理出力、LLM割当、ログを突合し、Reviewの原因を要因別に分類しました。</p>
-
-        <h3 class="card-subhead">要因1: 未割当ファイル（Steamスロット外の余剰ファイル）の存在 ({len(reviews_unassigned)}件)</h3>
-        <div class="highlight-box info">
-            <p>Steamトラックリストに存在しないボーナストラック・未収録ファイルがローカルに存在するため、安全弁（Review隔離）が正常に働いたケースです。</p>
-            <ul>
-                {''.join(f"<li><code>AppID {r['app_id']}</code>: {html.escape(r['name'])} (未割当: {r['unassigned_count']}ファイル)</li>" for r in reviews_unassigned[:5])}
-            </ul>
-        </div>
-
-        <h3 class="card-subhead">要因2: 音声物理破損 / デコード警告 ({len(reviews_audio)}件)</h3>
-        <div class="highlight-box danger">
-            <p>ローカルの音声ファイルが物理的に破損（FLACデコードエラー等）しており、FFmpeg変換警告を検知して正しく Review 隔離されたケースです。</p>
-            <ul>
-                {''.join(f"<li><code>AppID {r['app_id']}</code>: {html.escape(r['name'])} (Msg: {html.escape(str(r['msg']))})</li>" for r in reviews_audio)}
-            </ul>
-        </div>
-
-        <h3 class="card-subhead">要因3: Steam構造・スロット不整合 ({len(reviews_slot_mismatch)}件)</h3>
-        <div class="highlight-box warning">
-            <p>Steamスロットとローカルファイルの間でトラック番号の食い違いや欠落が発生したケースです（単曲アルバム判定誤りによる不当Reviewを含む）。</p>
-            <ul>
-                {''.join(f"<li><code>AppID {r['app_id']}</code>: {html.escape(r['name'])} (Msg: {html.escape(str(r['msg']))})</li>" for r in reviews_slot_mismatch[:5])}
-            </ul>
-        </div>
-
-        <h3 class="card-subhead">要因4: 早期レビュー / トラックリスト不在 ({len(reviews_early)}件)</h3>
-        <div class="highlight-box warning">
-            <p>Steam上にトラックリストが存在しないボーナスコンテンツや、事前判定ゲートにより早期Reviewとなったケースです。</p>
-            <ul>
-                {''.join(f"<li><code>AppID {r['app_id']}</code>: {html.escape(r['name'])} (Msg: {html.escape(str(r['msg']))})</li>" for r in reviews_early)}
-            </ul>
-        </div>
-
-        <h3 class="card-subhead">要因5: 信頼度不足・LLM判断不確実 ({len(reviews_low_conf)}件)</h3>
-        <div class="highlight-box warning">
-            <p>LLM確信度が基準値（90%）を下回るか、ローカル重複によりマッピングに不確実性が残ったケースです。</p>
-            <ul>
-                {''.join(f"<li><code>AppID {r['app_id']}</code>: {html.escape(r['name'])} (Conf: {r['conf']}%, Msg: {html.escape(str(r['msg']))})</li>" for r in reviews_low_conf)}
-            </ul>
-        </div>
+        <p>各原因はmetadata・validator理由・診断ログから独立して付与する複数ラベルです。原因件数の合計はReviewアルバム数と一致するとは限りません。</p>
+        <p>Reviewアルバム: {len(reviews)}件。複数原因に該当: {multi_cause_review_count}件。</p>
+        {''.join(review_cause_sections)}
     </section>
 
     <!-- Section 3 -->

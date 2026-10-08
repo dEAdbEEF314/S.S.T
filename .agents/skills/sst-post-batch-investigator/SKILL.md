@@ -32,10 +32,11 @@ Evaluate results in this order:
 For every AppID, record:
 
 - latest DB status, message, confidence fields, strategy, and processed timestamp;
+- count Fast-Track using only the explicit `processing_route == "FAST_TRACK"` field; do not infer the route from message text or `STEAM_TRUST`;
 - expected Steam slot count and final processed track count;
 - output format counts and physical file count when a debug directory or package is available;
 - duplicate `(disc, track)` keys and duplicate `slot_key` values;
-- missing or unexpected Steam slots;
+- missing or unexpected Steam slots, even when the total slot and track counts happen to match;
 - `source == "Fallback"`, `title_source == "LOCAL"`, `Unknown` titles, and track number `0`;
 - format variants per slot and whether adoption reduced them to one final record;
 - audio failures/warnings and matching I/O errors in logs;
@@ -51,7 +52,7 @@ Distinguish a real duplicate song from uncollapsed format variants. Multiple inp
 
 ### Review causes
 
-Use the actual validator message and evidence:
+Use the actual validator message and evidence. Classify causes as multi-label: one Review can have structural, unassigned, I/O, and audio evidence at the same time. Show both the unique Review count and overlapping cause counts. Never collapse a secondary cause just because a higher-priority cause was found.
 
 - **Structural**: `Duplicates`, `Track#0`, `Unknown Title`, `Dirty Tags`, `Duplicate Titles`, missing/extra slots, or unresolved Steam structure.
 - **Physical I/O**: `CRITICAL: Audio Source Error`, copy/conversion failures, inaccessible mounts, permission errors, or matching log exceptions.
@@ -59,6 +60,8 @@ Use the actual validator message and evidence:
 - **Confidence/LLM**: confidence or archive/review ratio gates when physical structure is clean. Do not call this a hardcoded `conf < 100` early-exit bug unless current code and logs prove it.
 - **LLM alignment**: unassigned files, one file assigned to multiple slots, unrelated titles in one slot, or a title/number mismatch against Steam. Confidence does not make a contradictory mapping correct.
 - **Mixed**: use when multiple independent causes are present and list each one.
+
+The generated HTML must include the physical-I/O category, preserve unassigned-file counts separately from structural mismatches, and avoid describing all unassigned files as bonus content without evidence. Match log events to the AppID and `processed_at`; do not attribute stale or later events to a result.
 
 ## AppID deep investigation
 
