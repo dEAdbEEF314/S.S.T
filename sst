@@ -26,7 +26,7 @@ show_help() {
     echo "      --all          Process all unprocessed soundtracks (Requires 3 confirmations)."
     echo "  -n, --limit N      Process N unprocessed soundtracks."
     echo "  -f, --force        Force re-processing of already completed albums."
-    echo "      --appid ID     Process only a specific Steam AppID."
+    echo "      --appid ID     Process only the given Steam AppID(s); comma-separated for multiple (e.g. 123,456)."
     echo ""
     echo "Maintenance & Stats (Exclusive):"
     echo "      --reset-db     Reset the local database (Requires 3 confirmations)."
