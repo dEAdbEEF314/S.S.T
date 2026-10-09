@@ -233,6 +233,19 @@ class LocalProcessor:
     @staticmethod
     def _build_mbz_candidates_from_alignment_inputs(v_fingerprint: Optional[Dict[str, Any]], v_mbz_search: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
         mbz_candidates = []
+        if v_mbz_search and v_mbz_search.get("steam_link_verified"):
+            mbz_candidates.append({
+                "mbid": v_mbz_search["mbid"],
+                "album": v_mbz_search["album_name"],
+                "artist": v_mbz_search["artist"],
+                "year": v_mbz_search["year"],
+                "label": v_mbz_search["label"],
+                "score": v_mbz_search["score"],
+                "evidence": v_mbz_search.get("evidence", []),
+                "tracks": v_mbz_search["tracks"],
+                "steam_link_verified": True,
+            })
+            return mbz_candidates
         if v_fingerprint:
             mbz_candidates.append({
                 "mbid": v_fingerprint["mbid"],
@@ -617,6 +630,14 @@ class LocalProcessor:
                 v_fingerprint,
                 v_mbz_search,
             ) = alignment_result
+
+            if v_mbz_search and v_mbz_search.get("steam_link_verified"):
+                steam_meta = steam_meta.model_copy(
+                    update={
+                        "store_tracklist": v_mbz_search["authoritative_tracklist"],
+                        "store_tracklist_source": "MBZ_STEAM_LINK_VERIFIED",
+                    }
+                )
 
             if not final_metadata:
                 return handle_early_review_return(

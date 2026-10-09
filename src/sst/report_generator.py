@@ -373,6 +373,9 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
         if route == "FAST_TRACK":
             route_class = "route-fast"
             route_label = "⚡ FAST_TRACK (LLMバイパス)"
+        elif route == "MBZ_STEAM_VERIFIED":
+            route_class = "route-fast"
+            route_label = "🔗 MBZ_STEAM_VERIFIED (Steamリンク + 全曲AcoustID照合)"
         elif route == "LLM_ONE_SHOT":
             route_class = "route-llm"
             route_label = "🧠 LLM_ONE_SHOT (オンデマンド整列)"

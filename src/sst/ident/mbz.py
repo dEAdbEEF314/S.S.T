@@ -2,6 +2,7 @@ import musicbrainzngs
 import logging
 import re
 import time
+from urllib.parse import urlparse
 from typing import List, Optional, Dict, Any, Tuple
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
@@ -47,6 +48,17 @@ class MusicBrainzIdentifier:
             return None
         match = re.search(r'(\d{4})', str(date_str))
         return int(match.group(1)) if match else None
+
+    @staticmethod
+    def _is_direct_steam_link(url: str, app_id: Optional[int]) -> bool:
+        if not app_id:
+            return False
+        if not isinstance(url, str):
+            return False
+        parsed = urlparse(url)
+        if (parsed.hostname or "").lower() != "store.steampowered.com":
+            return False
+        return re.match(rf"^/app/{re.escape(str(app_id))}(?:/|$)", parsed.path) is not None
 
     def _fetch_release(self, mbid: str, includes: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
         includes_str = ",".join(sorted(includes)) if includes else ""
@@ -242,7 +254,7 @@ class MusicBrainzIdentifier:
                 url = rel.get('target', '')
                 
                 # 1. Direct Steam Link
-                if app_id and f"store.steampowered.com/app/{app_id}" in url:
+                if self._is_direct_steam_link(url, app_id):
                     if "DIRECT_STEAM_LINK" not in seen_evidence:
                         score += self.scores.get("direct_steam_link", 500)
                         evidence_notes.append('DIRECT_STEAM_LINK')
@@ -359,9 +371,12 @@ class MusicBrainzIdentifier:
                     rec = t.get('recording', {})
                     if rec.get('title'):
                         mb_tracks_data.append({
+                            "disc": int(m.get("position", 1)),
                             "title": rec['title'],
-                            "position": str(t.get('position', '0')),
+                            "position": int(t.get('position', 0)),
+                            "recording_id": rec.get("id"),
                             "recording_artist": rec.get("artist-credit-phrase"),
+                            "duration_ms": int(t.get('length') or rec.get('length') or 0) or None,
                         })
             
             if local_baseline and local_baseline.get("tracks") and mb_tracks_data:
@@ -393,7 +408,20 @@ class MusicBrainzIdentifier:
                 "tracks": mb_tracks_data
             })
 
-        scored_candidates.sort(key=lambda x: x["score"], reverse=True)
+        direct_link_candidate_count = sum(
+            "DIRECT_STEAM_LINK" in candidate["evidence"]
+            for candidate in scored_candidates
+        )
+        for candidate in scored_candidates:
+            candidate["direct_steam_link"] = (
+                "DIRECT_STEAM_LINK" in candidate["evidence"]
+            )
+            candidate["direct_steam_link_candidate_count"] = direct_link_candidate_count
+
+        scored_candidates.sort(
+            key=lambda x: (x["direct_steam_link"], x["score"]),
+            reverse=True,
+        )
         top_candidates = scored_candidates[:5]
         log_data["ranked_candidates"] = top_candidates
         return top_candidates, log_data

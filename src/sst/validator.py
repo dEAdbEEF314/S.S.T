@@ -36,8 +36,11 @@ class ResultValidator:
         # --- 1. Decision Strategy Badges ---
         strategy_badges = []
         is_steam_trust = False
+        is_verified_mbz_trust = strategy == "MBZ_STEAM_VERIFIED"
         
-        if strategy == "STEAM_BASED" or "STEAM-TRUST" in str(llm_log):
+        if is_verified_mbz_trust:
+            strategy_badges.append("Verified MBZ Steam Release")
+        elif strategy == "STEAM_BASED" or "STEAM-TRUST" in str(llm_log):
             strategy_badges.append("Steam Trust")
             is_steam_trust = True
         elif strategy == "LOCAL_BASED" and "シングル盤の法則" in str(llm_log): 
@@ -207,9 +210,15 @@ class ResultValidator:
         # --- 3. Confidence & Quality Thresholds ---
         llm_archive_path = album_confidence >= 90 and mapping_confidence >= 80 and data_quality >= 70
         steam_trust_path = is_steam_trust and album_confidence >= 90 and mapping_confidence >= 75 and data_quality >= 60
+        verified_mbz_path = is_verified_mbz_trust
         llm_wants_review = (ratio.get("archive", 0) < 50 or strategy == "REVIEW_REQUIRED")
 
-        if not is_fast_track and not llm_archive_path and not steam_trust_path:
+        if (
+            not is_fast_track
+            and not verified_mbz_path
+            and not llm_archive_path
+            and not steam_trust_path
+        ):
             if llm_wants_review:
                 issues.append("LLM's decision (Low Confidence/Ratio)")
             if album_confidence < 90:
@@ -239,6 +248,8 @@ class ResultValidator:
             status = "archive"
             if is_fast_track:
                 message = "Success [Deterministic Fast-Track]"
+            elif verified_mbz_path:
+                message = f"Success [MBZ_STEAM_VERIFIED]{badge_str}".strip()
             elif steam_trust_path:
                 message = f"Success [STEAM-TRUST]{badge_str}".strip()
             elif llm_archive_path:

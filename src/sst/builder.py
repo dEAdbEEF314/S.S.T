@@ -49,7 +49,8 @@ class MetadataBuilder:
     ) -> Dict[str, Any]:
         """
         Constructs the ID3v2.3 tag map based on merged sources and simplified priority logic.
-        Structure (Track Number, Title) is strictly trusted from Steam if available.
+        Structure (Track Number, Title) is strictly trusted from Steam if available,
+        except for a fully verified MBZ release linked to this exact Steam AppID.
         Fallback to FINGERPRINT/MBZ for structure only when Steam is completely missing.
         Additional details (Artist, Composer, Year) are heavily augmented by MBZ.
         """
@@ -74,11 +75,15 @@ class MetadataBuilder:
                 mbz_track = mbz_album["tracks"][t_idx]
             else:
                 mbz_track = None
+        verified_mbz_authority = bool(
+            mbz_album and mbz_album.get("steam_link_verified")
+        )
 
         pics_track = None
         s_idx = instr.get("matched_v_idx")
 
-        # 1. 常にSTEAM情報をGround Truthとするため、アクションに関わらず matched_v_idx があれば最優先で取得
+        # The effective tracklist is Steam's, except in the verified-MBZ route where
+        # the processor supplies the MBZ release tracklist as the canonical structure.
         if s_idx is not None and s_idx >= 0 and s_idx < len(steam_meta.store_tracklist):
             pics_track = steam_meta.store_tracklist[s_idx]
             
@@ -123,8 +128,12 @@ class MetadataBuilder:
         res_title = None
         chosen_src = "VDF"
         
-        # Absolute priority: Steam (Ground Truth) -> MBZ/AcoustID evidence -> EMBED -> LOCAL
-        if pics_track:
+        # A fully fingerprint-verified direct Steam link overrides Steam's incomplete
+        # tracklist; otherwise Steam remains the structural ground truth.
+        if verified_mbz_authority and mbz_track:
+            res_title = mbz_track.get("title")
+            chosen_src = "MBZ_STEAM_VERIFIED"
+        elif pics_track:
             res_title = pics_track.get("title") or pics_track.get("name")
             chosen_src = "STEAM"
         elif mbz_track:
@@ -163,7 +172,9 @@ class MetadataBuilder:
         # 2.3 TRCK (Track Number)
         res_track = ""
         matched_v_idx = instr.get("matched_v_idx")
-        if pics_track and pics_track.get("number") and not is_steam_numbering_broken:
+        if verified_mbz_authority and mbz_track:
+            res_track = str(mbz_track.get("position") or mbz_track.get("track_num") or "")
+        elif pics_track and pics_track.get("number") and not is_steam_numbering_broken:
             res_track = str(pics_track.get("number"))
         elif instr.get("override_track") and str(instr.get("override_track")) != "0" and not is_steam_numbering_broken:
             res_track = str(instr.get("override_track"))
@@ -191,7 +202,9 @@ class MetadataBuilder:
 
         # 2.4 TPOS (Disc Number)
         res_disc = ""
-        if pics_track and pics_track.get("disc"):
+        if verified_mbz_authority and mbz_track:
+            res_disc = str(mbz_track.get("disc", disc))
+        elif pics_track and pics_track.get("disc"):
             res_disc = str(pics_track.get("disc"))
         elif instr.get("override_disc") and str(instr.get("override_disc")) != "0":
             res_disc = str(instr.get("override_disc"))
@@ -222,6 +235,8 @@ class MetadataBuilder:
         # 2.5 TYER (Year)
         res_year = None
         raw_date = steam_meta.release_date or ""
+        if verified_mbz_authority and mbz_album and mbz_album.get("year"):
+            raw_date = str(mbz_album["year"])
         if raw_date:
             match = re.search(r'(\d{4})', str(raw_date))
             res_year = match.group(1) if match else "0000"
@@ -290,14 +305,20 @@ class MetadataBuilder:
         def _u(val):
             return html.unescape(str(val)) if val is not None else ""
 
-        album_artist_parts = [_u(part).strip() for part in [steam_meta.developer, steam_meta.publisher] if part]
+        if verified_mbz_authority and mbz_album and mbz_album.get("artist"):
+            album_artist = _u(mbz_album["artist"]).strip()
+        else:
+            album_artist_parts = [_u(part).strip() for part in [steam_meta.developer, steam_meta.publisher] if part]
+            album_artist = ", ".join(album_artist_parts)
         clean_fallback_title = clean_title.split("::")[0] if "::" in clean_title else clean_title
 
         return {
             "title": _u(res_title or clean_fallback_title).strip(),
             "artist": _u(res_artist).strip(),
-            "album": _u(steam_meta.name).strip(),
-            "album_artist": ", ".join(album_artist_parts),
+            "album": _u(
+                mbz_album.get("album") if verified_mbz_authority and mbz_album else steam_meta.name
+            ).strip(),
+            "album_artist": album_artist,
             "genre": final_genre,
             "label": "",
             "grouping": _u(f"{target_name}, Steam"),
@@ -311,4 +332,3 @@ class MetadataBuilder:
             "steam_appid": app_id,
             "title_source": chosen_src
         }
-

@@ -24,6 +24,7 @@ def send_notifications(
     route = llm_log.get("processing_route") or ("FAST_TRACK" if is_fast else "LLM_ONE_SHOT")
     route_display_map = {
         "FAST_TRACK": "⚡ FAST_TRACK (決定論的即時確定 / LLMバイパス)",
+        "MBZ_STEAM_VERIFIED": "🔗 MBZ_STEAM_VERIFIED (Steamリンク + 全曲AcoustID照合)",
         "LLM_ONE_SHOT": "🧠 LLM_ONE_SHOT (オンデマンド信号収集 + 1-Shot推論)",
         "LLM_CHUNKED": "🧩 LLM_CHUNKED (分割チャンク推論)",
         "SKIP_NO_AUDIO": "⏩ SKIP_NO_AUDIO (音源なしスキップ)",

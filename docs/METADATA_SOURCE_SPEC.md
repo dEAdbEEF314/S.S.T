@@ -1,7 +1,7 @@
 # S.S.T メタデータソース定義書「真の真」 — Draft v0.2
 
 > **大前提**: 本システムは「Steamで購入したサウンドトラック商品」のメタデータを整備するシステムである。  
-> STEAM が絶対的な正であり、その不備に対してのみ、他ソースへのフォールバックとLLMによる判断が発動する。
+> 通常はSTEAMを正とする。ただし、対象AppIDへのMusicBrainz Releaseからの直接Steamリンクが一意であり、全ローカル音源ファイルがAcoustIDで当該Release内のRecording IDへそれぞれ一意に照合され、ローカル音源群がReleaseの全Recordingを網羅した場合に限り、そのReleaseを検証済み正本として構造・MBZ由来のタグ情報に優先する。同じRecordingを指す形式違いのファイルは同一MBZスロットのバリアントとして扱う。条件を満たさない場合はSteamを正とする従来経路を維持する。
 
 ---
 
@@ -15,6 +15,7 @@
 | **MBZ_SEARCH** | アルバム名テキスト検索 | MusicBrainz Search API + NWO Hybrid Scoring |
 | **EMBED** | ファイル内蔵メタデータ | Mutagen等によるタグ読み取り |
 | **LOCAL** | ファイルシステム情報 | パス・ファイル名のパース |
+| **MBZ_STEAM_VERIFIED** | 対象Steam AppIDへの直接リンクと全曲のAcoustID Recording一致の積集合 | MBZ Release + AcoustID |
 
 ---
 
@@ -27,7 +28,14 @@
 └──────────────────────┬──────────────────────────────────┘
                        ▼
 ┌─────────────────────────────────────────────────────────┐
-│ 2. 物理ファイルスキャン & トラックグループ化                │
+│ 2. 直接リンク候補の全曲検証                                 │
+│    対象AppIDへのMBZ直接リンク + 全音源の一意Recording照合?  │
+│    YES: MBZ Releaseの曲数・曲順・ディスクを正本化          │
+│    NO : 通常のSteam正本フローを維持                         │
+└──────────────────────┬──────────────────────────────────┘
+                       ▼
+┌─────────────────────────────────────────────────────────┐
+│ 3. 物理ファイルスキャン & トラックグループ化                │
 │    ローカル音源の存在確認 / トラック番号・再生時間の一次抽出  │
 └──────────────────────┬──────────────────────────────────┘
                        ▼
@@ -71,6 +79,7 @@
 
 | 名称 | 分類 | 判定条件 | 外部API / LLMの挙動 |
 | :--- | :--- | :--- | :--- |
+| `MBZ_STEAM_VERIFIED` | `🔗 MBZ_STEAM_VERIFIED` | 実行route (`processing_route`) | 対象AppIDへの直接Steamリンク候補が1件だけあり、全ローカル音源ファイルが同じRelease内のRecordingへ各1件だけ一致し、ReleaseのRecording集合を網羅する場合。全トラックを照会し、MBZの曲数・順序・ディスク・曲名・Recording artist・アルバムアーティスト・年を採用する。LLMをバイパスする。通常の物理・成果物検証はすべて継続 |
 | `FAST_TRACK` | `⚡ FAST_TRACK` | 実行route (`processing_route`) | Steamスロットとローカルファイル名・トラック番号・音源長が1:1完全一致。**LLM・独立AcoustID照会・通常のMBZ候補選定をバイパス**。埋め込みAPICがない場合のみMBZ_SEARCHを遅延実行し、同じ候補のtrack artistを厳格な一意一致で任意補完 |
 | `LLM_ONE_SHOT` | `🧠 LLM_ONE_SHOT` | 実行route (`processing_route`) | Fast-Track不成立かつexecution profileの`prefer_one_shot=true`。profileはConfig tier境界から選ばれる。これはOne-Shot優先profileを示すroute labelであり、token budgetや安全上限による内部segment分割を否定しない |
 | `LLM_CHUNKED` | `🧩 LLM_CHUNKED` | 実行route (`processing_route`) | Fast-Track不成立かつexecution profileの`prefer_one_shot=false`。chunk sizeはtoken budget等で調整される |
@@ -88,6 +97,19 @@ FAST_TRACK の APIC 例外では、埋め込み画像を先に検索し、見つ
 
 FAST_TRACKでは、タグ構築時に`matched_v_idx`が未設定の場合、Steamの`(disc, track_number)`と1:1で一意対応するindexだけを補完する。このindexが指すSteam titleをTIT2の正本とする。番号対応が欠落または重複する場合は推定しない。
 
+### 2.2 MBZ_STEAM_VERIFIED の昇格条件と適用範囲
+
+MBZの通常の検索順位やリンク加点だけでは、Steam構造を置き換えない。次の条件をすべて満たした場合だけ`MBZ_STEAM_VERIFIED`を成立させる。
+
+1. MBZ Releaseに対象AppIDの正確なSteam Store URL (`store.steampowered.com/app/{AppID}`) が含まれ、そのRelease候補が一意である。親ゲームリンク、SteamDBリンク、部分一致URLは代用不可。
+2. 直接リンク候補が見つかった場合、サンプリング設定を無視して全ローカル音源ファイルをAcoustID照会する。APIエラー、未照合、候補不在は一致として扱わない。
+3. 各物理ファイルが当該ReleaseのRecording IDにちょうど1件一致すること。複数Recordingに一致するファイル、0件のファイルがあれば不成立。
+4. 当該Release内のRecording IDとスロットがそれぞれ一意であり、ローカルファイル群がReleaseのRecording全体を漏れなく覆うこと。異なる形式の同一Recordingは同じMBZスロットのバリアントとして扱う。
+5. 成立時はLLMを呼ばず、ファイルをRecording IDからMBZ `(disc, position)` へ割り当てる。タイトルや番号を推測・生成しない。
+6. 曲名、曲順、ディスク、曲数、Recording artist、アルバム名、アルバムアーティスト、年はMBZ Releaseを優先する。Steam由来のジャンル、ゲームグルーピング、コメント、AppID、商品画像等、Releaseにない商品情報はSteamを維持する。作曲者クレジットは既存のフィールド別規則を維持する。
+7. 失敗時はSteam構造を置換しない。既存のLLM/Review経路に戻し、信頼度やReview閾値を緩和しない。
+8. 信頼モードでも重複slot、未割当、音声変換失敗、package/preflightの物理検証を省略しない。これらの異常は従来どおりReviewとする。
+
 ---
 
 ## 3. STEAMアルバムメタデータセットの構築
@@ -99,16 +121,16 @@ AppIDを起点に、以下のフィールドを持つ正規アルバム構造を
 
 | フィールド | ソース | 構築ルール |
 | ----------- | -------- | ----------- |
-| アルバム名 (TALB) | STEAM | サウンドトラック商品名 |
-| アルバムアーティスト (TPE2) | STEAM | `{Developer}, {Publisher}`（重複排除しない） |
-| 年 (TYER) | STEAM | `release_date` の西暦4桁 |
+| アルバム名 (TALB) | 通常: STEAM / `MBZ_STEAM_VERIFIED`: MBZ_RELEASE | verified時はRelease title |
+| アルバムアーティスト (TPE2) | 通常: STEAM / `MBZ_STEAM_VERIFIED`: MBZ_RELEASE | 通常は`{Developer}, {Publisher}`（重複排除しない） |
+| 年 (TYER) | 通常: STEAM / `MBZ_STEAM_VERIFIED`: MBZ_RELEASE | verified時はRelease dateの西暦4桁 |
 | ジャンル (TCON) | STEAM | `"STEAM VGM, "` + 全ジャンル |
 | グルーピング (TIT1) | STEAM | `{親ゲーム名}, Steam` |
 | 言語 (TLAN) | Config | `.env` USER_LANGUAGE → ISO 639-2 |
 
-### 3.2 トラックレベル情報（STEAMスロット）
+### 3.2 トラックレベル情報（通常はSTEAMスロット）
 
-STEAMストアトラックリストの各エントリが1スロットとなる。
+通常はSTEAMストアトラックリストの各エントリが1スロットとなる。`MBZ_STEAM_VERIFIED`成立時はMBZ Releaseの各Recordingをスロット正本とし、disc/position/titleを採用する。
 
 | フィールド | ソース | 算出・正規化規則 |
 | ----------- | -------- | ---------------- |
@@ -437,7 +459,7 @@ STEAMスロットN に対してフィールドF のEMBEDデータが必要:
 
 | 層 | 定義 |
 | --- | --- |
-| ① | **STEAM** のストアトラックリスト内 `number` |
+| ① | verified時: **MBZ_RELEASE** の `position`。通常: **STEAM** のストアトラックリスト内 `number` |
 | ② | 全曲が同一番号 / 50%以上が `0` / トラックリスト自体が不在 |
 | ③ | **ACOUSTID** → **MBZ_RELEASE** → **EMBED** → **LOCAL** |
 | ④ | STEAMトラック数とローカルファイル数が不一致の場合 |
@@ -450,7 +472,7 @@ STEAMスロットN に対してフィールドF のEMBEDデータが必要:
 
 | 層 | 定義 |
 | --- | --- |
-| ① | **STEAM** のストアトラックリスト内 `title` |
+| ① | verified時: **MBZ_RELEASE** のRecording title。通常: **STEAM** のストアトラックリスト内 `title` |
 | ② | トラックリスト不在 / 50%以上のタイトルが同一文字列 |
 | ③ | **ACOUSTID** → **MBZ_RELEASE** → **EMBED** → **LOCAL** |
 | ④ | 正ソース不在でフォールバック先が複数存在し、異なるタイトルを持つ場合 |
@@ -464,7 +486,7 @@ STEAMスロットN に対してフィールドF のEMBEDデータが必要:
 
 | 層 | 定義 |
 | --- | --- |
-| ① | **ACOUSTID** の Recording Artist Credit |
+| ① | verified時: **MBZ_RELEASE** のRecording artist-credit。通常: **ACOUSTID** のRecording Artist Credit |
 | ② | AcoustIDヒットなし / Artist Creditが空 / `"Various Artists"`, `"VA"` 等の包括名義 |
 | ③ | **MBZ_RELEASE** → **MBZ_SEARCH** → **STEAM** (Store Credits `Artist:`) → **STEAM** (`Developer`) |
 | ④ | ACOUSTIDとMBZ_RELEASEでアーティスト名が大きく異なる場合 |
@@ -478,12 +500,12 @@ STEAMスロットN に対してフィールドF のEMBEDデータが必要:
 
 | 層 | 定義 |
 | --- | --- |
-| ① | **STEAM** の `{Developer}, {Publisher}` |
-| ② | なし |
-| ③ | なし |
+| ① | verified時: **MBZ_RELEASE** のalbum artist-credit。通常: **STEAM** の `{Developer}, {Publisher}` |
+| ② | いずれかの正ソースが欠落 |
+| ③ | 通常: なし。verified時にMBZ値が空ならSTEAMへフォールバック |
 | ④ | なし |
 
-- **値の形式**: `"開発元, パブリッシャー"` 固定。Developer と Publisher が同一の場合でも重複排除はしない（`"Toby Fox, Toby Fox"` のまま）。フォーマットの一貫性を優先する。
+- **値の形式**: 通常は`"開発元, パブリッシャー"`固定。verified時はMBZ album artist-creditを保持する。
 
 ---
 
@@ -491,7 +513,7 @@ STEAMスロットN に対してフィールドF のEMBEDデータが必要:
 
 | 層 | 定義 |
 | --- | --- |
-| ① | **STEAM** のストアトラックリスト内 `disc` |
+| ① | verified時: **MBZ_RELEASE** のmedium position。通常: **STEAM** のストアトラックリスト内 `disc` |
 | ② | ディスク情報なし |
 | ③ | **EMBED** → **LOCAL** (フォルダ構造) → デフォルト `1` |
 | ④ | ローカルのフォルダ構造がマルチディスクを示唆するがSTEAMは単一ディスクの場合 |
@@ -504,7 +526,7 @@ STEAMスロットN に対してフィールドF のEMBEDデータが必要:
 
 | 層 | 定義 |
 | --- | --- |
-| ① | **STEAM** の `release_date` から西暦年4桁を抽出 |
+| ① | verified時: **MBZ_RELEASE** の`date`。通常: **STEAM** の `release_date` から西暦年4桁を抽出 |
 | ② | リリース日が未定文字列 / パース不能 |
 | ③ | **MBZ_RELEASE** → **MBZ_SEARCH** → **EMBED** → `"0000"` |
 | ④ | なし |
@@ -621,6 +643,7 @@ LLMのalbum identity confidenceは、実際に与えられたSTEAM/MBZ/ACOUSTID 
 
 | 判定パス | album | mapping | data | 条件 |
 | ---------- | ------- | --------- | ------ | ------ |
+| **MBZ_STEAM_VERIFIED** | — | — | — | §2.2のRelease同定・全Recording一対一照合を満たす。信頼度しきい値は緩和せず、物理・成果物Review条件を適用 |
 | **決定論的ARCHIVE** | — | — | — | ファストトラック条件充足（§5） |
 | **LLM後ARCHIVE** | ≥ 90 | ≥ 80 | ≥ 70 | LLMアライメント実行後 |
 | **STEAM-TRUST** | ≥ 90 | ≥ 75 | ≥ 60 | ACOUSTID不在だがSTEAM構造と一致（バリアント統合後曲数 == Steam曲数） |

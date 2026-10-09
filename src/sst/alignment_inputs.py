@@ -24,7 +24,16 @@ class AlignmentInputBuilder:
         self.min_mbz_search_score_threshold = min_mbz_search_score_threshold
         self.fingerprint_sample_size = max(1, int(fingerprint_sample_size))
 
-    def build_fingerprint_album(self, track_groups: Dict[Tuple[int, str], List[Dict[str, Any]]], on_track_complete: Optional[Callable[[], None]] = None) -> Optional[Dict[str, Any]]:
+    def build_fingerprint_album(
+        self,
+        track_groups: Dict[Tuple[int, str], List[Dict[str, Any]]],
+        on_track_complete: Optional[Callable[[], None]] = None,
+        *,
+        force_all: bool = False,
+        on_track_candidates: Optional[
+            Callable[[Tuple[int, str], List[Dict[str, Any]]], None]
+        ] = None,
+    ) -> Optional[Dict[str, Any]]:
         """
         Builds the AcoustID / MBZ_RELEASE auxiliary signals using cross-validation.
         """
@@ -38,7 +47,7 @@ class AlignmentInputBuilder:
         sampled_keys = target_keys
         
         # Apply sampling if not fingerprint_all and album is larger than sample size
-        if not self.fingerprint_all and len(target_keys) > self.fingerprint_sample_size:
+        if not force_all and not self.fingerprint_all and len(target_keys) > self.fingerprint_sample_size:
             n = self.fingerprint_sample_size
             if n <= 1:
                 sampled_keys = [target_keys[0]]
@@ -65,8 +74,10 @@ class AlignmentInputBuilder:
             # Use the best quality file for fingerprinting
             best_file = variants[0]["path"]
             candidates = self.acoustid.identify_track(best_file)
-            
+
             track_results[key] = candidates
+            if on_track_candidates:
+                on_track_candidates(key, candidates)
             for cand in candidates:
                 if cand.get("release_ids"):
                     all_release_ids.extend(cand["release_ids"])
@@ -260,7 +271,7 @@ class AlignmentInputBuilder:
         
         # We try to use the NWO Hybrid Scoring System from mbz.py
         # It handles fetching url-relations and giving massive boosts to direct Steam URLs.
-        candidates, _ = self.mbz.search_release(
+        candidates, search_log = self.mbz.search_release(
             album_name=album_name,
             expected_track_count=expected_track_count,
             app_id=app_id,
@@ -279,7 +290,8 @@ class AlignmentInputBuilder:
         # --- Threshold Cutoff ---
         # If the score is too low, it's likely noise (unrelated album that just happens to have similar words).
         # We discard it to prevent LLM hallucinations.
-        if score < self.min_mbz_search_score_threshold:
+        direct_steam_link = bool(best.get("direct_steam_link"))
+        if score < self.min_mbz_search_score_threshold and not direct_steam_link:
             logger.warning(f"[{app_id}] MBZ_SEARCH top candidate '{best.get('album')}' score ({score}) is below threshold ({self.min_mbz_search_score_threshold}). Discarding as noise.")
             return None
             
@@ -295,18 +307,24 @@ class AlignmentInputBuilder:
             "label": best.get("label"),
             "score": score,
             "evidence": best.get("evidence", []),
+            "direct_steam_link": direct_steam_link,
+            "direct_steam_link_candidate_count": best.get(
+                "direct_steam_link_candidate_count",
+                search_log.get("direct_steam_link_candidate_count", 0),
+            ),
             "tracks": []
         }
         
         # Map the tracks
         for idx, track in enumerate(best.get("tracks", [])):
             signal_bundle["tracks"].append({
-                "disc": 1, # Simplified, mbz text search tracks don't always retain disc cleanly in the summary list
+                "disc": track.get("disc", 1),
+                "position": track.get("position"),
                 "track_num": track.get("position"),
                 "title": track.get("title"),
+                "mbid": track.get("recording_id"),
                 "recording_artist": track.get("recording_artist"),
-                "duration_ms": None, # Search summary often lacks duration
-                "mbid": None, # Recording ID not available in brief summary
+                "duration_ms": track.get("duration_ms"),
                 "mbz_track_index": idx
             })
             
@@ -384,3 +402,63 @@ class AlignmentInputBuilder:
         return signal_bundle
 
 
+def verify_steam_linked_mbz_release(
+    release_bundle: Optional[Dict[str, Any]],
+    track_groups: Dict[Tuple[int, str], List[Dict[str, Any]]],
+    acoustid_candidates_by_key: Dict[Tuple[int, str], List[Dict[str, Any]]],
+) -> Optional[Dict[str, Dict[str, Any]]]:
+    if not release_bundle or not release_bundle.get("direct_steam_link"):
+        return None
+    if release_bundle.get("direct_steam_link_candidate_count") != 1:
+        return None
+
+    release_tracks = release_bundle.get("tracks") or []
+    recording_to_track: Dict[str, Dict[str, Any]] = {}
+    slot_keys = set()
+    for track_index, track in enumerate(release_tracks):
+        recording_id = track.get("mbid")
+        try:
+            disc = int(track.get("disc", 1))
+            position = int(track.get("position") or track.get("track_num"))
+        except (TypeError, ValueError):
+            return None
+        if (
+            not recording_id
+            or disc < 1
+            or position < 1
+            or not str(track.get("title") or "").strip()
+            or recording_id in recording_to_track
+            or (disc, position) in slot_keys
+        ):
+            return None
+        slot_keys.add((disc, position))
+        recording_to_track[recording_id] = {
+            **track,
+            "disc": disc,
+            "position": position,
+            "mbz_track_index": track_index,
+        }
+
+    if not recording_to_track or set(acoustid_candidates_by_key) != set(track_groups):
+        return None
+
+    verified_mapping: Dict[str, Dict[str, Any]] = {}
+    matched_recording_ids = set()
+    for local_key in track_groups:
+        target_recording_ids = {
+            candidate.get("mbid")
+            for candidate in acoustid_candidates_by_key[local_key]
+            if candidate.get("mbid") in recording_to_track
+        }
+        if len(target_recording_ids) != 1:
+            return None
+        recording_id = next(iter(target_recording_ids))
+        matched_recording_ids.add(recording_id)
+        verified_mapping[f"{local_key[0]}_{local_key[1]}"] = {
+            **recording_to_track[recording_id],
+            "recording_id": recording_id,
+        }
+
+    if matched_recording_ids != set(recording_to_track):
+        return None
+    return verified_mapping
