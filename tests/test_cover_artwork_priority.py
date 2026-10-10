@@ -78,6 +78,7 @@ def test_standalone_soundtrack_uses_soundtrack_header():
 def test_embedded_artwork_skips_lazy_mbz_candidate_search():
     steam_meta = SteamMetadata(app_id=1004, name="Embedded OST")
     mbz_artwork_candidate_provider = MagicMock(return_value={"mbid": "release-id"})
+    artwork_sources = []
 
     with patch("sst.processing.artwork.TrackManager.get_best_artwork", return_value=b"embedded_art"):
         art = fetch_album_artwork(
@@ -87,9 +88,11 @@ def test_embedded_artwork_skips_lazy_mbz_candidate_search():
             [],
             track_groups={(1, "track"): [{}]},
             mbz_artwork_candidate_provider=mbz_artwork_candidate_provider,
+            on_artwork_source=artwork_sources.append,
         )
 
     assert art == b"embedded_art"
+    assert artwork_sources == ["EMBED"]
     mbz_artwork_candidate_provider.assert_not_called()
 
 def test_lazy_mbz_artwork_candidate_precedes_steam_fallback():
@@ -128,18 +131,26 @@ def test_lazy_mbz_candidate_is_also_returned_for_metadata_enrichment():
     candidate = {"mbid": "release-id", "tracks": [{"title": "Track", "recording_artist": "Artist"}]}
     candidate_provider = MagicMock(return_value=candidate)
     candidate_observer = MagicMock()
+    artwork_sources = []
     mock_mbz = MagicMock()
-    mock_mbz.get_release_artwork_url.return_value = None
+    mock_mbz.get_release_artwork_url.return_value = "https://example.com/cover.jpg"
 
-    fetch_album_artwork(
-        MagicMock(),
-        mock_mbz,
-        steam_meta,
-        [],
-        track_groups=None,
-        mbz_artwork_candidate_provider=candidate_provider,
-        on_mbz_candidate=candidate_observer,
-    )
+    with patch("requests.get") as mock_get:
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.content = b"synthetic-cover"
+        mock_get.return_value = mock_response
+        fetch_album_artwork(
+            MagicMock(),
+            mock_mbz,
+            steam_meta,
+            [],
+            track_groups=None,
+            mbz_artwork_candidate_provider=candidate_provider,
+            on_mbz_candidate=candidate_observer,
+            on_artwork_source=artwork_sources.append,
+        )
 
     candidate_provider.assert_called_once_with()
     candidate_observer.assert_called_once_with(candidate)
+    assert artwork_sources == ["MBZ_RELEASE"]

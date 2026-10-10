@@ -94,6 +94,7 @@ def process_single_track(
     notifier: Any,
     on_track_complete: Optional[Callable[[], None]] = None,
     defer_copy_failure: bool = False,
+    album_artwork_source: str = "UNKNOWN",
 ) -> Dict[str, Any]:
     """
     Processes one logical track end-to-end and returns result metadata plus status flags.
@@ -135,6 +136,7 @@ def process_single_track(
             global_identity,
             total_discs=total_discs,
         )
+        field_provenance = tag_map.pop("_field_provenance", {})
 
         final_disc = disc
         if tag_map.get("disc_number"):
@@ -199,6 +201,7 @@ def process_single_track(
 
         track_art = TrackManager.get_best_artwork(slot_variants)
         final_art = tagger.process_artwork(track_art) if track_art else album_artwork
+        field_provenance["apic"] = "EMBED" if track_art else album_artwork_source
         processing_stage = "tagging"
         tagger.write_tags(processed_path, tag_map, final_art)
 
@@ -225,7 +228,9 @@ def process_single_track(
                 "source": instr.get("reason") or ("STEAM" if tag_map.get("title_source") == "STEAM" else "Fallback"),
                 "title_source": tag_map.get("title_source", "UNKNOWN"),
                 "slot_key": f"{slot_key[0]}_{slot_key[1]}",
+                "source_format": adopted_info["path"].suffix.lower().lstrip("."),
                 "tier_rank": adopted_info.get("tier_rank", 999),
+                "field_provenance": field_provenance,
             },
             "had_warning": bool(has_warnings),
             "warned_track_label": warned_track_label,

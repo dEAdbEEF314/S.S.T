@@ -428,8 +428,43 @@ def test_build_fast_track_alignment_res_uses_local_track_order():
         },
     )
 
-    assert alignment_res["slots"]["1"]["files"] == ["file-a"]
-    assert alignment_res["slots"]["2"]["files"] == ["file-b"]
+    assert alignment_res["slots"]["1_1"]["files"] == ["file-a"]
+    assert alignment_res["slots"]["1_2"]["files"] == ["file-b"]
+    assert alignment_res["unassigned_files"] == []
+
+
+def test_build_fast_track_alignment_res_keeps_disc_in_slot_identity():
+    alignment_res = LocalProcessor._build_fast_track_alignment_res(
+        {
+            "1_theme": {
+                "matched_v_idx": 0,
+                "override_track": "1",
+            },
+            "2_theme": {
+                "matched_v_idx": 1,
+                "override_track": "1",
+            },
+        },
+        {
+            "tracks": [
+                {"local_key": (1, "theme"), "file_ids": ["disc-one-file"]},
+                {"local_key": (2, "theme"), "file_ids": ["disc-two-file"]},
+            ]
+        },
+    )
+
+    assert alignment_res["slots"] == {
+        "1_1": {
+            "files": ["disc-one-file"],
+            "confidence": 1.0,
+            "reason": None,
+        },
+        "2_1": {
+            "files": ["disc-two-file"],
+            "confidence": 1.0,
+            "reason": None,
+        },
+    }
     assert alignment_res["unassigned_files"] == []
 
 

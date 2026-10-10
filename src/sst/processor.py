@@ -275,17 +275,22 @@ class LocalProcessor:
         slots: Dict[str, Dict[str, Any]] = {}
         local_tracks = v_local.get("tracks", []) if isinstance(v_local, dict) else []
         file_ids_by_tid: Dict[str, List[str]] = {}
+        disc_by_tid: Dict[str, Any] = {}
         for track in local_tracks:
             local_key = track.get("local_key")
             if not local_key:
                 continue
-            file_ids_by_tid[f"{local_key[0]}_{local_key[1]}"] = [str(file_id) for file_id in track.get("file_ids", [])]
+            track_id = f"{local_key[0]}_{local_key[1]}"
+            file_ids_by_tid[track_id] = [str(file_id) for file_id in track.get("file_ids", [])]
+            disc_by_tid[track_id] = local_key[0]
 
         for tid, instr in final_metadata.items():
             file_ids = file_ids_by_tid.get(tid)
             if not file_ids:
                 continue
-            slot_key = str(instr.get("override_track") or int(instr.get("matched_v_idx", 0)) + 1)
+            disc_number = str(instr.get("override_disc") or disc_by_tid[tid])
+            track_number = str(instr.get("override_track") or int(instr.get("matched_v_idx", 0)) + 1)
+            slot_key = f"{disc_number}_{track_number}"
             slots.setdefault(slot_key, {"files": [], "confidence": 1.0, "reason": instr.get("reason")})
             slots[slot_key]["files"].extend(file_ids)
 
@@ -778,6 +783,7 @@ class LocalProcessor:
         track_groups: Optional[Dict] = None,
         allow_mbz_artwork_search: bool = False,
         on_mbz_candidate: Optional[Callable[[Optional[Dict[str, Any]]], None]] = None,
+        on_artwork_source: Optional[Callable[[str], None]] = None,
     ) -> Optional[bytes]:
         mbz_artwork_candidate_provider = None
         if allow_mbz_artwork_search and not mbz_candidates:
@@ -809,6 +815,7 @@ class LocalProcessor:
             track_groups,
             mbz_artwork_candidate_provider=mbz_artwork_candidate_provider,
             on_mbz_candidate=on_mbz_candidate,
+            on_artwork_source=on_artwork_source,
         )
 
     @staticmethod

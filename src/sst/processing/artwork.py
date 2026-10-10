@@ -67,12 +67,15 @@ def fetch_album_artwork(
     track_groups: Optional[Dict] = None,
     mbz_artwork_candidate_provider: Optional[Callable[[], Optional[Dict[str, Any]]]] = None,
     on_mbz_candidate: Optional[Callable[[Optional[Dict[str, Any]]], None]] = None,
+    on_artwork_source: Optional[Callable[[str], None]] = None,
 ) -> Optional[bytes]:
     if track_groups:
         for (disc, clean_title), files in track_groups.items():
             artwork = TrackManager.get_best_artwork(files)
             if artwork:
                 logger.info(f"EMBEDソースからアルバムアートワークを採用しました (トラック: {clean_title})")
+                if on_artwork_source:
+                    on_artwork_source("EMBED")
                 return artwork
 
     mbz_candidate = mbz_candidates[0] if mbz_candidates else None
@@ -89,6 +92,8 @@ def fetch_album_artwork(
             artwork = safe_download_image(url, timeout=dl_timeout, max_bytes=dl_max_bytes, block_private=dl_block_private)
             if artwork:
                 logger.info("MBZソースからアルバムアートワークを採用しました")
+                if on_artwork_source:
+                    on_artwork_source("MBZ_RELEASE")
                 return artwork
 
     dl_timeout = float(getattr(config, "image_download_timeout", 15.0)) if isinstance(getattr(config, "image_download_timeout", None), (int, float)) else 15.0
@@ -99,6 +104,8 @@ def fetch_album_artwork(
         artwork = safe_download_image(image_url, timeout=dl_timeout, max_bytes=dl_max_bytes, block_private=dl_block_private)
         if artwork:
             logger.info(f"STEAMソースからアルバムアートワークを採用しました ({label}: {image_url})")
+            if on_artwork_source:
+                on_artwork_source("STEAM")
             return artwork
         return None
 
@@ -126,4 +133,6 @@ def fetch_album_artwork(
             return artwork
 
     logger.warning("全ソースから有効なアルバムアートワークを取得できませんでした")
+    if on_artwork_source:
+        on_artwork_source("MISSING")
     return None

@@ -187,7 +187,12 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
         for key, rows in sorted(duplicate_steam_keys.items()):
             row_details = []
             for row in rows:
-                assignment = alignment_slots.get(str(row["row_index"])) or {}
+                assignment = (
+                    alignment_slots.get(f"{key[0]}_{key[1]}")
+                    or alignment_slots.get(str(row["row_index"]))
+                    or alignment_slots.get(str(key[1]))
+                    or {}
+                )
                 file_count = len(assignment.get("files") or [])
                 row_details.append(
                     f"行{row['row_index']}: {esc(row['title'])} "
@@ -280,6 +285,66 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
     """
 
     @staticmethod
+    def _render_format_selection_audit_html(audit: Optional[Dict[str, Any]]) -> str:
+        if not audit:
+            return ""
+        esc = ReportGenerator._esc
+        rows = []
+        for slot in audit.get("slots", []):
+            candidate_formats = ", ".join(
+                f"{esc(item.get('format'))} x{esc(item.get('count'))}"
+                for item in slot.get("candidate_formats", [])
+            ) or "なし"
+            selection = slot.get("selection_matches_best")
+            result = "一致" if selection is True else "不一致" if selection is False else "未検証"
+            rows.append(
+                "<tr>"
+                f"<td>{esc(slot.get('slot_key'))}</td>"
+                f"<td>{esc(slot.get('candidate_count'))}</td>"
+                f"<td>{candidate_formats}</td>"
+                f"<td>{esc(slot.get('best_available_format') or 'なし')}</td>"
+                f"<td>{esc(slot.get('selected_source_format') or 'なし')}</td>"
+                f"<td>{result}</td>"
+                "</tr>"
+            )
+        return f"""
+    <div class="card" style="margin: 20px 0;">
+        <h3>入力形式と採用形式の監査</h3>
+        <p><strong>検証済み:</strong> {esc(audit.get('verified_slot_count', 0))}
+        / <strong>候補slot:</strong> {esc(audit.get('candidate_slot_count', 0))}
+        / <strong>不一致:</strong> {esc(audit.get('mismatch_slot_count', 0))}
+        / <strong>未検証:</strong> {esc(audit.get('unverifiable_slot_count', 0))}</p>
+        <details><summary>slotごとの形式選択証跡</summary>
+        <table class="tag-table"><thead><tr><th>slot</th><th>候補数</th><th>入力形式</th>
+        <th>最良候補</th><th>採用source形式</th><th>判定</th></tr></thead>
+        <tbody>{''.join(rows)}</tbody></table></details>
+    </div>
+    """
+
+    @staticmethod
+    def _render_field_provenance_audit_html(audit: Optional[Dict[str, Any]]) -> str:
+        if not audit:
+            return ""
+        esc = ReportGenerator._esc
+        rows = []
+        for field, sources in (audit.get("fields") or {}).items():
+            source_counts = " / ".join(
+                f"{esc(source)}: {esc(count)}"
+                for source, count in sorted(sources.items())
+            ) or "NOT_RECORDED"
+            rows.append(f"<tr><td>{esc(field)}</td><td>{source_counts}</td></tr>")
+        return f"""
+    <div class="card" style="margin: 20px 0;">
+        <h3>タグフィールドのsource監査</h3>
+        <p><strong>対象track:</strong> {esc(audit.get('track_count', 0))}
+        / `NOT_RECORDED`は出所を確定できない値です。</p>
+        <details><summary>field別source件数</summary>
+        <table class="tag-table"><thead><tr><th>field</th><th>source / 件数</th></tr></thead>
+        <tbody>{''.join(rows)}</tbody></table></details>
+    </div>
+    """
+
+    @staticmethod
     def _render_track_rows(processed_tracks: List[Dict[str, Any]]) -> str:
         esc = ReportGenerator._esc
 
@@ -361,7 +426,7 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
         return html_out
 
     @staticmethod
-    def generate_html_report(app_id: int, steam_meta: SteamMetadata, status: str, message: str, score: int, reason: str, processed_tracks: List[Dict[str, Any]], llm_log: Dict[str, Any], mbz_candidates: List[Dict[str, Any]], localized_now_str: str, priority_str: str, quality: Optional[int] = None, alignment_inputs: Optional[Dict[str, Any]] = None) -> str:
+    def generate_html_report(app_id: int, steam_meta: SteamMetadata, status: str, message: str, score: int, reason: str, processed_tracks: List[Dict[str, Any]], llm_log: Dict[str, Any], mbz_candidates: List[Dict[str, Any]], localized_now_str: str, priority_str: str, quality: Optional[int] = None, alignment_inputs: Optional[Dict[str, Any]] = None, format_selection_audit: Optional[Dict[str, Any]] = None, field_provenance_audit: Optional[Dict[str, Any]] = None) -> str:
         esc = ReportGenerator._esc
 
         is_fast = llm_log.get("fast_track", False)
@@ -422,6 +487,12 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
         alignment_inputs_html = ReportGenerator._render_alignment_inputs_html(alignment_inputs)
         structural_audit_html = ReportGenerator._render_structural_audit_html(
             steam_meta, processed_tracks, llm_log
+        )
+        structural_audit_html += ReportGenerator._render_format_selection_audit_html(
+            format_selection_audit
+        )
+        structural_audit_html += ReportGenerator._render_field_provenance_audit_html(
+            field_provenance_audit
         )
         review_candidates_html = ReportGenerator._render_review_candidates_html(llm_log)
         unassigned_warning_html = ""

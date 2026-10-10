@@ -301,3 +301,31 @@ def test_audit_report_explains_duplicate_steam_rows_and_adoption():
     assert "27 Final Boss.mp3" in report
     assert "Different title assigned to occupied slot" in report
     assert "review_candidates/candidate_001/27 Final Boss.aif" in report
+
+
+def test_audit_report_uses_disc_aware_fast_track_slot_assignment():
+    steam_meta = SteamMetadata(
+        app_id=335371,
+        name="Synthetic Multi-disc OST",
+        store_tracklist=[
+            {"disc": 2, "number": "1", "title": "Opening"},
+            {"disc": 2, "number": "1", "title": "Opening (Alternate)"},
+        ],
+    )
+    report = ReportGenerator.generate_html_report(
+        app_id=335371,
+        steam_meta=steam_meta,
+        status="review",
+        message="Duplicate Steam slot",
+        score=100,
+        reason="Synthetic structural mismatch",
+        processed_tracks=[],
+        llm_log={"fast_track": True, "alignment_res": {"slots": {"2_1": {"files": ["file-a", "file-b"]}}}},
+        mbz_candidates=[],
+        localized_now_str="2026-10-10 12:00:00",
+        priority_str="STEAM_STORE,STEAM_PICS",
+    )
+
+    assert "2:1" in report
+    assert "行1: Opening (LLM割当 2ファイル)" in report
+    assert "行2: Opening (Alternate) (LLM割当 2ファイル)" in report

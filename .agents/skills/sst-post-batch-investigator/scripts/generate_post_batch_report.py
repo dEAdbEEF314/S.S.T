@@ -2,6 +2,7 @@ import sqlite3
 import json
 import html
 import re
+import unicodedata
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -29,6 +30,12 @@ def _track_key(track):
     return _normalize_slot(tags.get("disc_number", "1"), tags.get("track_number", "0"))
 
 
+def _normalize_official_title(value):
+    decoded = html.unescape(str(value or ""))
+    normalized = unicodedata.normalize("NFKC", decoded)
+    return " ".join(normalized.split()).casefold()
+
+
 def _integrity_snapshot(meta, tracks):
     steam_info = meta.get("steam_info") or {}
     steam_tracklist = steam_info.get("store_tracklist") or []
@@ -49,8 +56,15 @@ def _integrity_snapshot(meta, tracks):
 
     legitimate_unknown_count = 0
     anomalous_unknown_count = 0
+    official_title_mismatch_count = 0
     for track, key in zip(tracks, track_keys):
         title = str((track.get("tags") or {}).get("title") or "Unknown").strip()
+        official_titles = expected_titles.get(key, [])
+        if official_titles and not any(
+            _normalize_official_title(title) == _normalize_official_title(official_title)
+            for official_title in official_titles
+        ):
+            official_title_mismatch_count += 1
         if title.casefold().startswith("unknown"):
             steam_titles = expected_titles.get(key, [])
             if steam_titles and all(value.casefold().startswith("unknown") for value in steam_titles):
@@ -75,6 +89,7 @@ def _integrity_snapshot(meta, tracks):
         "unknown_title_count": legitimate_unknown_count + anomalous_unknown_count,
         "legitimate_unknown_title_count": legitimate_unknown_count,
         "anomalous_unknown_title_count": anomalous_unknown_count,
+        "official_title_mismatch_count": official_title_mismatch_count,
     }
 
 
@@ -108,6 +123,8 @@ def _archive_integrity_issues(meta, tracks, integrity):
         issues.append(f"Track#0 ({integrity['track_zero_count']})")
     if integrity["anomalous_unknown_title_count"]:
         issues.append(f"Steam根拠のないUnknownタイトル ({integrity['anomalous_unknown_title_count']})")
+    if integrity["official_title_mismatch_count"]:
+        issues.append(f"正本タイトル不一致 ({integrity['official_title_mismatch_count']})")
     if integrity["fallback_count"] or integrity["local_title_count"]:
         issues.append(f"Fallback/LOCAL残留 ({integrity['fallback_count']}/{integrity['local_title_count']})")
     return issues
@@ -179,6 +196,7 @@ def _classify_review_causes(item, io_error_events):
         "Track#0",
         "Unknown Title",
         "Dirty Tags",
+        "Official Title Mismatch",
     )
     integrity = item["integrity"]
     has_structural_issue = any(token in evidence for token in structural_tokens) or any(
@@ -192,6 +210,7 @@ def _classify_review_causes(item, io_error_events):
             "unexpected_slots",
             "track_zero_count",
             "anomalous_unknown_title_count",
+            "official_title_mismatch_count",
         )
     )
     if has_structural_issue:
