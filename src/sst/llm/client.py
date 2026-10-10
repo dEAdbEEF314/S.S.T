@@ -368,11 +368,27 @@ class LLMClient:
                         log_entry["response"] = content
 
                         try:
+                            json_repairs = []
                             parsed = parse_llm_response(
                                 content,
                                 request_kind,
                                 is_degraded_active,
+                                repair_callback=json_repairs.append,
                             )
+                            if json_repairs:
+                                log_entry["json_repairs"] = json_repairs
+                                logger.warning(
+                                    "LLM_RESPONSE_JSON_REPAIRED %s",
+                                    json.dumps(
+                                        {
+                                            "app_id": app_id,
+                                            "request_kind": request_kind,
+                                            "request_id": log_entry.get("request_id"),
+                                            "repairs": json_repairs,
+                                        },
+                                        ensure_ascii=False,
+                                    ),
+                                )
                             total_duration = round(time.monotonic() - request_started, 3)
                             prompt_eval_count = log_entry.get("meta", {}).get("prompt_eval_count")
                             eval_count = log_entry.get("meta", {}).get("eval_count")

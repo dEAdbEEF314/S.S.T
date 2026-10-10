@@ -148,72 +148,97 @@ class MetadataBuilder:
 
         clean_fallback = clean_title.split("::")[0] if "::" in clean_title else clean_title
         res_title = res_title or clean_fallback
-        if " / " in res_title and len(res_title) > 60:
+        if chosen_src not in {"STEAM", "MBZ_STEAM_VERIFIED"} and " / " in res_title and len(res_title) > 60:
             res_title = res_title.split(" / ", 1)[0].strip()
 
         # 2.2 TPE1 (Artist)
         # Priority: ACOUSTID recording artist -> MBZ release artist -> Steam Credits -> Developer
         res_artist = None
+        artist_source = "UNKNOWN"
         if instr.get("mbz_track_artist"):
             res_artist = instr["mbz_track_artist"]
+            artist_source = "MBZ_STEAM_VERIFIED" if verified_mbz_authority else "MBZ_RECORDING_CREDIT"
         if not res_artist and mbz_track and isinstance(mbz_track, dict) and (mbz_track.get("recording_artist") or mbz_track.get("artist_credit")):
             res_artist = mbz_track.get("recording_artist") or mbz_track.get("artist_credit")
+            artist_source = "MBZ_STEAM_VERIFIED" if verified_mbz_authority else "MBZ_RELEASE"
         if mbz_album and mbz_album.get("artist"):
-            res_artist = res_artist or mbz_album.get("artist")
+            if not res_artist:
+                res_artist = mbz_album.get("artist")
+                artist_source = "MBZ_STEAM_VERIFIED" if verified_mbz_authority else "MBZ_RELEASE"
         if not res_artist and steam_meta.store_credits:
             match = re.search(r'Artist:\s*(.*)', steam_meta.store_credits, re.IGNORECASE)
             if match:
                 res_artist = match.group(1).strip()
+                artist_source = "STEAM_STORE_CREDITS"
         
         # Fallback: Developer (when missing or generic placeholder)
         if not res_artist or res_artist.lower() in ["various artists", "va", "various"]:
             res_artist = steam_meta.developer or "Unknown Artist"
+            artist_source = "STEAM_DEVELOPER" if steam_meta.developer else "UNKNOWN_PLACEHOLDER"
 
         # 2.3 TRCK (Track Number)
         res_track = ""
+        track_number_source = "UNKNOWN"
         matched_v_idx = instr.get("matched_v_idx")
         if verified_mbz_authority and mbz_track:
             res_track = str(mbz_track.get("position") or mbz_track.get("track_num") or "")
+            track_number_source = "MBZ_STEAM_VERIFIED"
         elif pics_track and pics_track.get("number") and not is_steam_numbering_broken:
             res_track = str(pics_track.get("number"))
+            track_number_source = "STEAM"
         elif instr.get("override_track") and str(instr.get("override_track")) != "0" and not is_steam_numbering_broken:
             res_track = str(instr.get("override_track"))
+            track_number_source = "STEAM_ALIGNMENT"
         elif matched_v_idx is not None:
             res_track = str(int(matched_v_idx) + 1)
+            track_number_source = "STEAM_SLOT_INDEX"
         elif mbz_track:
             val = mbz_track.get("position") or mbz_track.get("track_num")
             if val:
                 res_track = str(val)
+                track_number_source = "MBZ_RELEASE"
             
         if not res_track or res_track == "0":
             local_track = str(local_tags.get("track_number") or "0").split('/')[0].strip()
             if local_track != "0":
                 res_track = local_track
+                track_number_source = "EMBED"
         
         if not res_track or res_track == "0":
             res_track = str(adopted_info.get("filename_track") or 0)
+            if res_track != "0":
+                track_number_source = "LOCAL"
 
         if not res_track or res_track == "0":
             if s_idx is not None and s_idx >= 0:
                 res_track = str(s_idx + 1)
+                track_number_source = "STEAM_SLOT_INDEX"
 
         if not res_track or res_track == "0":
             res_track = "1"
+            track_number_source = "DEFAULT_PLACEHOLDER"
 
         # 2.4 TPOS (Disc Number)
         res_disc = ""
+        disc_number_source = "UNKNOWN"
         if verified_mbz_authority and mbz_track:
             res_disc = str(mbz_track.get("disc", disc))
+            disc_number_source = "MBZ_STEAM_VERIFIED"
         elif pics_track and pics_track.get("disc"):
             res_disc = str(pics_track.get("disc"))
+            disc_number_source = "STEAM"
         elif instr.get("override_disc") and str(instr.get("override_disc")) != "0":
             res_disc = str(instr.get("override_disc"))
+            disc_number_source = "STEAM_ALIGNMENT"
         elif local_tags.get("disc_number"):
             res_disc = str(local_tags.get("disc_number"))
+            disc_number_source = "EMBED"
         elif mbz_track:
             res_disc = str(mbz_track.get("disc", disc))
+            disc_number_source = "MBZ_RELEASE"
         else:
             res_disc = str(disc)
+            disc_number_source = "LOCAL_STRUCTURE"
                 
         actual_total_discs = total_discs
         if "/" in str(res_disc):
@@ -234,43 +259,57 @@ class MetadataBuilder:
 
         # 2.5 TYER (Year)
         res_year = None
+        year_source = "UNKNOWN"
         raw_date = steam_meta.release_date or ""
         if verified_mbz_authority and mbz_album and mbz_album.get("year"):
             raw_date = str(mbz_album["year"])
+            year_source = "MBZ_STEAM_VERIFIED"
         if raw_date:
             match = re.search(r'(\d{4})', str(raw_date))
             res_year = match.group(1) if match else "0000"
+            if year_source == "UNKNOWN":
+                year_source = "STEAM"
 
         if not res_year and mbz_album and mbz_album.get("year"):
             match = re.search(r'(\d{4})', str(mbz_album.get("year")))
             if match:
                 res_year = match.group(1)
+                year_source = "MBZ_RELEASE"
 
         if not res_year:
             raw_date = local_tags.get("year") or ""
             match = re.search(r'(\d{4})', str(raw_date))
             res_year = match.group(1) if match else "0000"
+            year_source = "EMBED" if match else "UNKNOWN_PLACEHOLDER"
+        if res_year == "0000":
+            year_source = "UNKNOWN_PLACEHOLDER"
 
         # 2.6 TPUB (Retired field per METADATA_SOURCE_SPEC.md - not exported to final tags)
 
         # 2.7 TCOM (Composer): STEAM credits are authoritative; LLM output is not.
         res_composer = None
+        composer_source = "UNKNOWN"
         if steam_meta.store_credits:
             patterns = [r'Composer:\s*(.*)', r'Music by\s*(.*)', r'Music:\s*(.*)', r'Sound by\s*(.*)', r'Soundtrack by\s*(.*)']
             for p in patterns:
                 match = re.search(p, steam_meta.store_credits, re.IGNORECASE)
                 if match:
                     res_composer = match.group(1).split('\n')[0].strip()
+                    composer_source = "STEAM_STORE_CREDITS"
                     break
         if not res_composer and mbz_track and isinstance(mbz_track, dict) and mbz_track.get("recording_artist"):
             res_composer = mbz_track.get("recording_artist")
+            composer_source = "MBZ_STEAM_VERIFIED" if verified_mbz_authority else "MBZ_RELEASE"
         if not res_composer and local_tags.get("composer"):
             res_composer = str(local_tags.get("composer"))
+            composer_source = "EMBED_COMPOSER"
         if not res_composer and local_tags.get("artist"):
             res_composer = str(local_tags.get("artist"))
+            composer_source = "EMBED_ARTIST_FALLBACK"
         
         if not res_composer:
             res_composer = steam_meta.developer or "Unknown"
+            composer_source = "STEAM_DEVELOPER" if steam_meta.developer else "UNKNOWN_PLACEHOLDER"
 
         # --- 3. Genre Logic ---
         all_genres = steam_meta.genres if steam_meta.genres else []
@@ -279,8 +318,10 @@ class MetadataBuilder:
         
         if all_genres:
             joined_genres = ", ".join(all_genres)
+            genre_source = "STEAM_GENRES" if steam_meta.genres else "STEAM_PARENT_GENRES"
         else:
             joined_genres = steam_meta.genre or steam_meta.parent_genre or 'Soundtrack'
+            genre_source = "STEAM_GENRE_FALLBACK" if steam_meta.genre or steam_meta.parent_genre else "DEFAULT_PLACEHOLDER"
             
         final_genre = f"STEAM VGM, {joined_genres}"
 
@@ -307,10 +348,29 @@ class MetadataBuilder:
 
         if verified_mbz_authority and mbz_album and mbz_album.get("artist"):
             album_artist = _u(mbz_album["artist"]).strip()
+            album_artist_source = "MBZ_STEAM_VERIFIED"
         else:
             album_artist_parts = [_u(part).strip() for part in [steam_meta.developer, steam_meta.publisher] if part]
             album_artist = ", ".join(album_artist_parts)
+            album_artist_source = "STEAM_DEVELOPER_PUBLISHER"
         clean_fallback_title = clean_title.split("::")[0] if "::" in clean_title else clean_title
+        album_source = "MBZ_STEAM_VERIFIED" if verified_mbz_authority and mbz_album else "STEAM"
+        field_provenance = {
+            "title": chosen_src,
+            "artist": artist_source,
+            "album": album_source,
+            "album_artist": album_artist_source,
+            "year": year_source,
+            "track_number": track_number_source,
+            "disc_number": disc_number_source,
+            "genre": genre_source,
+            "grouping": "STEAM",
+            "comment": ["EMBED", "STEAM"] if existing_comment else ["STEAM"],
+            "composer": composer_source,
+            "language": "CONFIG_USER_LANGUAGE",
+            "steam_appid": "STEAM_APP_IDENTITY",
+            "mbid": "MUSICBRAINZ_RELEASE" if mbz_candidates else "UNKNOWN",
+        }
 
         return {
             "title": _u(res_title or clean_fallback_title).strip(),
@@ -330,5 +390,6 @@ class MetadataBuilder:
             "language": user_language_639_2,
             "mbid": mbz_candidates[0].get("mbid") if mbz_candidates else None,
             "steam_appid": app_id,
-            "title_source": chosen_src
+            "title_source": chosen_src,
+            "_field_provenance": field_provenance,
         }

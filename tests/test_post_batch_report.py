@@ -90,6 +90,35 @@ def test_official_steam_unknown_is_not_an_archive_integrity_issue():
     assert REPORT._archive_integrity_issues(meta, meta["tracks"], integrity) == []
 
 
+def test_archive_integrity_flags_official_title_mismatch_after_safe_normalization():
+    meta = _archive_meta(
+        [
+            {"disc": "1", "number": "1", "title": "Giant&apos;s Deep"},
+            {"disc": "1", "number": "2", "title": "Official Second"},
+        ],
+        [
+            _track("1", "Giant's Deep", "1_1"),
+            _track("2", "Different Second", "1_2"),
+        ],
+    )
+
+    integrity = REPORT._integrity_snapshot(meta, meta["tracks"])
+    issues = REPORT._archive_integrity_issues(meta, meta["tracks"], integrity)
+
+    assert integrity["official_title_mismatch_count"] == 1
+    assert any("正本タイトル不一致 (1)" in issue for issue in issues)
+
+    review_item = {
+        "app_id": 1,
+        "meta": meta,
+        "msg": "[Official Title Mismatch (1)]",
+        "reason": "",
+        "integrity": integrity,
+        "unassigned_count": 0,
+    }
+    assert "structural" in REPORT._classify_review_causes(review_item, [])
+
+
 def test_io_error_evidence_requires_matching_app_and_recent_timestamp():
     item = {
         "app_id": 100,

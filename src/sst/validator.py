@@ -1,4 +1,6 @@
+import html
 import re
+import unicodedata
 import logging
 from typing import Tuple, List, Dict, Any, Optional
 
@@ -65,6 +67,12 @@ class ResultValidator:
             n = str(num or "0").split("/")[0].strip().lstrip("0") or "0"
             return d, n
 
+        def _normalize_official_title(value: Any) -> str:
+            decoded = html.unescape(str(value or ""))
+            normalized = unicodedata.normalize("NFKC", decoded)
+            return " ".join(normalized.split()).casefold()
+
+        expected_titles_by_key: Dict[Tuple[str, str], List[str]] = {}
         if not steam_meta.store_tracklist:
             issues.append("Steam Tracklist Missing")
         else:
@@ -72,6 +80,14 @@ class ResultValidator:
                 _norm_slot(track.get("disc", 1), track.get("number", "0"))
                 for track in steam_meta.store_tracklist
             }
+            for steam_track in steam_meta.store_tracklist:
+                key = _norm_slot(
+                    steam_track.get("disc", 1),
+                    steam_track.get("number", "0"),
+                )
+                expected_titles_by_key.setdefault(key, []).append(
+                    str(steam_track.get("title") or steam_track.get("name") or "")
+                )
             final_keys = {
                 _norm_slot(
                     track.get("tags", {}).get("disc_number", "1"),
@@ -134,6 +150,25 @@ class ResultValidator:
             issues.append(f"Track#0 x{z_count}")
         if anomalous_unknown_count > 0:
             issues.append(f"Unknown Title x{anomalous_unknown_count}")
+
+        official_title_mismatch_count = 0
+        for track in tracks:
+            tags = track.get("tags", {})
+            key = _norm_slot(
+                tags.get("disc_number", "1"),
+                tags.get("track_number", "0"),
+            )
+            expected_titles = expected_titles_by_key.get(key, [])
+            if not expected_titles:
+                continue
+            output_title = _normalize_official_title(tags.get("title"))
+            if not output_title or not any(
+                output_title == _normalize_official_title(expected_title)
+                for expected_title in expected_titles
+            ):
+                official_title_mismatch_count += 1
+        if official_title_mismatch_count:
+            issues.append(f"Official Title Mismatch ({official_title_mismatch_count})")
 
         # Dirty Tags (Pre-existing track numbers in titles)
         dirty_pattern = re.compile(r'^(\d+)([\s.-]+)')
@@ -232,6 +267,7 @@ class ResultValidator:
         diagnostics = llm_log.setdefault("diagnostics", {})
         diagnostics["steam_unknown_count"] = legitimate_unknown_count
         diagnostics["anomalous_unknown_count"] = anomalous_unknown_count
+        diagnostics["official_title_mismatch_count"] = official_title_mismatch_count
         steam_expected_slots = len(steam_meta.store_tracklist or [])
         adopted_slots = len(tracks)
         unassigned_slots = max(0, steam_expected_slots - adopted_slots)

@@ -139,12 +139,16 @@ def encode_and_tag_tracks(
     if artwork_prepared:
         album_artwork_path = prepared_album_artwork_path
     else:
+        llm_diagnostics = llm_log.setdefault("diagnostics", {})
         raw_album_artwork = fetch_artwork(
             steam_meta,
             mbz_candidates,
             track_groups,
             allow_mbz_artwork_search=llm_log.get("processing_route") == "FAST_TRACK",
             on_mbz_candidate=apply_fast_track_mbz_artists,
+            on_artwork_source=lambda source: llm_diagnostics.__setitem__(
+                "album_artwork_source", source
+            ),
         )
         album_artwork_path = tagger.process_artwork(raw_album_artwork) if raw_album_artwork else None
 
@@ -173,6 +177,9 @@ def encode_and_tag_tracks(
             notifier=notifier,
             on_track_complete=on_track_complete,
             defer_copy_failure=defer_copy_failures,
+            album_artwork_source=(llm_log.get("diagnostics") or {}).get(
+                "album_artwork_source", "UNKNOWN"
+            ),
         )
 
     if adopted_file_subset is None:

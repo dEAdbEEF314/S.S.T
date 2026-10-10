@@ -2,7 +2,10 @@ from sst.config import Config
 from sst.llm.prompts import build_identity_prompt, build_mapping_prompt, build_degraded_prompt
 from sst.llm.client import LLMClient
 from sst.llm.retry_policy import LLMRetryPolicy
+from sst.llm.response_parser import parse_llm_response
 from unittest.mock import patch
+import json
+import pytest
 
 def test_build_degraded_prompt_identity():
     original = build_identity_prompt(
@@ -139,3 +142,55 @@ def test_degraded_response_normalization():
 
     assert m_parsed["slots"]["1"]["reason"] == "Degraded mapping"
     assert m_parsed["unassigned_files"] == []
+
+
+def test_identity_parser_repairs_one_duplicate_quote_before_known_key():
+    repair_events = []
+    response = (
+        '{"global_tags":{"canonical_label":"Synthetic Publisher",'
+        '""chosen_mbz_id":"synthetic-mbid"},"album_confidence":95}'
+    )
+
+    parsed = parse_llm_response(
+        response,
+        request_kind="identity",
+        degraded_active=False,
+        repair_callback=repair_events.append,
+    )
+
+    assert parsed["global_tags"]["chosen_mbz_id"] == "synthetic-mbid"
+    assert parsed["album_confidence"] == 95
+    assert repair_events == [{
+        "repair_code": "duplicate_quote_before_chosen_mbz_id",
+        "field": "chosen_mbz_id",
+    }]
+
+
+def test_identity_parser_does_not_repair_other_json_syntax_errors():
+    repair_events = []
+    response = '{"global_tags":{"canonical_label" "Synthetic Publisher"}}'
+
+    with pytest.raises(json.JSONDecodeError):
+        parse_llm_response(
+            response,
+            request_kind="identity",
+            degraded_active=False,
+            repair_callback=repair_events.append,
+        )
+
+    assert repair_events == []
+
+
+def test_track_mapping_parser_does_not_apply_identity_quote_repair():
+    repair_events = []
+    response = '{"slots":{},""chosen_mbz_id":"synthetic-id"}'
+
+    with pytest.raises(json.JSONDecodeError):
+        parse_llm_response(
+            response,
+            request_kind="track_mapping",
+            degraded_active=False,
+            repair_callback=repair_events.append,
+        )
+
+    assert repair_events == []

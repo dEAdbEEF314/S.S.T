@@ -1,6 +1,104 @@
 from typing import Any, Dict, List
 
 from ..models import SteamMetadata
+from ..track_grouper import TrackManager
+
+
+def _build_format_selection_audit(
+    slot_variant_index: Dict[Any, Any],
+    processed_tracks_meta: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    priorities = TrackManager.get_audio_format_priority()
+    selected_by_slot = {
+        str(track.get("slot_key")): str(track.get("source_format") or "").lower()
+        for track in processed_tracks_meta
+        if track.get("slot_key")
+    }
+    slot_records = []
+
+    for slot_key, variants in slot_variant_index.items():
+        if not isinstance(slot_key, tuple) or len(slot_key) != 2:
+            continue
+        disc_number, track_number = slot_key
+        if not str(track_number).isdigit():
+            continue
+
+        normalized_slot = f"{disc_number}_{int(track_number)}"
+        format_counts: Dict[str, int] = {}
+        for variant in variants:
+            file_format = str(variant.get("format") or "unknown").lower()
+            format_counts[file_format] = format_counts.get(file_format, 0) + 1
+
+        ordered_formats = sorted(
+            format_counts.items(),
+            key=lambda item: priorities.index(item[0]) if item[0] in priorities else len(priorities),
+        )
+        best_format = ordered_formats[0][0] if ordered_formats else None
+        selected_format = selected_by_slot.get(normalized_slot) or None
+        matches_best = selected_format == best_format if selected_format else None
+        slot_records.append(
+            {
+                "slot_key": normalized_slot,
+                "candidate_count": sum(format_counts.values()),
+                "candidate_formats": [
+                    {
+                        "format": file_format,
+                        "count": count,
+                        "priority_rank": priorities.index(file_format)
+                        if file_format in priorities
+                        else len(priorities),
+                    }
+                    for file_format, count in ordered_formats
+                ],
+                "best_available_format": best_format,
+                "selected_source_format": selected_format,
+                "selection_matches_best": matches_best,
+            }
+        )
+
+    slot_records.sort(key=lambda item: tuple(int(part) for part in item["slot_key"].split("_")))
+    return {
+        "selection_priority": priorities,
+        "candidate_slot_count": len(slot_records),
+        "verified_slot_count": sum(item["selection_matches_best"] is True for item in slot_records),
+        "mismatch_slot_count": sum(item["selection_matches_best"] is False for item in slot_records),
+        "unverifiable_slot_count": sum(item["selection_matches_best"] is None for item in slot_records),
+        "slots": slot_records,
+    }
+
+
+def _build_field_provenance_audit(
+    processed_tracks_meta: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    fields = (
+        "title",
+        "artist",
+        "album",
+        "album_artist",
+        "year",
+        "track_number",
+        "disc_number",
+        "genre",
+        "grouping",
+        "comment",
+        "composer",
+        "language",
+        "steam_appid",
+        "apic",
+    )
+    counts: Dict[str, Dict[str, int]] = {field: {} for field in fields}
+    for track in processed_tracks_meta:
+        provenance = track.get("field_provenance") or {}
+        for field in fields:
+            source = provenance.get(field, "NOT_RECORDED")
+            if isinstance(source, list):
+                source = "+".join(str(item) for item in source) or "NOT_RECORDED"
+            source_name = str(source or "NOT_RECORDED")
+            counts[field][source_name] = counts[field].get(source_name, 0) + 1
+    return {
+        "track_count": len(processed_tracks_meta),
+        "fields": counts,
+    }
 
 
 def build_album_summary_metadata(
@@ -49,6 +147,11 @@ def build_album_summary_metadata(
         log for log in io_retry_logs if log.get("final_state") != "failed"
     ][:5]
     audit_copy_logs = failed_copy_logs + successful_copy_logs
+    format_selection_audit = _build_format_selection_audit(
+        slot_variant_index,
+        processed_tracks_meta,
+    )
+    field_provenance_audit = _build_field_provenance_audit(processed_tracks_meta)
     return {
         "app_id": app_id,
         "album_name": steam_meta.name,
@@ -74,6 +177,8 @@ def build_album_summary_metadata(
             "track_group_count": len(track_groups),
             "slot_variant_count": len(slot_variant_index),
             "multi_variant_slot_count": multi_variant_slot_count,
+            "format_selection": format_selection_audit,
+            "field_provenance": field_provenance_audit,
             "adopted_slot_count": adopted_file_count,
             "io_retry_count": io_retry_count,
             "io_retry_logs": audit_copy_logs,

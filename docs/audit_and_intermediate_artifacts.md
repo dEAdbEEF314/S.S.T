@@ -15,11 +15,19 @@ S.S.T は Steam の公式スロット構造を正本として、物理出力と�
 - 変換後のファイル参照パスはtrack間で一意でなければならない。slot違いの同名入力は衝突しないステージ名に変換し、metadata参照とZIP実体を1:1で検証する。
 - Review 理由は `primary_review_cause` と `secondary_review_causes` に分けて保存する。
 - 未割当ファイルは、slot 不一致、候補過剰、LLM 未割当、変換失敗などの上流理由を保持する。
+- identity JSONは一般repairを行わない。`chosen_mbz_id`直前の余分なquoteが1個だけあり、それを除くとJSON object全体がparseできる厳密な既知ケースのみ修復し、repair code/fieldを構造化ログと`llm_log.json`へ残す。他fieldの破損・複数箇所・truncationは従来どおりretry/Reviewとする。
 
 各処理結果の監査情報には、Steam期待slot数、最終採用slot数、重複slot数、正規Unknown数、異常Unknown数、入力数、採用数、未割当数、Archive preflight問題を含める。
 `TRACKS_ADOPTED.adopted_file_count` は採用済みslot数（採用dictのrecord数）と一致させ、variant配列内のキー数を誤って合算しない。slot矛盾・ファイルパス重複・最終実体不足はArchive preflightのReview理由に含める。
 
 copyの最終失敗はFFmpeg変換へ渡さず、通常バッチ完了後の一回限りの居残り再試行へ送る。再試行後も失敗したAppIDは`Deferred Copy Recovery Exhausted (N)`でReview確定する。`metadata.json.audit`には遅延copy件数・回復件数・最終失敗件数を保存し、最終失敗の詳細ログは全件保持する。
+
+Fast-Trackの`llm_log.json.alignment_res.slots`は`<disc>_<track>`をslot keyとして使う。ディスクを省略した曲番だけのkeyは、複数ディスクで曲番が再利用されると割当を誤集約するため使用しない。
+`metadata.json.audit.format_selection`にはslotごとの候補format件数と優先順位、最良候補format、採用source format、および両者の一致判定を保存する。入力ファイル名・パスは記録せず、採用形式の事後監査に必要な最小情報に限定する。不一致は監査HTMLで明示し、採用形式を確認できない場合は未検証として区別する。
+
+Archive前には、最終TIT2を同じ`(disc, track)` slotの正本titleと照合する。通常routeの正本はSteam、`MBZ_STEAM_VERIFIED`は検証済みMBZ tracklistとし、正規化はHTML unescape・Unicode NFKC・空白正規化・casefoldに限定する。不一致は`Official Title Mismatch (N)`としてReviewにする。title comparisonは音声contentの同定と区別する。
+
+最終trackの`field_provenance`には、タグ各fieldの実採用sourceを保存し、`audit.field_provenance`およびZIP内HTMLに集計する。sourceは来歴であり正答保証ではない。欠落sourceは`NOT_RECORDED`/`UNKNOWN`として残し、推測で埋めない。source mapはID3 tag値から分離する。
 
 ## LLM
 
@@ -59,3 +67,16 @@ LLM 応答の `done_reason=length` / `max_tokens` は成功扱いにしない。
 ## 回帰テスト方針
 
 Steam の正規 Unknown、通常タイトルに対する異常 Unknown、形式違い候補、重複 slot、LLM 切り詰め、Archiveの相殺slot不整合、複数Review原因、I/O分類、明示route計数、INFO/DEBUG/`--dev` のcleanupを合成fixtureで検証する。既存の実データレポートはテストfixtureとして使わず、レポートとDB metadataの契約を検証する。
+
+## 外部正解によるroute別完全性測定
+
+Archive完了率・confidence・Steam slot一致を音源内容の正答率とみなしてはならない。別の人手または独立fingerprint検証を正解ラベルとし、route×statusの層ごとに再現可能なsampleを作り、`scripts/completeness_audit.py`で結果を集計する。
+
+```bash
+uv run python scripts/completeness_audit.py sample --db data/sst_local_state.db --per-stratum 5 --tracks-per-album 3 --seed 20261010 --out .agents/skills/sst-batch-analyzer/scratch/completeness_audit_sample.json
+uv run python scripts/completeness_audit.py analyze --input .agents/skills/sst-batch-analyzer/scratch/completeness_audit_sample.json --out .agents/skills/sst-batch-analyzer/scratch/completeness_audit_results.json
+```
+
+sample manifestではアルバム正体、slot構造、主要metadataをアルバム単位で、sample音源とtagged titleの一致をtrack単位で人手によりtrue/false/null評価する。アルバムのsample audio全件一致はtrack labelsから自動導出し、重複入力させない。nullは未測定として分母から外し、正解扱いにしない。集計はroute合算とroute/status層別の成功数・失敗数・未評価数およびWilson 95%区間を出す。seed・母集団・route/status層のsample数を保存し、sample対象のZIP member以外のhost path・username・raw logは出力しない。未記入ラベルの段階では正答率を出さず、sample計画だけを報告する。
+
+LLM request統計は`logs/SST_DEBUG_*.log`全体からAppIDと時刻を読み、各AppIDの最新`PROCESS_START`からDBの`processed_at`までに限定する。最新ログ1本の件数を母集団全体のLLM利用数として扱わず、相関できないAppID数も併記する。

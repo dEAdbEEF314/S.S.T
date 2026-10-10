@@ -50,6 +50,8 @@ def save_album_package(
             config.resolved_metadata_source_priority,
             quality=quality,
             alignment_inputs=alignment_inputs_bundle,
+            format_selection_audit=(summary_meta.get("audit") or {}).get("format_selection"),
+            field_provenance_audit=(summary_meta.get("audit") or {}).get("field_provenance"),
         ),
     }
     review_candidates = (

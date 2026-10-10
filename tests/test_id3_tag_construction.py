@@ -224,6 +224,40 @@ def test_builder_preserves_steam_track_number_for_single_track_album():
 
     assert tag_map["track_number"] == "7"
     assert tag_map["title"] == "Opening"
+    assert tag_map["_field_provenance"]["title"] == "STEAM"
+    assert tag_map["_field_provenance"]["track_number"] == "STEAM"
+
+
+def test_builder_preserves_long_authoritative_steam_title():
+    from sst.builder import MetadataBuilder
+    from sst.models import SteamMetadata
+
+    official_title = "Opening / Alternate Theme with an intentionally long official subtitle"
+    steam_meta = SteamMetadata(
+        app_id=1611230,
+        name="Synthetic OST",
+        developer="Synthetic Developer",
+        publisher="Synthetic Publisher",
+        store_tracklist=[{"disc": 1, "number": "1", "title": official_title}],
+    )
+
+    tag_map = MetadataBuilder.build_tag_map(
+        app_id=1611230,
+        disc=1,
+        clean_title="local theme",
+        adopted_info={"filename_track": 1, "path": Path("synthetic.flac")},
+        steam_meta=steam_meta,
+        instr={"matched_v_idx": 0, "override_track": "1", "override_disc": "1"},
+        mbz_candidates=[],
+        track_sources={},
+        user_language_639_2="eng",
+        slot_embedded_tags={},
+        global_identity={},
+        total_discs=1,
+    )
+
+    assert tag_map["title"] == official_title
+    assert tag_map["_field_provenance"]["title"] == "STEAM"
 
 
 def test_builder_flags_broken_numbering_when_single_track_has_number_zero():

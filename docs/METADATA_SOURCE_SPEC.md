@@ -661,6 +661,24 @@ Steamストアトラックリストとローカルタグのトラック番号照
 - **目的**: Steam側が非ゼロ埋め（`"1"`）、ローカルタグ側がゼロ埋め（`"01"`）であることによる、バリデーション時の偽の `Steam Slots Missing` / `Steam Slots Unexpected` や、事前検証時の偽の `Archive Artifact Steam Slot Mismatch` の発生を防止し、物理構造が完全に一致している健全なアルバム（DJMAX、Evertried 等）を確実に Archive 判定へ導く。
 - **安全境界**: この正規化はスロット照合キーおよび事前検証キーの整合判定のみに適用され、音声ファイルに出力されるタグ値（ID3フレーム）や物理ファイル名には一切干渉しない。
 
+### 11.2.2 Archive正本タイトル一致検証
+
+Archive判定前に、各最終トラックのTIT2を同じ`(disc, track)`の正本トラックリストと照合する。通常routeではSteam、`MBZ_STEAM_VERIFIED`では検証済みMBZ tracklistが正本である。照合文字列はHTML entityをunescapeし、Unicode NFKC、前後/連続空白の正規化、casefoldだけを適用する。正本タイトルの単語や句読点を削除して一致扱いにしてはならない。
+
+- slotの正本タイトルがない場合はこの比較だけでArchive可とせず、既存のSteam Tracklist Missing等を維持する。
+- 正規化後もTIT2が一致しないtrackがあれば`Official Title Mismatch (N)`をReview理由に加える。confidenceやFast-Track routeで上書きしない。
+- Steam/verified MBZから得た正本タイトルは、長さやスラッシュを理由に内容を切り詰めない。
+- これはタイトル/slot整合検査であり、音声波形が表示曲名と一致することを単独で証明するものではない。
+
+### 11.2.3 タグfield provenance
+
+各最終trackの`metadata.json.tracks[*].field_provenance`に、タグ値ごとの実採用sourceを記録する。少なくともtitle、artist、album、album_artist、year、track_number、disc_number、genre、grouping、comment、composer、language、steam_appid、APICを対象とする。アルバム単位の`metadata.json.audit.field_provenance`と`AUDIT_REPORT.html`はfield/source別件数を集計する。
+
+- provenanceは値の出所を示すもので、値が外部世界で正しいという保証やconfidenceではない。
+- fallbackは実際に選ばれたsourceを記録する。合成placeholderや未確定値は`UNKNOWN_PLACEHOLDER`等と区別する。
+- sourceを特定できないfieldは`NOT_RECORDED`または`UNKNOWN`と明示する。ファイル名・host path・raw logから後付け推定しない。
+- `field_provenance`はID3 tag mapから分離し、source label自体を音声tagへ書き込まない。
+
 ### 11.3 決定論的 album_confidence の算出（ファストトラック時）
 
 | 条件 | 加点 |
@@ -703,6 +721,7 @@ Steamストアトラックリストとローカルタグのトラック番号照
 5. **単一トラック分割時の決定論的フォールバック**: チャンクサイズが 1 の状態で LLM 応答が Truncation となった場合、即座に空指示として破棄せず、決定論的プレマッチ（AcoustID / MBZ_SEARCH / 番号・タイトル完全一致）からの安全なスロット復元を試みる。
 6. **Identity 判定時の Steam-Trust フォールバック**: `identity`（Phase 1）判定で Truncation が発生した場合、Steam トラックリストとローカルファイル数が 1:1 完全一致していれば、`STEAM_BASED` を前提として Phase 2 へ進む。構造不一致の場合は安全側に倒して Review を維持する。
 7. **LLMスロットキー解決の堅牢化契約**: LLM が `"STEAM_SLOT_0"`, `"STEAM_SLOT_1"`, `"SLOT_1"` 等のプレフィックス付きキーを出力した場合、パーサーは先頭の非数字文字を除去して数値を抽出し、スロット配列（0-indexed / 1-indexed）と安全に照合する。プロンプト出力例示においてもプレースホルダーではなく具体的な数値キー（`"1"`, `"2"`）を用いて例示する。
+8. **既知identity JSON delimiter typoの限定修復**: identity応答が`Expecting ':' delimiter`で失敗し、parserのerror位置がobject key直前の`""chosen_mbz_id":`と正確に一致し、その余分なquoteを1個だけ除去した完全JSONがobjectとしてparseできる場合に限り修復してnormalizationへ渡す。修復はidentity requestだけを対象とし、`chosen_mbz_id`以外、複数修復が必要な応答、JSON末尾欠損、その他のsyntax errorを自動修復してはならない。confidence、source選択、slot、tag値は修復しない。成功時は`json_repairs`と`LLM_RESPONSE_JSON_REPAIRED`へrepair code/fieldを記録し、response本文やpromptを重複してログ出力しない。retryは修復後parseが成功した場合のみ回避される。既存Review rowは自動昇格せず、同一AppIDの再処理と通常validator/preflightでのみ結果を確定する。
 
 ### 11.6 音声変換警告（audio_warn）と物理破損（audio_fail）の監査分離規約
 
