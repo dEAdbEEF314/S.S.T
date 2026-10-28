@@ -622,3 +622,35 @@ def test_fast_track_final_one_file_per_slot():
     # 提案4: 最終1slot=1採用ファイル（slot数と採用数が一致）
     assert len(adopted) == len(steam_meta.store_tracklist)
     assert len(adopted) == len(slot_variant_index)
+
+
+def test_fast_track_rejects_shifted_tracks_where_titles_match_other_steam_slots():
+    """修正指示書 06: 番号とタイトルがズレて他スロットと一致しているアルバムでは Fast-Track を拒否して LLM へ委ねる。"""
+    processor = make_processor()
+    steam_meta = SteamMetadata(
+        app_id=100,
+        name="Shifted OST",
+        developer="Dev",
+        publisher="Pub",
+        release_date="2024-01-01",
+        store_tracklist=[
+            {"disc": 1, "number": 1, "title": "Rebal"},
+            {"disc": 1, "number": 2, "title": "The Final Stand"},
+            {"disc": 1, "number": 3, "title": "Contemplation"},
+        ],
+    )
+    track_groups = {
+        (1, "01_The Final Stand.mp3::f1"): [
+            {"file_id": "f1", "path": Path("/tmp/01_The Final Stand.mp3"), "t_num_val": "1", "duration": 180.0, "format": "mp3", "norm_stem": "the final stand"}
+        ],
+        (1, "02_Contemplation.mp3::f2"): [
+            {"file_id": "f2", "path": Path("/tmp/02_Contemplation.mp3"), "t_num_val": "2", "duration": 200.0, "format": "mp3", "norm_stem": "contemplation"}
+        ],
+        (1, "03_Rebal.mp3::f3"): [
+            {"file_id": "f3", "path": Path("/tmp/03_Rebal.mp3"), "t_num_val": "3", "duration": 220.0, "format": "mp3", "norm_stem": "rebal"}
+        ],
+    }
+
+    ok, final_map, _ = processor._check_fast_track(100, steam_meta, track_groups, [])
+    assert ok is False
+    assert final_map is None

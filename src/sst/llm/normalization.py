@@ -56,6 +56,9 @@ def resolve_slot_key_to_v_idx(
     return None
 
 
+PROMPT_DUMMY_FILE_IDS = {"<FILE_ID>", "FILE_ID", "FILE_ID_A", "FILE_ID_B", "FILE_ID_C", "<FILE_ID_A>"}
+
+
 def normalize_track_mapping_result(
     track_res: Dict[str, Any],
     full_ref_steam: Optional[List[Dict[str, Any]]],
@@ -78,7 +81,9 @@ def normalize_track_mapping_result(
             rejected_slot_keys.append(str(slot_key))
             continue
         for file_idx in slot_data.get("files", []):
-            file_key = str(file_idx)
+            file_key = str(file_idx).strip()
+            if not file_key or file_key.upper() in PROMPT_DUMMY_FILE_IDS:
+                continue
             prematch = prematch_map.get(file_key) if prematch_map else None
             track_instructions[file_key] = {
                 "matched_v_idx": matched_v_idx,
@@ -147,7 +152,9 @@ def build_slot_view(
                 continue
             valid_files = []
             for file_id in slot_data.get("files", []):
-                normalized_file_id = str(file_id)
+                normalized_file_id = str(file_id).strip()
+                if not normalized_file_id or normalized_file_id.upper() in PROMPT_DUMMY_FILE_IDS:
+                    continue
                 if known_file_ids and (
                     normalized_file_id not in known_file_ids
                     or normalized_file_id in seen_file_ids

@@ -1,7 +1,7 @@
 import logging
 from collections import defaultdict
 from difflib import SequenceMatcher
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..models import SteamMetadata
 from ..track_grouper import TrackManager
@@ -92,12 +92,44 @@ def _deduplicate_format_variants_for_slot(
     return tids
 
 
+def _extract_local_titles_for_tid(tid: str, track_groups: Optional[Dict] = None) -> List[str]:
+    titles = []
+    if "_" in tid:
+        raw_local = tid.split("_", 1)[1].split("::", 1)[0]
+        titles.append(raw_local)
+    group_key = _parse_tid_group_key(tid)
+    if track_groups and group_key and group_key in track_groups:
+        for variant in track_groups[group_key]:
+            t = (variant.get("meta") or {}).get("title") or variant.get("title")
+            if t and t not in titles:
+                titles.append(t)
+    return titles
+
+
+def _match_titles(norm_local: str, norm_steam: str) -> Tuple[bool, float]:
+    """完全一致/プレフィックス一致/空白無視一致、および類似度比率を返す"""
+    if not norm_local or not norm_steam:
+        return False, 0.0
+    if (
+        norm_steam == norm_local
+        or norm_steam.startswith(norm_local)
+        or norm_local.startswith(norm_steam)
+        or norm_steam.replace(" ", "") == norm_local.replace(" ", "")
+    ):
+        return True, 1.0
+    sim = SequenceMatcher(None, norm_local, norm_steam).ratio()
+    if sim >= 0.80:
+        return True, sim
+    return False, sim
+
+
 def _resolve_multidisc_index_conflicts(
     app_id: int,
     v_idx: int,
     tids: List[str],
     store_tracks: List[Dict[str, Any]],
     final_metadata: Dict[str, Any],
+    track_groups: Optional[Dict] = None,
 ) -> bool:
     local_discs = set(int(tid.split("_", 1)[0]) for tid in tids)
     if len(local_discs) <= 1:
@@ -105,20 +137,29 @@ def _resolve_multidisc_index_conflicts(
 
     logger.info(f"[{app_id}] v_idx {v_idx} のマルチディスクインデックスの衝突を検出しました。ローカルのディスク番号に基づいて再配置を試みます。")
     for tid in tids:
-        local_disc, local_title = tid.split("_", 1)
-        local_disc_int = int(local_disc)
+        local_disc_int = int(tid.split("_", 1)[0])
+        local_titles = _extract_local_titles_for_tid(tid, track_groups)
 
         best_match_idx = -1
         for steam_idx, steam_track in enumerate(store_tracks):
             if int(steam_track.get("disc", 1)) == local_disc_int:
-                steam_name = (steam_track.get("title") or steam_track.get("name", "")).lower()
-                if steam_name == local_title.lower() or steam_name.startswith(local_title.lower()) or local_title.lower().startswith(steam_name):
-                    best_match_idx = steam_idx
+                raw_steam = steam_track.get("title") or steam_track.get("name", "")
+                norm_steam = TrackManager.normalize_title(raw_steam)
+                if not norm_steam:
+                    continue
+                for raw_l in local_titles:
+                    norm_local = TrackManager.normalize_title(raw_l)
+                    matched, _ = _match_titles(norm_local, norm_steam)
+                    if matched:
+                        best_match_idx = steam_idx
+                        break
+                if best_match_idx != -1:
                     break
 
         if best_match_idx != -1:
             final_metadata[tid]["matched_v_idx"] = best_match_idx
-            final_metadata[tid]["reason"] = f"SYSTEM: ローカル構造に基づきDisc {local_disc_int} Track {store_tracks[best_match_idx].get('track')}に再配置しました"
+            track_num = store_tracks[best_match_idx].get("track") or store_tracks[best_match_idx].get("n")
+            final_metadata[tid]["reason"] = f"SYSTEM: ローカル構造に基づきDisc {local_disc_int} Track {track_num}に再配置しました"
     return True
 
 
@@ -127,32 +168,58 @@ def _resolve_disc_title_matches(
     store_tracks: List[Dict[str, Any]],
     v_idx: int,
     final_metadata: Dict[str, Any],
+    track_groups: Optional[Dict] = None,
 ) -> List[str]:
-    local_disc = int(tids[0].split("_", 1)[0])
-
-    candidates_in_disc = []
-    for steam_idx, steam_track in enumerate(store_tracks):
-        if int(steam_track.get("disc", 1)) == local_disc:
-            candidates_in_disc.append((steam_idx, (steam_track.get("title") or steam_track.get("name", "")).lower()))
-
     resolved_tids = set()
+
     for tid in tids:
-        local_title = tid.split("_", 1)[1].lower()
-        for steam_idx, steam_name in candidates_in_disc:
-            if steam_name == local_title or steam_name.startswith(local_title) or local_title.startswith(steam_name):
-                if steam_idx != v_idx:
-                    final_metadata[tid]["matched_v_idx"] = steam_idx
-                    final_metadata[tid]["reason"] = f"SYSTEM: 曲名の一致により正しいインデックスを復元しました ('{steam_name}')"
-                    resolved_tids.add(tid)
+        local_disc = int(tid.split("_", 1)[0])
+        local_titles = _extract_local_titles_for_tid(tid, track_groups)
+
+        candidates_same_disc = []
+        candidates_other_disc = []
+
+        for steam_idx, steam_track in enumerate(store_tracks):
+            s_disc = int(steam_track.get("disc", 1))
+            raw_steam = steam_track.get("title") or steam_track.get("name", "")
+            norm_steam = TrackManager.normalize_title(raw_steam)
+            if not norm_steam:
+                continue
+
+            for raw_l in local_titles:
+                norm_local = TrackManager.normalize_title(raw_l)
+                if not norm_local:
+                    continue
+                matched, sim = _match_titles(norm_local, norm_steam)
+                if matched:
+                    entry = (steam_idx, raw_steam, sim)
+                    if s_disc == local_disc:
+                        candidates_same_disc.append(entry)
+                    else:
+                        candidates_other_disc.append(entry)
                     break
+
+        best_match = None
+        if candidates_same_disc:
+            candidates_same_disc.sort(key=lambda x: x[2], reverse=True)
+            for s_idx, s_name, sim in candidates_same_disc:
+                if s_idx != v_idx:
+                    best_match = (s_idx, s_name, sim, False)
+                    break
+        elif len(candidates_other_disc) == 1:
+            s_idx, s_name, sim = candidates_other_disc[0]
+            if s_idx != v_idx:
+                best_match = (s_idx, s_name, sim, True)
+
+        if best_match is not None:
+            s_idx, s_name, sim, is_other = best_match
+            final_metadata[tid]["matched_v_idx"] = s_idx
+            disc_desc = "他ディスク" if is_other else ""
+            if sim == 1.0:
+                final_metadata[tid]["reason"] = f"SYSTEM: 曲名の一致により正しい{disc_desc}インデックスを復元しました ('{s_name}')"
             else:
-                similarity = SequenceMatcher(None, local_title, steam_name).ratio()
-                if similarity >= 0.80:
-                    if steam_idx != v_idx:
-                        final_metadata[tid]["matched_v_idx"] = steam_idx
-                        final_metadata[tid]["reason"] = f"SYSTEM: ファジーマッチにより正しいインデックスを復元しました ('{steam_name}', 類似度: {similarity:.2f})"
-                        resolved_tids.add(tid)
-                        break
+                final_metadata[tid]["reason"] = f"SYSTEM: ファジーマッチにより正しい{disc_desc}インデックスを復元しました ('{s_name}', 類似度: {sim:.2f})"
+            resolved_tids.add(tid)
 
     return [tid for tid in tids if tid not in resolved_tids]
 
@@ -168,13 +235,14 @@ def _resolve_sequential_track_duplicates(
     base_track = store_tracks[v_idx] if v_idx < len(store_tracks) else None
     if not base_track:
         return
-    base_name = (base_track.get("title") or base_track.get("name", "")).lower()
+    base_name = TrackManager.normalize_title(base_track.get("title") or base_track.get("name", ""))
 
     sequence_indices = [v_idx]
     for next_idx in range(v_idx + 1, len(store_tracks)):
         next_track = store_tracks[next_idx]
-        next_name = (next_track.get("title") or next_track.get("name", "")).lower()
-        if next_name == base_name or next_name.startswith(base_name) or base_name.startswith(next_name):
+        next_name = TrackManager.normalize_title(next_track.get("title") or next_track.get("name", ""))
+        matched, _ = _match_titles(base_name, next_name)
+        if matched:
             sequence_indices.append(next_idx)
         else:
             break
@@ -185,8 +253,12 @@ def _resolve_sequential_track_duplicates(
         def get_sort_key(track_id: str):
             parts = track_id.split("_", 1)
             try:
-                key = (int(parts[0]), parts[1])
-                return list(track_groups.keys()).index(key)
+                clean_t = parts[1].split("::", 1)[0]
+                key = (int(parts[0]), clean_t)
+                for g_k in track_groups:
+                    if g_k[0] == key[0] and (g_k[1] == key[1] or g_k[1].split("::", 1)[0] == key[1]):
+                        return list(track_groups.keys()).index(g_k)
+                return 999
             except (ValueError, IndexError):
                 return 999
 
@@ -223,10 +295,10 @@ def resolve_duplicate_mappings(
         if len(tids) <= 1:
             continue
 
-        if _resolve_multidisc_index_conflicts(app_id, variant_index, tids, store_tracks, final_metadata):
+        if _resolve_multidisc_index_conflicts(app_id, variant_index, tids, store_tracks, final_metadata, track_groups):
             continue
 
-        remaining_tids = _resolve_disc_title_matches(tids, store_tracks, variant_index, final_metadata)
+        remaining_tids = _resolve_disc_title_matches(tids, store_tracks, variant_index, final_metadata, track_groups)
         if len(remaining_tids) <= 1:
             continue
 

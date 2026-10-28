@@ -324,3 +324,49 @@ def test_builder_falls_back_to_fuzzy_without_v_idx():
 
     assert tag_map["title"] == "Solar Wind"
     assert tag_map["track_number"] == "1"
+
+
+def test_normalize_title_preserves_japanese_korean_cyrillic_and_nfkc():
+    from sst.track_grouper import TrackManager
+
+    assert TrackManager.normalize_title("01 いつかあの場所で.wav") == "いつかあの場所で"
+    assert TrackManager.normalize_title("02 特定犯罪第５６８号調査開始（デモBGM）") == "特定犯罪第568号調査開始 デモbgm"
+    assert TrackManager.normalize_title("01. Тёмная комната") == "тёмная комната"
+    assert TrackManager.normalize_title("19 - Fath0m") == "fath0m"
+    assert TrackManager.normalize_title("01 - 00001-01000") == "1 1000"
+
+
+def test_build_tag_map_does_not_false_match_japanese_feat_track():
+    from sst.builder import MetadataBuilder
+    from sst.models import SteamMetadata
+
+    steam_tracklist = [
+        {"disc": 1, "number": "1", "title": "Main Theme"},
+        {"disc": 1, "number": "8", "title": "無色不透明(feat.鏡音リン)"},
+    ]
+    steam_meta = SteamMetadata(
+        app_id=689920,
+        name="1bitHeart Original Soundtrack",
+        developer="Dev",
+        publisher="Pub",
+        store_tracklist=steam_tracklist,
+    )
+
+    instr = {"matched_v_idx": None, "override_track": None}
+    tag_map = MetadataBuilder.build_tag_map(
+        app_id=689920,
+        disc=1,
+        clean_title="1bitheart feat kagaminerin::abcdef1234567890",
+        adopted_info={"filename_track": 99, "path": Path("1bitheart feat kagaminerin.mp3"), "tier": "lossy"},
+        steam_meta=steam_meta,
+        instr=instr,
+        mbz_candidates=[],
+        track_sources={},
+        user_language_639_2="jpn",
+        slot_embedded_tags={},
+        global_identity={},
+        total_discs=1,
+    )
+
+    assert tag_map["title"] != "無色不透明(feat.鏡音リン)"
+    assert tag_map["track_number"] != "8"

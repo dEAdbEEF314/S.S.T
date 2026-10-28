@@ -1,5 +1,7 @@
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+
+from sst.track_grouper import TrackManager
 
 from sst.models import SteamMetadata
 from sst.processor_support import (
@@ -575,3 +577,602 @@ def test_pipeline_early_review_message_alignment(tmp_path):
     assert res.status == "review"
     assert "Track Mapping Failure" in res.message
     assert diagnostics["upstream_cause_code"] == "TRACK_MAPPING_FAILURE"
+
+
+def test_resolve_disc_title_matches_strips_file_id_and_punctuation():
+    from sst.processor_support import resolve_duplicate_mappings
+
+    # Disc 1 has slots:
+    # v_idx=4: Disc 1 Track 5 "They're Here"
+    # v_idx=5: Disc 1 Track 6 "Coward's Crossing"
+    # Disc 2 has slot:
+    # v_idx=26: Disc 2 Track 1 "The Pale Reach"
+    store_tracklist = [
+        {"disc": 1, "number": "1", "title": "Track 1"},
+        {"disc": 1, "number": "2", "title": "Track 2"},
+        {"disc": 1, "number": "3", "title": "Track 3"},
+        {"disc": 1, "number": "4", "title": "Track 4"},
+        {"disc": 1, "number": "5", "title": "They're Here"},       # v_idx=4
+        {"disc": 1, "number": "6", "title": "Coward's Crossing"},   # v_idx=5
+    ]
+    # pad up to v_idx=25
+    for i in range(7, 27):
+        store_tracklist.append({"disc": 1, "number": str(i), "title": f"Track {i}"})
+    store_tracklist.append({"disc": 2, "number": "1", "title": "The Pale Reach"})  # v_idx=26
+
+    steam_meta = SteamMetadata(
+        app_id=802640,
+        name="Test Game",
+        store_tracklist=store_tracklist,
+    )
+
+    tid1 = "1_they re here::abcdef1234567890"
+    tid2 = "1_cowards crossing::1234567890abcdef"
+    final_metadata = {
+        tid1: {"matched_v_idx": 26, "override_track": "1"},
+        tid2: {"matched_v_idx": 26, "override_track": "1"},
+    }
+    track_groups = {
+        (1, "they re here::abcdef1234567890"): [
+            {"format": "mp3", "duration": 100.0, "meta": {"title": "They're Here!"}}
+        ],
+        (1, "cowards crossing::1234567890abcdef"): [
+            {"format": "mp3", "duration": 120.0, "meta": {"title": "Cowards Crossing"}}
+        ],
+    }
+
+    resolve_duplicate_mappings(802640, final_metadata, steam_meta, track_groups)
+
+    assert final_metadata[tid1]["matched_v_idx"] == 4
+    assert final_metadata[tid2]["matched_v_idx"] == 5
+
+
+def test_japanese_titles_match_in_unassigned_reconciliation_and_slot_variants():
+    steam_meta = SteamMetadata(
+        app_id=999999,
+        name="Japanese Test Game",
+        store_tracklist=[
+            {"disc": 1, "number": "1", "title": "いつかあの場所で"},
+        ],
+    )
+
+    track_groups = {
+        (1, "いつかあの場所で::wav1"): [
+            {"file_id": "wav1", "format": "wav", "duration": 180.0, "norm_stem": "いつかあの場所で", "t_num_val": "1", "path": Path("/dummy/01 いつかあの場所で.wav")},
+        ],
+        (1, "いつかあの場所で::mp31"): [
+            {"file_id": "mp31", "format": "mp3", "duration": 180.1, "norm_stem": "いつかあの場所で", "t_num_val": "1", "path": Path("/dummy/01 いつかあの場所で.mp3")},
+        ],
+    }
+
+    # 1. Test build_slot_variant_index with Japanese title WAV and MP3 variants
+    final_metadata = {
+        "1_いつかあの場所で::wav1": {"matched_v_idx": 0, "override_track": "1"},
+    }
+
+    slot_variant_index, track_to_slot = build_slot_variant_index(final_metadata, track_groups, steam_meta)
+
+    # Slot (1, "1") should consolidate both WAV and MP3 variants
+    assert (1, "1") in slot_variant_index
+    assert len(slot_variant_index[(1, "1")]) == 2
+
+    # 2. Test reconcile_deterministic_unassigned_slots with unassigned Japanese track
+    final_metadata_unassigned = {}
+    reconciled = reconcile_deterministic_unassigned_slots(
+        final_metadata=final_metadata_unassigned,
+        track_groups=track_groups,
+        steam_meta=steam_meta,
+        global_identity={"canonical_album_artist": "Composer"},
+    )
+
+    assert len(reconciled) >= 1
+    assert "1_いつかあの場所で::wav1" in final_metadata_unassigned
+    assert final_metadata_unassigned["1_いつかあの場所で::wav1"]["matched_v_idx"] == 0
+
+
+def test_adopt_best_file_per_slot_excludes_unaligned_tracks_and_routes_to_unassigned():
+    from sst.models import SteamMetadata
+    from sst.processor_support import (
+        build_slot_variant_index,
+        adopt_best_file_per_slot,
+        select_best_unassigned_files,
+    )
+    from sst.validator import ResultValidator
+
+    steam_meta = SteamMetadata(
+        app_id=1879310,
+        name="TCSTRIKERS4 original soundtrack",
+        store_tracklist=[
+            {"disc": 1, "number": "1", "title": "Opening"},
+            {"disc": 1, "number": "2", "title": "Ending"},
+        ],
+    )
+
+    track_groups = {
+        (1, "opening::wav1"): [
+            {"file_id": "wav1", "format": "wav", "duration": 100.0, "norm_stem": "opening", "t_num_val": "1", "path": Path("/dummy/01 Opening.wav")},
+        ],
+        (1, "ending::wav2"): [
+            {"file_id": "wav2", "format": "wav", "duration": 120.0, "norm_stem": "ending", "t_num_val": "2", "path": Path("/dummy/02 Ending.wav")},
+        ],
+        (1, "bonus unused::wav3"): [
+            {"file_id": "wav3", "format": "wav", "duration": 90.0, "norm_stem": "bonus unused", "t_num_val": "99", "path": Path("/dummy/99 Bonus Unused.wav")},
+        ],
+    }
+
+    final_metadata = {
+        "1_opening::wav1": {"matched_v_idx": 0, "override_track": "1"},
+        "1_ending::wav2": {"matched_v_idx": 1, "override_track": "2"},
+    }
+
+    # 1. build_slot_variant_index
+    slot_variant_index, track_to_slot = build_slot_variant_index(final_metadata, track_groups, steam_meta)
+
+    # 2. adopt_best_file_per_slot should only adopt the 2 aligned slots
+    adopted = adopt_best_file_per_slot(track_groups, slot_variant_index, track_to_slot)
+    assert len(adopted) == 2
+    adopted_file_ids = {info["file_id"] for info in adopted.values()}
+    assert "wav1" in adopted_file_ids
+    assert "wav2" in adopted_file_ids
+    assert "wav3" not in adopted_file_ids
+
+    # 3. select_best_unassigned_files should have exactly 1 file: "99 Bonus Unused.wav"
+    unassigned = select_best_unassigned_files(
+        track_groups,
+        final_metadata,
+        slot_variant_index=slot_variant_index,
+        track_to_slot_index=track_to_slot,
+    )
+    assert len(unassigned) == 1
+    assert unassigned[0]["file_id"] == "wav3"
+
+    # 4. ResultValidator.validate:
+    # 2 tracks and 1 unassigned_manifest
+    tracks = [
+        {"tags": {"disc_number": "1", "track_number": "1", "title": "Opening"}},
+        {"tags": {"disc_number": "1", "track_number": "2", "title": "Ending"}},
+    ]
+    llm_log = {
+        "phase1_res": {
+            "identity_confidence": 100,
+            "integrity_quality": 100,
+            "album_confidence": 100,
+            "strategy": "STEAM_BASED",
+            "archive_vs_review_ratio": {"archive": 100, "review": 0},
+            "confidence_reason": "Exact match",
+        },
+        "alignment_res": {
+            "slots": {"1": {"title": "Opening"}, "2": {"title": "Ending"}},
+        },
+    }
+    unassigned_manifest = unassigned
+
+    status, message, score, quality, reason = ResultValidator.validate(
+        app_id=1879310,
+        tracks=tracks,
+        llm_log=llm_log,
+        mbz_candidates=[],
+        steam_meta=steam_meta,
+        audio_fail=False,
+        audio_warn=False,
+        unassigned_manifest=unassigned_manifest,
+    )
+
+    assert status == "review"
+    assert "Unassigned Files (1)" in message
+    assert "Output Track Count Mismatch" not in message
+    assert "Steam Slots Unexpected" not in message
+    assert "Duplicates" not in message
+
+
+def test_identity_does_not_trigger_steam_trust_on_api_connection_error():
+    organizer = LLMOrganizer(api_key="dummy", base_url="http://localhost:11434")
+    organizer._call_llm = MagicMock(
+        return_value=(
+            None,
+            {
+                "error": "litellm.APIConnectionError: OllamaException - Cannot connect to host localhost:11434 [Connect call failed]"
+            },
+        )
+    )
+
+    v_steam = {
+        "album_name": "Sanctum 2: Original Soundtrack",
+        "artist": "Coffee Stain Studios",
+        "tracks": [{"disc": 1, "number": str(i), "title": f"Track {i}"} for i in range(1, 31)],
+    }
+    v_local = {
+        "tracks": [
+            {
+                "disc": 1,
+                "number": str(i),
+                "title": f"Track {i}",
+                "file_ids": [f"fid_{i}"],
+                "local_key": (1, f"Track {i}"),
+            }
+            for i in range(1, 31)
+        ],
+    }
+
+    final_instructions, llm_log = organizer.align_slots(
+        app_id=335370,
+        v_steam=v_steam,
+        v_fingerprint=None,
+        v_mbz_search=None,
+        v_local=v_local,
+    )
+
+    assert not final_instructions
+    assert llm_log.get("phase1_res") is None
+    assert "phase1_log" in llm_log
+    assert "Cannot connect to host" in str(llm_log["phase1_log"].get("error", ""))
+
+
+def test_recover_prematch_fallback_slots_rejects_mismatched_titles_and_preserves_multiple_files():
+    # Case A: AppID 4206020 reproduction - mismatched title must not be assigned by track number alone
+    steam_tracks_a = [
+        {"disc": 1, "number": "1", "title": "Rebal"},
+        {"disc": 1, "number": "2", "title": "The Final Stand"},
+    ]
+    local_chunk_a = [
+        {"n": 0, "title": "0. REBEL", "file_ids": ["fid0"]},
+        {"n": 1, "title": "1. THE FINAL STAND", "file_ids": ["fid1"]},
+    ]
+    fallback_a = LLMOrganizer._recover_prematch_fallback_slots(local_chunk_a, None, steam_tracks_a)
+    assert fallback_a == {}
+
+    # Case B: Multiple file IDs for same slot are preserved (no dict overwrite)
+    steam_tracks_b = [
+        {"disc": 1, "number": "1", "title": "Main Theme"},
+    ]
+    local_chunk_b = [
+        {"n": 1, "title": "Main Theme", "file_ids": ["wav1", "mp31"]},
+    ]
+    fallback_b = LLMOrganizer._recover_prematch_fallback_slots(local_chunk_b, None, steam_tracks_b)
+    assert "1" in fallback_b
+    assert fallback_b["1"]["files"] == ["wav1", "mp31"]
+
+
+def test_single_disc_numeric_title_filenames_do_not_corrupt_disc_number(tmp_path):
+    file_names = [
+        "01_monorail hype.mp3",
+        "05_4.8 stars.mp3",
+        "07_9.01 am.mp3",
+        "12_401cave.mp3",
+        "20_401grave.mp3",
+        "24-NormalTrack.flac",
+        "25-5StarArcade.flac",
+        "52_Normal.wav",
+        "53_17 Doors.wav",
+        "06_EP3_sarai_Remix.mp3",
+        "07_18noayamachi.mp3",
+    ]
+    files = []
+    for name in file_names:
+        p = tmp_path / name
+        p.write_bytes(b"dummy audio content")
+        files.append(p)
+
+    with patch("sst.track_grouper.EmbeddedMetadataExtractor.extract", return_value={}), \
+         patch("sst.track_grouper.TrackManager.get_duration", return_value=120.0):
+        records_by_group = TrackManager.build_file_records(files)
+
+    all_tracks = [t for group in records_by_group.values() for t in group]
+    assert len(all_tracks) == len(file_names)
+
+    # Every record's disc must be 1
+    for t in all_tracks:
+        assert t["disc"] == 1, f"Expected disc 1 for {t['path'].name}, got {t['disc']}"
+
+    tracks_by_name = {t["path"].name: t for t in all_tracks}
+
+    assert tracks_by_name["05_4.8 stars.mp3"]["filename_track"] == 5
+    assert tracks_by_name["05_4.8 stars.mp3"]["t_num_val"] == "5"
+    assert "4 8 stars" in tracks_by_name["05_4.8 stars.mp3"]["norm_stem"]
+
+    assert tracks_by_name["07_9.01 am.mp3"]["filename_track"] == 7
+    assert tracks_by_name["07_9.01 am.mp3"]["t_num_val"] == "7"
+
+    assert tracks_by_name["12_401cave.mp3"]["filename_track"] == 12
+    assert tracks_by_name["12_401cave.mp3"]["t_num_val"] == "12"
+
+    assert tracks_by_name["20_401grave.mp3"]["filename_track"] == 20
+    assert tracks_by_name["20_401grave.mp3"]["t_num_val"] == "20"
+
+    assert tracks_by_name["25-5StarArcade.flac"]["filename_track"] == 25
+    assert tracks_by_name["25-5StarArcade.flac"]["t_num_val"] == "25"
+    assert "5stararcade" in tracks_by_name["25-5StarArcade.flac"]["norm_stem"]
+
+    assert tracks_by_name["53_17 Doors.wav"]["filename_track"] == 53
+    assert tracks_by_name["53_17 Doors.wav"]["t_num_val"] == "53"
+    assert "17 doors" in tracks_by_name["53_17 Doors.wav"]["norm_stem"]
+
+    assert tracks_by_name["07_18noayamachi.mp3"]["filename_track"] == 7
+    assert tracks_by_name["07_18noayamachi.mp3"]["t_num_val"] == "7"
+    assert "18noayamachi" in tracks_by_name["07_18noayamachi.mp3"]["norm_stem"]
+
+
+def test_genuine_multidisc_compound_filenames_are_still_detected(tmp_path):
+    file_names = [
+        "01_001_OPENING.wav",
+        "01_002_SELECT.wav",
+        "02_001_OPENING.wav",
+        "02_002_SELECT.wav",
+    ]
+    files = []
+    for name in file_names:
+        p = tmp_path / name
+        p.write_bytes(b"dummy audio content")
+        files.append(p)
+
+    with patch("sst.track_grouper.EmbeddedMetadataExtractor.extract", return_value={}), \
+         patch("sst.track_grouper.TrackManager.get_duration", return_value=120.0):
+        records_by_group = TrackManager.build_file_records(files)
+
+    all_tracks = [t for group in records_by_group.values() for t in group]
+    tracks_by_name = {t["path"].name: t for t in all_tracks}
+
+    assert tracks_by_name["01_001_OPENING.wav"]["disc"] == 1
+    assert tracks_by_name["01_001_OPENING.wav"]["t_num_val"] == "1"
+
+    assert tracks_by_name["01_002_SELECT.wav"]["disc"] == 1
+    assert tracks_by_name["01_002_SELECT.wav"]["t_num_val"] == "2"
+
+    assert tracks_by_name["02_001_OPENING.wav"]["disc"] == 2
+    assert tracks_by_name["02_001_OPENING.wav"]["t_num_val"] == "1"
+
+    assert tracks_by_name["02_002_SELECT.wav"]["disc"] == 2
+    assert tracks_by_name["02_002_SELECT.wav"]["t_num_val"] == "2"
+
+
+def test_mastering_bitrate_numbers_in_filename_prefix_are_ignored(tmp_path):
+    file_names = [
+        "PGRC OST 24 MASTER 01 Main Theme.wav",
+        "PGRC OST 24 MASTER 02 Menu.wav",
+        "PGRC OST 320 MASTER 01 Main Theme.mp3",
+        "PGRC OST 320 MASTER 02 Menu.mp3",
+    ]
+    files = []
+    for name in file_names:
+        p = tmp_path / name
+        p.write_bytes(b"dummy audio content")
+        files.append(p)
+
+    with patch("sst.track_grouper.EmbeddedMetadataExtractor.extract", return_value={}), \
+         patch("sst.track_grouper.TrackManager.get_duration", return_value=120.0):
+        records_by_group = TrackManager.build_file_records(files)
+
+    all_tracks = [t for group in records_by_group.values() for t in group]
+    tracks_by_name = {t["path"].name: t for t in all_tracks}
+
+    assert tracks_by_name["PGRC OST 24 MASTER 01 Main Theme.wav"]["t_num_val"] == "1"
+    assert tracks_by_name["PGRC OST 24 MASTER 02 Menu.wav"]["t_num_val"] == "2"
+    assert tracks_by_name["PGRC OST 320 MASTER 01 Main Theme.mp3"]["t_num_val"] == "1"
+    assert tracks_by_name["PGRC OST 320 MASTER 02 Menu.mp3"]["t_num_val"] == "2"
+
+
+def test_initialize_album_context_total_discs_prefers_store_tracklist():
+    steam_meta = SteamMetadata(
+        app_id=1944840,
+        name="Ghostwire: Tokyo Soundtrack",
+        store_tracklist=[{"disc": 1, "number": str(i), "title": f"T{i}"} for i in range(1, 66)],
+    )
+    from sst.processing.album_context import initialize_album_context
+    with patch("sst.track_grouper.TrackManager.list_audio_files", return_value=[Path("/dummy/track.wav")]), \
+         patch("sst.track_grouper.TrackManager.build_file_records", return_value={(53, "17 doors"): [{"file_id": "f1"}]}):
+        _, _, total_discs, _, _ = initialize_album_context(
+            app_id=1944840,
+            install_dir=Path("/dummy"),
+            steam_meta=steam_meta,
+            diag=lambda *args, **kwargs: None,
+            llm=None,
+            db=MagicMock(),
+            build_execution_profile=MagicMock(),
+            pre_scanned_files=[Path("/dummy/track.wav")],
+        )
+    assert total_discs == 1
+
+
+def test_organizer_bypasses_phase2_when_unfilled_steam_slots_empty():
+    from sst.llm.organizer import LLMOrganizer
+    organizer = LLMOrganizer("dummy_key", "http://localhost")
+
+    v_steam = {
+        "tracks": [{"disc": 1, "n": 1, "t": "Track 1", "duration_ms": 1000}],
+    }
+    v_local = {
+        "tracks": [
+            {"local_key": [1, 1], "title": "Track 1", "disc": 1, "track_num": 1, "duration_ms": 1000, "file_ids": ["f1"]},
+            {"local_key": [1, 2], "title": "Bonus Track", "disc": 1, "track_num": 2, "duration_ms": 1000, "file_ids": ["f2"]},
+        ],
+    }
+
+    with patch.object(organizer, "_resolve_album_identity", return_value=({"identity_confidence": 100, "album_confidence": 100}, None)), \
+         patch.object(organizer, "_run_differential_segments") as mock_diff:
+        instructions, diag = organizer.align_slots(
+            app_id=100,
+            v_steam=v_steam,
+            v_fingerprint=None,
+            v_mbz_search=None,
+            v_local=v_local,
+        )
+        mock_diff.assert_not_called()
+    assert instructions is not None
+    assert "1_1" in instructions
+    assert "1_2" not in instructions
+
+
+def test_assignment_validation_coherent_variants_with_same_track_num_and_duration():
+    from sst.llm.assignment_validation import reject_contradictory_slot_assignments
+
+    local_tracks = [
+        {"local_key": (1, "いつかあの場所で"), "title": "いつかあの場所で", "track_num": 1, "duration_ms": 177200},
+        {"local_key": (1, "murasaki_ost01"), "title": "murasaki_ost01", "track_num": 1, "duration_ms": 177100},
+    ]
+    full_ref_steam = [
+        {"disc": 1, "number": "1", "title": "いつかあの場所で", "duration_ms": 177200}
+    ]
+    final_instructions = {
+        "1_いつかあの場所で": {"matched_v_idx": 0, "reason": "SYSTEM: Matched"},
+        "1_murasaki_ost01": {"matched_v_idx": 0, "reason": "SYSTEM: Matched"},
+    }
+
+    filtered, contradictions = reject_contradictory_slot_assignments(
+        final_instructions, local_tracks, full_ref_steam
+    )
+    assert len(contradictions) == 0
+    assert len(filtered) == 2
+
+
+def test_validator_allows_intermediate_contradiction_when_outcome_is_fully_resolved():
+    from sst.validator import ResultValidator
+
+    steam_meta = SteamMetadata(
+        app_id=461050,
+        name="Murasaki Soundtrack",
+        store_tracklist=[{"disc": 1, "number": "1", "title": "Song 1"}],
+    )
+    tracks = [
+        {
+            "tags": {
+                "disc_number": "1",
+                "track_number": "1",
+                "title": "Song 1",
+                "artist": "Artist",
+                "album": "Murasaki Soundtrack",
+            },
+            "path": Path("/out/01.aif"),
+        }
+    ]
+    llm_log = {
+        "phase1_res": {
+            "album_confidence": 100,
+            "mapping_confidence": 100,
+            "data_quality": 100,
+            "strategy": "STEAM_BASED",
+            "archive_vs_review_ratio": {"archive": 100, "review": 0},
+            "confidence_reason": "ok",
+        },
+        "alignment_res": {
+            "contradictory_slot_assignments": [{"matched_v_idx": 0, "rejected_track_ids": ["dummy"]}],
+            "unassigned_files": [],
+        },
+    }
+
+    status, message, score, data_q, reason = ResultValidator.validate(
+        app_id=461050,
+        tracks=tracks,
+        llm_log=llm_log,
+        mbz_candidates=[],
+        steam_meta=steam_meta,
+        audio_fail=False,
+        audio_warn=False,
+        unassigned_manifest=[],
+    )
+    assert status == "archive"
+    assert "LLM Contradictory Slot Assignments" not in reason
+
+
+def test_unassigned_files_tagged_with_common_metadata_and_isolated(tmp_path):
+    output = tmp_path / "output"
+    source = tmp_path / "bonus.flac"
+    source.write_bytes(b"dummy audio")
+
+    class MockAudioTagger:
+        def __init__(self):
+            self.written_tags = {}
+
+        def convert_and_limit(self, source_path, tier, subdir=""):
+            target = output / subdir / f"{source_path.stem}.aif"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"converted aif")
+            return target, False
+
+        def write_tags(self, file_path, tag_map, artwork_path=None):
+            self.written_tags[str(file_path)] = tag_map
+
+    tagger = MockAudioTagger()
+    candidate = {
+        "path": source,
+        "tier": "lossless",
+        "candidate_type": "unassigned",
+        "title": "Bonus Song",
+    }
+    common_meta = {
+        "album": "Test Album",
+        "artist": "Test Artist",
+        "album_artist": "Test Artist",
+        "year": "2024",
+    }
+
+    converted = _convert_review_candidates(
+        tagger,
+        output,
+        [candidate],
+        start_index=0,
+        common_metadata=common_meta,
+    )[0]
+
+    assert converted["file_path"].startswith("unassigned/candidate_001")
+    target_file = str(output / converted["file_path"])
+    assert target_file in tagger.written_tags
+    written = tagger.written_tags[target_file]
+    assert written["album"] == "Test Album"
+    assert written["artist"] == "Test Artist"
+    assert "track_number" not in written
+    assert "disc_number" not in written
+
+
+def test_coherence_and_normalization_filter_prompt_placeholder_echoes():
+    from sst.llm.normalization import normalize_track_mapping_result, build_slot_view
+    from sst.llm.coherence import merge_track_instructions
+
+    full_ref_steam = [
+        {"disc": 1, "number": "1", "title": "T1"},
+        {"disc": 1, "number": "2", "title": "T2"},
+    ]
+    track_res = {
+        "slots": {
+            "1": {"files": ["<FILE_ID>", "file_1"], "reason": "ok"},
+            "2": {"files": ["FILE_ID_A"], "reason": "ok"},
+        }
+    }
+    normalized = normalize_track_mapping_result(track_res, full_ref_steam=full_ref_steam)
+    assert "<FILE_ID>" not in normalized["track_instructions"]
+    assert "FILE_ID_A" not in normalized["track_instructions"]
+    assert "file_1" in normalized["track_instructions"]
+
+    slot_view = build_slot_view(track_res, local_tracks=[{"file_ids": ["file_1"]}])
+    assert slot_view["slots"]["1"]["files"] == ["file_1"]
+    assert slot_view["slots"]["2"]["files"] == []
+
+    chunk_1 = [{"local_key": [1, 1], "file_ids": ["f1"]}]
+    chunk_2 = [{"local_key": [1, 2], "file_ids": ["f2"]}]
+    local_tracks = chunk_1 + chunk_2
+
+    chunk_2_res = {
+        "slots": {
+            "1": {"files": ["f1"], "reason": "echo from chunk 1"},
+            "2": {"files": ["f2"], "reason": "legit match"},
+        }
+    }
+    merged = merge_track_instructions(
+        chunk_2_res,
+        local_tracks=local_tracks,
+        chunk=chunk_2,
+        global_res={"identity_confidence": 100},
+        ref_fingerprint=[],
+        full_ref_mbz_search=[],
+        v_mbz_search=None,
+        full_ref_steam=full_ref_steam,
+        normalize_mapping_result=normalize_track_mapping_result,
+    )
+    # f1 is from chunk 1, so chunk 2's echo must be skipped
+    assert "1_1" not in merged
+    assert "1_2" in merged
+
+
+
+
+
+

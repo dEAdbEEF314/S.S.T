@@ -5,6 +5,15 @@ from typing import Any, Dict, List, Optional
 from ..track_grouper import TrackManager
 
 
+def _is_aligned_slot_key(slot_key: Any) -> bool:
+    return (
+        isinstance(slot_key, tuple)
+        and len(slot_key) == 2
+        and str(slot_key[1]).isdigit()
+        and int(str(slot_key[1])) > 0
+    )
+
+
 def adopt_best_file_per_slot(
     track_groups: Dict,
     slot_variant_index: Dict[tuple[int, str], List[Dict[str, Any]]],
@@ -19,7 +28,7 @@ def adopt_best_file_per_slot(
     }
     adopted: Dict[tuple[int, str], Dict[str, Any]] = {}
     for slot_key, variants in slot_variant_index.items():
-        if not variants:
+        if not variants or not _is_aligned_slot_key(slot_key):
             continue
         chosen = min(
             variants,
@@ -77,7 +86,7 @@ def select_best_unassigned_files(
     assigned_file_ids_in_slots = set()
     if slot_variant_index:
         for slot_key, variants in slot_variant_index.items():
-            if isinstance(slot_key, tuple) and len(slot_key) == 2 and str(slot_key[1]).isdigit():
+            if _is_aligned_slot_key(slot_key):
                 for variant in variants:
                     if variant.get("file_id"):
                         assigned_file_ids_in_slots.add(str(variant["file_id"]))
@@ -85,15 +94,21 @@ def select_best_unassigned_files(
     selected = []
     for (disc, clean_title), variants in track_groups.items():
         track_id = f"{disc}_{clean_title}"
-        if track_id in final_metadata or not variants:
+        if not variants:
             continue
 
-        if track_to_slot_index and track_id in track_to_slot_index:
-            slot_key = track_to_slot_index[track_id]
-            if isinstance(slot_key, tuple) and len(slot_key) == 2 and str(slot_key[1]).isdigit():
+        if track_to_slot_index is not None:
+            slot_key = track_to_slot_index.get(track_id)
+            if _is_aligned_slot_key(slot_key):
+                continue
+        else:
+            instr = final_metadata.get(track_id) if isinstance(final_metadata, dict) else None
+            if isinstance(instr, dict) and (
+                instr.get("matched_v_idx") is not None or instr.get("override_track") not in (None, "", "0")
+            ):
                 continue
 
-        if unassigned_file_ids is not None:
+        if slot_variant_index is None and unassigned_file_ids is not None:
             variants = [variant for variant in variants if variant.get("file_id") in unassigned_file_ids]
             if not variants:
                 continue

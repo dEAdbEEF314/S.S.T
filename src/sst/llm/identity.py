@@ -9,6 +9,23 @@ logger = logging.getLogger("sst.llm.identity")
 ProgressCallback = Callable[[Dict[str, Any]], None]
 
 
+def is_connection_error_log(log_data: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(log_data, dict):
+        return False
+    err = str(log_data.get("error") or "").lower()
+    if not err:
+        return False
+    connection_markers = (
+        "apiconnectionerror",
+        "cannot connect to host",
+        "connect call failed",
+        "connection refused",
+        "connectionerror",
+        "name or service not known",
+    )
+    return any(marker in err for marker in connection_markers)
+
+
 def resolve_album_identity(
     app_id: int,
     s_steam: Dict[str, Any],
@@ -74,9 +91,29 @@ def resolve_album_identity(
 
     steam_count = len(v_steam.get("tracks", []))
     local_count = len(v_local.get("tracks", []))
+    unique_local_slots = len({
+        (
+            str(track.get("disc", 1)),
+            str(
+                track.get("track_num")
+                or track.get("filename_track")
+                or track.get("title")
+                or track.get("norm_stem")
+                or ""
+            ),
+        )
+        for track in local_tracks
+    }) if local_tracks else 0
 
     if not global_res:
-        if steam_count > 0 and steam_count == local_count:
+        if is_connection_error_log(global_log):
+            logger.warning(
+                "[%s] Identity LLM call failed due to connection error. Skipping STEAM-TRUST fallback.",
+                app_id,
+            )
+            return None, {"phase1_res": None, "phase1_log": global_log}
+
+        if steam_count > 0 and (steam_count == local_count or steam_count == unique_local_slots):
             logger.warning(
                 "[%s] Identity LLM call failed/truncated. Activating STEAM-TRUST fallback (%s tracks).",
                 app_id,
@@ -106,19 +143,6 @@ def resolve_album_identity(
 
     global_res = normalize_result(global_res)
 
-    unique_local_slots = len({
-        (
-            str(track.get("disc", 1)),
-            str(
-                track.get("track_num")
-                or track.get("filename_track")
-                or track.get("title")
-                or track.get("norm_stem")
-                or ""
-            ),
-        )
-        for track in local_tracks
-    }) if local_tracks else 0
     structural_match = (
         steam_count > 0
         and (steam_count == local_count or steam_count == unique_local_slots)

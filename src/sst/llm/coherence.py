@@ -67,15 +67,24 @@ def merge_track_instructions(
         for track in local_tracks
         for file_id in track.get("file_ids", [])
     }
+    chunk_file_ids = {
+        str(file_id)
+        for track in chunk
+        for file_id in track.get("file_ids", [])
+    } if chunk else known_file_ids
+
     for c_idx_str, data in normalized_track_res["track_instructions"].items():
-        file_id = str(c_idx_str)
+        file_id = str(c_idx_str).strip()
+        if not file_id or file_id.upper() in {"<FILE_ID>", "FILE_ID", "FILE_ID_A", "FILE_ID_B", "FILE_ID_C", "<FILE_ID_A>"}:
+            continue
         if known_file_ids:
-            if file_id not in known_file_ids or file_id in assigned_file_ids:
+            allowed_ids = chunk_file_ids if chunk_file_ids else known_file_ids
+            if file_id not in allowed_ids or file_id in assigned_file_ids:
                 continue
             matching_track = next(
                 (
                     track
-                    for track in local_tracks
+                    for track in (chunk if chunk else local_tracks)
                     if file_id in {str(value) for value in track.get("file_ids", [])}
                 ),
                 None,
@@ -89,7 +98,7 @@ def merge_track_instructions(
                 matching_track = local_tracks[chunk_index]
             except ValueError:
                 matching_track = next(
-                    (track for track in chunk if track["title"] == c_idx_str),
+                    (track for track in chunk if track.get("title") == c_idx_str),
                     None,
                 )
 

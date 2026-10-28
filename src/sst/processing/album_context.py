@@ -50,7 +50,7 @@ def initialize_album_context(
 
     max_local_disc = max((disc for disc, _ in track_groups.keys()), default=1) if track_groups else 1
     max_store_disc = max((int(track.get("disc", 1)) for track in steam_meta.store_tracklist), default=1) if steam_meta.store_tracklist else 1
-    total_discs = max(max_local_disc, max_store_disc)
+    total_discs = max_store_disc if steam_meta.store_tracklist else max_local_disc
 
     track_count = max(len(track_groups), len(steam_meta.store_tracklist) if steam_meta.store_tracklist else 0)
     execution_profile = build_execution_profile(track_count)

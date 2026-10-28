@@ -3,6 +3,7 @@ import re
 import html
 from typing import Dict, Any, List, Optional
 from .models import SteamMetadata
+from .track_grouper import TrackManager
 
 logger = logging.getLogger("sst.builder")
 
@@ -100,27 +101,21 @@ class MetadataBuilder:
             elif len(numbers) == 1 and zeros == 1:
                 is_steam_numbering_broken = True
         
-        # 2. matched_v_idxが無くても、STEAMトラックリストからのファジーマッチを試みて補完する
+        # 2. matched_v_idxが無くても、STEAMトラックリストからの完全一致を試みて補完する
         if not pics_track and instr.get("matched_v_idx") is None:
-            fuzzy_clean_title = re.sub(r'^(\d+[\s._-]+)+', '', clean_title)
-            fuzzy_clean_title = re.sub(r'\.[a-zA-Z0-9]+$', '', fuzzy_clean_title)
-            fuzzy_clean_title = re.sub(r'[^a-zA-Z0-9]', ' ', fuzzy_clean_title)
-            fuzzy_clean_title = " ".join(fuzzy_clean_title.split()).lower()
+            raw_clean_title = clean_title.split("::", 1)[0]
+            fuzzy_clean_title = TrackManager.normalize_title(raw_clean_title)
 
-            exact_match = None
-            prefix_match = None
-            for t in steam_meta.store_tracklist:
-                t_title = t.get("title") or t.get("name", "")
-                norm_t_title = re.sub(r'[^a-zA-Z0-9]', ' ', t_title)
-                norm_t_title = " ".join(norm_t_title.split()).lower()
-                
-                if norm_t_title == fuzzy_clean_title:
-                    exact_match = t
-                    break
-                if not prefix_match and fuzzy_clean_title.startswith(norm_t_title + " "):
-                    prefix_match = t
-            
-            pics_track = exact_match or prefix_match
+            if fuzzy_clean_title:
+                exact_matches = []
+                for t in (steam_meta.store_tracklist or []):
+                    t_title = t.get("title") or t.get("name", "")
+                    norm_t_title = TrackManager.normalize_title(t_title)
+                    if norm_t_title and norm_t_title == fuzzy_clean_title:
+                        exact_matches.append(t)
+
+                if len(exact_matches) == 1:
+                    pics_track = exact_matches[0]
 
         # --- 2. Dynamic Priority Resolution ---
 
@@ -245,10 +240,11 @@ class MetadataBuilder:
             parts = str(res_disc).split("/")
             res_disc = parts[0].strip()
             if len(parts) > 1:
-                try:
-                    actual_total_discs = max(actual_total_discs, int(parts[1].strip()))
-                except ValueError:
-                    pass
+                if chosen_src not in {"STEAM", "MBZ_STEAM_VERIFIED"} and not pics_track:
+                    try:
+                        actual_total_discs = max(actual_total_discs, int(parts[1].strip()))
+                    except ValueError:
+                        pass
 
         if not res_disc:
             res_disc = str(disc)

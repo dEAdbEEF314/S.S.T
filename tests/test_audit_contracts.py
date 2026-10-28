@@ -225,3 +225,31 @@ def test_audit_duplicate_slot_count_is_not_missing_track_count():
 
     assert LocalProcessor._count_duplicate_slot_keys(tracks) == 0
     assert LocalProcessor._count_duplicate_slot_keys(tracks + [tracks[-1]]) == 1
+
+
+def test_validator_detects_cross_slot_title_misassignment():
+    """修正指示書 06: 出力タグのtitleがSteamスロットに上書きされていても、元ファイル名が別スロットと一致している場合はOfficial Title MismatchでReviewへ送る。"""
+    meta = SteamMetadata(
+        app_id=1,
+        name="Test Album",
+        store_tracklist=[
+            {"disc": 1, "number": 1, "title": "Rebal"},
+            {"disc": 1, "number": 2, "title": "The Final Stand"},
+        ],
+    )
+    tracks = [
+        {
+            "tags": {"disc_number": "1/1", "track_number": "1", "title": "Rebal"},
+            "original_filename": "1. THE FINAL STAND.mp3",
+        },
+        {
+            "tags": {"disc_number": "1/1", "track_number": "2", "title": "The Final Stand"},
+            "original_filename": "2. THE FINAL STAND.mp3",
+        },
+    ]
+    log = llm_log()
+    status, message, _, _, _ = ResultValidator.validate(1, tracks, log, [], meta, False, False)
+
+    assert status == "review"
+    assert "Official Title Mismatch" in message
+

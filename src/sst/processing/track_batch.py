@@ -1,3 +1,4 @@
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import shutil
@@ -12,17 +13,23 @@ from .file_selection import (
     select_slot_conflict_candidates,
 )
 
+logger = logging.getLogger("sst.processing.track_batch")
+
 
 def _convert_review_candidates(
     tagger: AudioTagger,
     temp_output: Path,
     candidates: List[Dict[str, Any]],
     start_index: int = 0,
+    common_metadata: Optional[Dict[str, Any]] = None,
+    artwork_path: Optional[Path] = None,
 ) -> List[Dict[str, Any]]:
     manifests = []
     for index, candidate in enumerate(candidates, start=start_index + 1):
         source_path = Path(candidate["path"])
-        candidate_subdir = Path("review_candidates") / f"candidate_{index:03d}"
+        is_unassigned = candidate.get("candidate_type") == "unassigned"
+        base_folder = "unassigned" if is_unassigned else "review_candidates"
+        candidate_subdir = Path(base_folder) / f"candidate_{index:03d}"
         output_dir = temp_output / candidate_subdir
         manifest = {
             "candidate_type": candidate.get("candidate_type", "unassigned"),
@@ -61,6 +68,22 @@ def _convert_review_candidates(
             )
             if not manifest["included"]:
                 raise OSError("Converted candidate output is missing")
+            if is_unassigned and common_metadata and hasattr(tagger, "write_tags"):
+                try:
+                    tag_map: Dict[str, Any] = {}
+                    if common_metadata.get("album"):
+                        tag_map["album"] = common_metadata["album"]
+                    if common_metadata.get("artist"):
+                        tag_map["artist"] = common_metadata["artist"]
+                    if common_metadata.get("album_artist"):
+                        tag_map["album_artist"] = common_metadata["album_artist"]
+                    if common_metadata.get("year"):
+                        tag_map["year"] = common_metadata["year"]
+                    tag_map["comment"] = "S.S.T Unassigned File"
+                    tag_map["title"] = candidate.get("title") or source_path.stem
+                    tagger.write_tags(converted_path, tag_map, artwork_path=artwork_path)
+                except Exception as tag_err:
+                    logger.warning("Could not apply common tags to unassigned file %s: %s", converted_path, tag_err)
         except Exception as conversion_error:
             shutil.rmtree(output_dir, ignore_errors=True)
             manifest["conversion_error_type"] = type(conversion_error).__name__
@@ -285,11 +308,22 @@ def encode_and_tag_tracks(
         seen_candidate_ids.add(candidate_id)
         unique_candidates.append(candidate)
 
+    devs = steam_meta.developers if hasattr(steam_meta, "developers") and steam_meta.developers else []
+    artist_fallback = ", ".join(devs) if devs else "Unknown Artist"
+    common_metadata = {
+        "album": steam_meta.name or final_metadata.get("album") or final_metadata.get("album_title"),
+        "artist": final_metadata.get("artist") or artist_fallback,
+        "album_artist": final_metadata.get("album_artist") or artist_fallback,
+        "year": str(getattr(steam_meta, "release_date", "") or final_metadata.get("year") or final_metadata.get("release_year") or "")[:4],
+    }
+
     added_review_candidates = _convert_review_candidates(
         tagger,
         temp_output,
         unique_candidates,
         start_index=len(existing_review_candidates),
+        common_metadata=common_metadata,
+        artwork_path=album_artwork_path,
     )
     review_candidate_manifest = existing_review_candidates + added_review_candidates
     unassigned_manifest = [

@@ -32,6 +32,41 @@ class PrematchResult:
         }
 
 
+def _titles_match(local_track: Dict[str, Any], steam_slot: Dict[str, Any]) -> bool:
+    from ..track_grouper import TrackManager
+
+    s_raw = str(steam_slot.get("t") or steam_slot.get("title") or "")
+    l_raw = str(local_track.get("title") or local_track.get("norm_stem") or "")
+    s_title = TrackManager.normalize_title(s_raw)
+    l_title = TrackManager.normalize_title(l_raw)
+    if not s_title or not l_title:
+        return False
+    return s_title == l_title or s_title in l_title or l_title in s_title
+
+
+def _find_matching_steam_slot(
+    track: Dict[str, Any],
+    target_slot_num: str,
+    disc_val: int,
+    steam_by_disc_and_track: Dict[tuple[int, str], Dict[str, Any]],
+    steam_slots_by_num: Dict[str, List[Dict[str, Any]]],
+) -> Optional[Dict[str, Any]]:
+    # Step A: (disc_val, target_slot_num) で存在し、タイトル整合する場合
+    slot_a = steam_by_disc_and_track.get((disc_val, str(target_slot_num)))
+    if slot_a and _titles_match(track, slot_a):
+        return slot_a
+
+    # Step B: 該当トラック番号のスロットのうちタイトル整合するスロットがただ1つ存在する場合
+    candidates = [
+        s for s in steam_slots_by_num.get(str(target_slot_num), [])
+        if _titles_match(track, s)
+    ]
+    if len(candidates) == 1:
+        return candidates[0]
+
+    return None
+
+
 def resolve_prematch_signals(
     local_tracks: List[Dict[str, Any]],
     full_ref_steam: List[Dict[str, Any]],
@@ -56,9 +91,10 @@ def resolve_prematch_signals(
         (int(t.get("d") or t.get("disc") or 1), str(t.get("n"))): t
         for t in full_ref_steam if t.get("n") is not None
     }
-    steam_by_slot_num: Dict[str, Dict[str, Any]] = {
-        str(t.get("n")): t for t in full_ref_steam if t.get("n") is not None
-    }
+    steam_slots_by_num: Dict[str, List[Dict[str, Any]]] = {}
+    for t in full_ref_steam:
+        if t.get("n") is not None:
+            steam_slots_by_num.setdefault(str(t.get("n")), []).append(t)
 
     for track in local_tracks:
         file_ids = [str(fid) for fid in track.get("file_ids", [])]
@@ -71,11 +107,15 @@ def resolve_prematch_signals(
         if track.get("v_idx") is not None and track.get("v_idx") in fingerprint_by_v_idx:
             fp_candidate = fingerprint_by_v_idx[track["v_idx"]]
         elif track_num is not None:
-            # トラック番号一致を探す
+            # トラック番号一致を探す（ディスク番号一致を優先）
             for fp in full_ref_fingerprint:
                 if str(fp.get("n")) == str(track_num):
-                    fp_candidate = fp
-                    break
+                    fp_disc = int(fp.get("d") or fp.get("disc") or 1)
+                    if fp_disc == disc_val:
+                        fp_candidate = fp
+                        break
+                    elif fp_candidate is None:
+                        fp_candidate = fp
 
         mbz_search_candidate = None
         if v_mbz_search:
@@ -84,8 +124,12 @@ def resolve_prematch_signals(
             elif track_num is not None:
                 for ms in full_ref_mbz_search:
                     if str(ms.get("n")) == str(track_num):
-                        mbz_search_candidate = ms
-                        break
+                        ms_disc = int(ms.get("d") or ms.get("disc") or 1)
+                        if ms_disc == disc_val:
+                            mbz_search_candidate = ms
+                            break
+                        elif mbz_search_candidate is None:
+                            mbz_search_candidate = ms
 
         for file_id in file_ids:
             res = PrematchResult(file_id=file_id)
@@ -96,9 +140,13 @@ def resolve_prematch_signals(
                     res.override_track = str(fp_candidate.get("n"))
                 # Steam スロット番号との照合
                 target_slot_num = str(fp_candidate.get("n"))
-                if target_slot_num in steam_by_slot_num:
-                    steam_slot = steam_by_slot_num[target_slot_num]
-                    res.acoustid_steam_slot = int(steam_slot.get("n", target_slot_num)) if str(steam_slot.get("n", "")).isdigit() else None
+                fp_disc = int(fp_candidate.get("d") or fp_candidate.get("disc") or disc_val)
+                steam_slot = _find_matching_steam_slot(
+                    track, target_slot_num, fp_disc, steam_by_disc_and_track, steam_slots_by_num
+                )
+                if steam_slot:
+                    slot_n = steam_slot.get("n", target_slot_num)
+                    res.acoustid_steam_slot = int(slot_n) if str(slot_n).isdigit() else None
                     res.target_v_idx = steam_slot.get("v_idx")
                     res.evidence.append("acoustid_match")
 
@@ -108,9 +156,13 @@ def resolve_prematch_signals(
                 if res.override_track is None and mbz_search_candidate.get("n") is not None:
                     res.override_track = str(mbz_search_candidate.get("n"))
                 target_slot_num = str(mbz_search_candidate.get("n"))
-                if target_slot_num in steam_by_slot_num:
-                    steam_slot = steam_by_slot_num[target_slot_num]
-                    res.mbz_search_steam_slot = int(steam_slot.get("n", target_slot_num)) if str(steam_slot.get("n", "")).isdigit() else None
+                ms_disc = int(mbz_search_candidate.get("d") or mbz_search_candidate.get("disc") or disc_val)
+                steam_slot = _find_matching_steam_slot(
+                    track, target_slot_num, ms_disc, steam_by_disc_and_track, steam_slots_by_num
+                )
+                if steam_slot:
+                    slot_n = steam_slot.get("n", target_slot_num)
+                    res.mbz_search_steam_slot = int(slot_n) if str(slot_n).isdigit() else None
                     if res.target_v_idx is None:
                         res.target_v_idx = steam_slot.get("v_idx")
                     res.evidence.append("mbz_search_match")
@@ -124,20 +176,14 @@ def resolve_prematch_signals(
                 target_v = res.target_v_idx
                 res.evidence.append("deterministic_acoustid")
             elif track_num is not None:
-                steam_slot = steam_by_disc_and_track.get((disc_val, str(track_num)))
-                if not steam_slot and str(track_num) in steam_by_slot_num:
-                    steam_slot = steam_by_slot_num[str(track_num)]
-
+                steam_slot = _find_matching_steam_slot(
+                    track, str(track_num), disc_val, steam_by_disc_and_track, steam_slots_by_num
+                )
                 if steam_slot:
-                    # タイトル照合
-                    from ..track_grouper import TrackManager
-                    s_title = TrackManager.normalize_title(str(steam_slot.get("t") or steam_slot.get("title") or ""))
-                    l_title = TrackManager.normalize_title(str(track.get("title") or track.get("norm_stem") or ""))
-                    if not s_title or not l_title or s_title == l_title or s_title in l_title or l_title in s_title:
-                        slot_n = steam_slot.get("n", track_num)
-                        det_slot = int(slot_n) if str(slot_n).isdigit() else None
-                        target_v = steam_slot.get("v_idx")
-                        res.evidence.append("deterministic_number_and_title")
+                    slot_n = steam_slot.get("n", track_num)
+                    det_slot = int(slot_n) if str(slot_n).isdigit() else None
+                    target_v = steam_slot.get("v_idx")
+                    res.evidence.append("deterministic_number_and_title")
 
             if det_slot is not None:
                 res.deterministic_steam_slot = det_slot
@@ -173,6 +219,11 @@ def extract_deterministic_prematches(
         for file_id in track.get("file_ids", []):
             fid_to_track_idx[str(file_id)] = index
 
+    from collections import defaultdict
+    from ..track_grouper import TrackManager
+
+    # 1. 決定論的プレマッチ候補を matched_v_idx ごとに集計
+    v_idx_to_candidates: Dict[int, List[Tuple[str, Any, int]]] = defaultdict(list)
     for file_id, prematch in prematch_map.items():
         if not prematch or not prematch.is_deterministic:
             continue
@@ -183,33 +234,61 @@ def extract_deterministic_prematches(
                 full_ref_steam,
             )
 
-        if matched_v_idx is None or not 0 <= matched_v_idx < len(full_ref_steam):
+        if matched_v_idx is None or not (0 <= matched_v_idx < len(full_ref_steam)):
             continue
 
-        resolved_v_indices.add(matched_v_idx)
         track_index = fid_to_track_idx.get(file_id)
         if track_index is None:
             continue
-        resolved_local_indices.add(track_index)
-        matching_track = local_tracks[track_index]
-        track_id = f"{matching_track['local_key'][0]}_{matching_track['local_key'][1]}"
+        v_idx_to_candidates[matched_v_idx].append((file_id, prematch, track_index))
+
+    # 2. 同一 v_idx への異タイトル多重確定の防止（衝突検出）
+    colliding_v_indices: set[int] = set()
+    for matched_v_idx, candidates in v_idx_to_candidates.items():
+        distinct_track_indices = {c[2] for c in candidates}
+        if len(distinct_track_indices) > 1:
+            norm_titles = {
+                TrackManager.normalize_title(
+                    str(local_tracks[idx].get("title") or local_tracks[idx].get("norm_stem") or "")
+                )
+                for idx in distinct_track_indices
+            }
+            if len(norm_titles) > 1:
+                colliding_v_indices.add(matched_v_idx)
+                logger.warning(
+                    f"決定論的プレマッチ衝突検出: v_idx={matched_v_idx} に異なるタイトルのトラック {distinct_track_indices} が多重割り当てされました。LLM Phase 2 に委ねるため除外します。"
+                )
+
+    # 3. 衝突していないスロットのみ決定論的指示を生成
+    for matched_v_idx, candidates in v_idx_to_candidates.items():
+        if matched_v_idx in colliding_v_indices:
+            for file_id, prematch, _ in candidates:
+                prematch.is_deterministic = False
+            continue
+
+        resolved_v_indices.add(matched_v_idx)
+        steam_slot = full_ref_steam[matched_v_idx]
         tags = global_res.get("global_tags", {})
         if not isinstance(tags, dict):
             tags = {}
-        steam_slot = full_ref_steam[matched_v_idx]
-        slot_number = steam_slot.get("n") or prematch.override_track or (matched_v_idx + 1)
-        deterministic_instructions[track_id] = {
-            "matched_v_idx": matched_v_idx,
-            "mbz_track_index": prematch.mbz_track_index,
-            "override_title": None,
-            "override_track": str(slot_number),
-            "override_disc": str(steam_slot.get("d") or steam_slot.get("disc") or 1),
-            "reason": f"SYSTEM: Deterministic match ({prematch.evidence[0] if prematch.evidence else 'exact'})",
-            "TPE2": tags.get("canonical_album_artist"),
-            "TCON": tags.get("canonical_genre"),
-            "TDRC": tags.get("canonical_year"),
-            "TPUB": tags.get("canonical_label"),
-        }
+
+        for file_id, prematch, track_index in candidates:
+            resolved_local_indices.add(track_index)
+            matching_track = local_tracks[track_index]
+            track_id = f"{matching_track['local_key'][0]}_{matching_track['local_key'][1]}"
+            slot_number = steam_slot.get("n") or prematch.override_track or (matched_v_idx + 1)
+            deterministic_instructions[track_id] = {
+                "matched_v_idx": matched_v_idx,
+                "mbz_track_index": prematch.mbz_track_index,
+                "override_title": None,
+                "override_track": str(slot_number),
+                "override_disc": str(steam_slot.get("d") or steam_slot.get("disc") or 1),
+                "reason": f"SYSTEM: Deterministic match ({prematch.evidence[0] if prematch.evidence else 'exact'})",
+                "TPE2": tags.get("canonical_album_artist"),
+                "TCON": tags.get("canonical_genre"),
+                "TDRC": tags.get("canonical_year"),
+                "TPUB": tags.get("canonical_label"),
+            }
 
     unmatched_local_tracks = [
         track

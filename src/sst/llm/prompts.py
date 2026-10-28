@@ -90,7 +90,7 @@ def build_mapping_prompt(
 {{
   "slots": {{
     "1": {{
-      "files": ["0"],
+      "files": ["<FILE_ID>"],
       "confidence": 0.95,
       "reason": "Brief reason (max 20 chars)"
     }}

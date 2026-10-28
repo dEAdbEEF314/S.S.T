@@ -11,7 +11,7 @@ from .normalization import (
     resolve_slot_key_to_v_idx,
 )
 from .prompts import build_mapping_prompt
-from .identity import resolve_album_identity
+from .identity import is_connection_error_log, resolve_album_identity
 from .coherence import merge_track_instructions, resolve_mapping_references
 from .alignment_segments import run_differential_segments
 from .prematch import extract_deterministic_prematches, resolve_prematch_signals
@@ -325,26 +325,67 @@ class LLMOrganizer:
         prematch_map: Optional[Dict[str, Any]],
         full_ref_steam: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        fallback_slots = {}
+        fallback_slots: Dict[str, Any] = {}
         for track in chunk:
+            local_title = str(
+                track.get("title")
+                or track.get("t")
+                or (track.get("local_key") and track.get("local_key")[1])
+                or ""
+            )
+            local_disc = (
+                track.get("disc")
+                or track.get("d")
+                or (track.get("local_key") and track.get("local_key")[0])
+            )
             for fid in track.get("file_ids", []):
                 fid_str = str(fid)
                 pm = prematch_map.get(fid_str) if prematch_map else None
-                if pm and (pm.acoustid_steam_slot or pm.mbz_search_steam_slot or pm.override_track):
+                target_slot = None
+                confidence = 0.90
+                reason = ""
+                if pm and (pm.acoustid_steam_slot or pm.mbz_search_steam_slot or (getattr(pm, "is_deterministic", False) and pm.override_track)):
                     target_slot = str(pm.acoustid_steam_slot or pm.mbz_search_steam_slot or pm.override_track)
-                    fallback_slots[target_slot] = {
-                        "files": [fid_str],
-                        "confidence": 0.95,
-                        "reason": f"SYSTEM: Prematch fallback ({pm.evidence[0] if pm.evidence else 'rule'})",
-                    }
+                    confidence = 0.95
+                    reason = f"SYSTEM: Prematch fallback ({pm.evidence[0] if pm.evidence else 'rule'})"
                 else:
                     t_num = track.get("n") or track.get("track_num")
                     if t_num and str(t_num).isdigit() and full_ref_steam and 0 < int(t_num) <= len(full_ref_steam):
-                        fallback_slots[str(t_num)] = {
-                            "files": [fid_str],
-                            "confidence": 0.90,
-                            "reason": f"SYSTEM: Number match fallback (#{t_num})",
-                        }
+                        target_slot = str(t_num)
+                        confidence = 0.90
+                        reason = f"SYSTEM: Number match fallback (#{t_num})"
+
+                if target_slot:
+                    steam_title = None
+                    if local_disc is not None:
+                        for st in full_ref_steam:
+                            st_d = st.get("d") if st.get("d") is not None else st.get("disc")
+                            st_n = str(st.get("n") if st.get("n") is not None else st.get("number") or "")
+                            if st_d is not None and str(st_d) == str(local_disc) and st_n == target_slot:
+                                steam_title = st.get("title") or st.get("t")
+                                break
+                    if steam_title is None:
+                        for st in full_ref_steam:
+                            st_n = str(st.get("n") if st.get("n") is not None else st.get("number") or "")
+                            if st_n and st_n == target_slot:
+                                steam_title = st.get("title") or st.get("t")
+                                break
+                    if steam_title is None and target_slot.isdigit():
+                        idx = int(target_slot) - 1
+                        if 0 <= idx < len(full_ref_steam):
+                            steam_title = full_ref_steam[idx].get("title") or full_ref_steam[idx].get("t")
+
+                    if steam_title and titles_are_compatible(local_title, str(steam_title)):
+                        slot_entry = fallback_slots.setdefault(
+                            target_slot,
+                            {
+                                "files": [],
+                                "confidence": confidence,
+                                "reason": reason,
+                            },
+                        )
+                        if fid_str not in slot_entry["files"]:
+                            slot_entry["files"].append(fid_str)
         return fallback_slots
 
     def _process_track_mapping_segment(
@@ -413,18 +454,26 @@ class LLMOrganizer:
 
             segment_logs.append(track_log)
             if track_res is None:
-                fallback_slots = self._recover_prematch_fallback_slots(chunk, prematch_map, full_ref_steam)
-                if fallback_slots:
-                    logger.info(f"[{app_id}] Truncation/LLM failure at index={chunk_start}: recovered {len(fallback_slots)} slots via deterministic prematch fallback.")
-                    track_res = {"slots": fallback_slots, "unassigned_files": []}
-                else:
+                if is_connection_error_log(track_log):
                     logger.warning(
-                        "[%s] Track mapping returned no result for virtual chunk at index=%s; "
-                        "continuing with an empty instruction set.",
+                        "[%s] Track mapping failed due to connection error for chunk at index=%s; skipping fallback.",
                         app_id,
                         chunk_start,
                     )
                     track_res = {}
+                else:
+                    fallback_slots = self._recover_prematch_fallback_slots(chunk, prematch_map, full_ref_steam)
+                    if fallback_slots:
+                        logger.info(f"[{app_id}] Truncation/LLM failure at index={chunk_start}: recovered {len(fallback_slots)} slots via deterministic prematch fallback.")
+                        track_res = {"slots": fallback_slots, "unassigned_files": []}
+                    else:
+                        logger.warning(
+                            "[%s] Track mapping returned no result for virtual chunk at index=%s; "
+                            "continuing with an empty instruction set.",
+                            app_id,
+                            chunk_start,
+                        )
+                        track_res = {}
             segment_instructions.update(
                 self._merge_track_instructions(
                     track_res,
@@ -677,7 +726,7 @@ class LLMOrganizer:
         final_instructions = dict(deterministic_instructions)
         segment_results: Dict[int, Tuple[Dict[str, Dict[str, Any]], List[Dict[str, Any]]]] = {}
 
-        if not unmatched_local_tracks or not unfilled_steam_slots:
+        if not unmatched_local_tracks and not unfilled_steam_slots:
             logger.info(f"[{app_id}] すべてのトラックが決定論的プレマッチで確定しました。LLM Phase 2 をバイパスし、確信度を100%に設定します。")
             global_res["identity_confidence"] = 100
             global_res["album_confidence"] = 100
@@ -689,12 +738,25 @@ class LLMOrganizer:
             global_res["archive_vs_review_ratio"] = {"archive": 100, "review": 0}
             global_res["confidence_reason"] = f"SYSTEM: すべてのトラックが決定論的プレマッチで確定 ({len(deterministic_instructions)}/{len(full_ref_steam)}スロット)"
             segment_results[0] = (deterministic_instructions, [])
+        elif not unmatched_local_tracks:
+            logger.info(
+                f"[{app_id}] 未確定ローカルトラックはありませんが、空きSteamスロットが {len(unfilled_steam_slots)} 件残っています。"
+                "Phase 2 はスキップしますが確信度100%への引き上げは行いません。"
+            )
+            segment_results[0] = (deterministic_instructions, [])
+        elif not unfilled_steam_slots:
+            logger.info(
+                f"[{app_id}] 全Steamスロットが確定済み（空きスロット0件）ですが、未確定ローカルトラックが {len(unmatched_local_tracks)} 件存在します。"
+                "重複割当を防ぐためLLM Phase 2はバイパスし、残余トラックを直接フォーマットバリアント統合および未割当隔離へ引き渡します。"
+            )
+            segment_results[0] = (deterministic_instructions, [])
         else:
+            slots_to_fill = unfilled_steam_slots
             segment_results = self._run_differential_segments(
                 app_id,
                 unmatched_local_tracks,
                 local_tracks,
-                unfilled_steam_slots,
+                slots_to_fill,
                 global_res,
                 s_mbz_search,
                 v_mbz_search,

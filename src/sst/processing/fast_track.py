@@ -1,8 +1,57 @@
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..models import SteamMetadata
 from ..track_grouper import TrackManager
+
+
+def _fast_track_titles_compatible(normalized_titles: List[str], steam_title: str) -> bool:
+    if not normalized_titles:
+        return True
+    if not steam_title:
+        return True
+
+    s_clean = steam_title.strip().lower()
+    s_compact = s_clean.replace(" ", "")
+    s_tokens = set(re.findall(r'[\w]+', s_clean))
+
+    for local_title in normalized_titles:
+        if not local_title:
+            continue
+        l_clean = local_title.strip().lower()
+        if not l_clean:
+            continue
+
+        # 1. Exact match or substring inclusion
+        if s_clean == l_clean or s_clean in l_clean or l_clean in s_clean:
+            return True
+
+        # 2. Compact match or substring inclusion (CamelCase / space collapse)
+        l_compact = l_clean.replace(" ", "")
+        if len(l_compact) >= 3 and len(s_compact) >= 3:
+            if s_compact == l_compact or s_compact in l_compact or l_compact in s_compact:
+                return True
+
+        # 3. Meaningful word token overlap
+        l_tokens = set(re.findall(r'[\w]+', l_clean))
+        common = s_tokens & l_tokens
+        if common:
+            non_stop_common = {
+                tok for tok in common
+                if tok not in {
+                    "the", "a", "an", "and", "or", "of", "to", "in", "on", "at",
+                    "by", "for", "with", "theme", "ost", "bgm", "track", "music",
+                    "version", "remix", "mix",
+                }
+            }
+            if len(common) >= 2 and len(non_stop_common) >= 1:
+                return True
+            min_len = min(len(s_tokens), len(l_tokens))
+            if min_len > 0 and len(common) == min_len and len(non_stop_common) >= 1:
+                return True
+
+    return False
 
 
 def normalize_slot_key(
@@ -78,12 +127,27 @@ def build_fast_track_group_map(
             if candidate_slot_key is not None and candidate_slot_key not in steam_tracks_by_slot:
                 return None
 
+        steam_title = ""
         if candidate_slot_key is not None and candidate_slot_key in steam_tracks_by_slot:
             steam_track = steam_tracks_by_slot[candidate_slot_key]
             steam_title = TrackManager.normalize_title(
                 str((steam_track or {}).get("title") or (steam_track or {}).get("name") or "")
             )
-            if not normalized_titles or steam_title in normalized_titles:
+
+        other_slot_matches = []
+        for t in normalized_titles:
+            for sm in steam_title_map.get(t, []):
+                if sm != candidate_slot_key and sm not in other_slot_matches:
+                    other_slot_matches.append(sm)
+
+        if candidate_slot_key is not None and candidate_slot_key in steam_tracks_by_slot:
+            is_compat = _fast_track_titles_compatible(normalized_titles, steam_title)
+            # If local title matches another slot and does NOT match candidate slot's steam title
+            if other_slot_matches and not is_compat:
+                claimed_slots = {sk for sk, _ in group_map.values()}
+                if candidate_slot_key not in claimed_slots:
+                    return None
+            elif is_compat:
                 slot_key = candidate_slot_key
 
         if slot_key is None and steam_meta:
@@ -93,7 +157,13 @@ def build_fast_track_group_map(
                     slot_key = title_matches[0]
                     break
 
-        if slot_key is None and candidate_slot_key is not None and candidate_slot_key in steam_tracks_by_slot:
+        # Fallback to candidate_slot_key ONLY if local file has no titles at all (e.g. 01.wav)
+        if (
+            slot_key is None
+            and not normalized_titles
+            and candidate_slot_key is not None
+            and candidate_slot_key in steam_tracks_by_slot
+        ):
             slot_key = candidate_slot_key
 
         if slot_key is None:

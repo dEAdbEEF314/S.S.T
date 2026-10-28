@@ -2,9 +2,11 @@ import html
 import re
 import unicodedata
 import logging
-from typing import Tuple, List, Dict, Any, Optional
+from pathlib import Path
+from typing import Tuple, List, Dict, Any, Optional, Set
 
 from .models import SteamMetadata
+from .track_grouper import TrackManager
 
 logger = logging.getLogger("sst.validator")
 
@@ -72,6 +74,8 @@ class ResultValidator:
             normalized = unicodedata.normalize("NFKC", decoded)
             return " ".join(normalized.split()).casefold()
 
+        expected_keys: Set[Tuple[str, str]] = set()
+        final_keys: Set[Tuple[str, str]] = set()
         expected_titles_by_key: Dict[Tuple[str, str], List[str]] = {}
         if not steam_meta.store_tracklist:
             issues.append("Steam Tracklist Missing")
@@ -121,7 +125,20 @@ class ResultValidator:
             or []
         )
         if contradictory_slot_assignments:
-            issues.append(f"LLM Contradictory Slot Assignments ({len(contradictory_slot_assignments)})")
+            is_resolved = (
+                bool(expected_keys)
+                and final_keys == expected_keys
+                and not actual_unassigned
+                and not rejected_slot_keys
+                and not duplicate_assignment_file_ids
+            )
+            if not is_resolved:
+                issues.append(f"LLM Contradictory Slot Assignments ({len(contradictory_slot_assignments)})")
+            else:
+                logger.info(
+                    "Intermediate contradictory slot assignments (%d) resolved by variant adoption (full slot coverage, 0 unassigned)",
+                    len(contradictory_slot_assignments),
+                )
         deferred_copy_failures = (llm_log.get("diagnostics") or {}).get("deferred_copy_failures") or []
         if deferred_copy_failures:
             issues.append(f"Deferred Copy Recovery Exhausted ({len(deferred_copy_failures)})")
@@ -151,6 +168,21 @@ class ResultValidator:
         if anomalous_unknown_count > 0:
             issues.append(f"Unknown Title x{anomalous_unknown_count}")
 
+        # Build normalized titles for all Steam slots to detect cross-slot title misassignments
+        all_steam_norm_titles_by_key: Dict[Tuple[str, str], Set[str]] = {}
+        for s_key, exp_titles in expected_titles_by_key.items():
+            norm_set: Set[str] = set()
+            for t in exp_titles:
+                if not t:
+                    continue
+                norm_off = _normalize_official_title(t)
+                if norm_off:
+                    norm_set.add(norm_off)
+                norm_tm = TrackManager.normalize_title(t)
+                if norm_tm:
+                    norm_set.add(norm_tm)
+            all_steam_norm_titles_by_key[s_key] = norm_set
+
         official_title_mismatch_count = 0
         for track in tracks:
             tags = track.get("tags", {})
@@ -166,6 +198,44 @@ class ResultValidator:
                 output_title == _normalize_official_title(expected_title)
                 for expected_title in expected_titles
             ):
+                official_title_mismatch_count += 1
+                continue
+
+            # Additional physical cross-slot title misassignment detection:
+            # Check if local origin title belongs to another Steam slot and conflicts with this assigned slot
+            assigned_norm_titles = all_steam_norm_titles_by_key.get(key, set())
+            local_candidates: List[str] = []
+            orig_fn = track.get("original_filename")
+            if orig_fn:
+                local_candidates.append(Path(orig_fn).stem)
+            if track.get("original_title"):
+                local_candidates.append(str(track["original_title"]))
+            if track.get("clean_title"):
+                local_candidates.append(str(track["clean_title"]))
+            if track.get("original_embedded_title"):
+                local_candidates.append(str(track["original_embedded_title"]))
+
+            is_cross_mismatch = False
+            for cand in local_candidates:
+                cand_off = _normalize_official_title(cand)
+                cand_tm = TrackManager.normalize_title(cand)
+                cand_norms = {n for n in (cand_off, cand_tm) if n and len(n) >= 2}
+                if not cand_norms:
+                    continue
+
+                # If local candidate matches this assigned slot, it's valid
+                if any(n in assigned_norm_titles for n in cand_norms):
+                    continue
+
+                # If local candidate matches a different Steam slot in this album, it's a cross-slot conflict
+                for other_key, other_norm_titles in all_steam_norm_titles_by_key.items():
+                    if other_key != key and any(n in other_norm_titles for n in cand_norms):
+                        is_cross_mismatch = True
+                        break
+                if is_cross_mismatch:
+                    break
+
+            if is_cross_mismatch:
                 official_title_mismatch_count += 1
         if official_title_mismatch_count:
             issues.append(f"Official Title Mismatch ({official_title_mismatch_count})")

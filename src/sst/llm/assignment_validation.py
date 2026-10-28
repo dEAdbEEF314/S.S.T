@@ -1,4 +1,4 @@
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..track_grouper import TrackManager
 
@@ -50,12 +50,30 @@ def reject_contradictory_slot_assignments(
             for track in tracks
             if float(track.get("duration_ms") or 0) > 0
         ]
-        coherent_variants = (
+        def _extract_track_num(tr: Dict[str, Any]) -> Optional[int]:
+            val = tr.get("track_num") or tr.get("track_number") or tr.get("n")
+            if val is not None:
+                try:
+                    return int(str(val).split("/")[0])
+                except (ValueError, TypeError):
+                    pass
+            return None
+
+        track_nums = [_extract_track_num(track) for track in tracks]
+        same_title_coherent = (
             bool(normalized_titles)
             and all(normalized_titles)
             and len(set(normalized_titles)) == 1
             and (len(durations) < 2 or max(durations) - min(durations) < 1000)
         )
+        same_track_coherent = (
+            bool(track_nums)
+            and all(tn is not None for tn in track_nums)
+            and len(set(track_nums)) == 1
+            and len(durations) >= 2
+            and max(durations) - min(durations) < 1000
+        )
+        coherent_variants = same_title_coherent or same_track_coherent
         if coherent_variants:
             continue
 
