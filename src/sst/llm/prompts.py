@@ -21,10 +21,10 @@ def build_differential_mapping_prompt(
       {json.dumps(unmatched_local_tracks, ensure_ascii=False)}
 
       ### RULES:
-      1. Map local file_ids ONLY into the AVAILABLE EMPTY STEAM SLOTS provided above.
+      1. Map local file_ids ONLY into the AVAILABLE EMPTY STEAM SLOTS provided above using each slot's exact `"slot_key"` (`"<disc>_<track_number>"` format, e.g. `"1_1"`, `"1_10"`, `"2_3"`). NEVER use relative chunk positions (1..N), 0-based indices, or standalone relative numbers.
       2. Each local file must belong to at most one STEAM slot.
       3. Multiple format variants of the same song (e.g. WAV and MP3) must be assigned to the SAME slot.
-      4. If a file does not match any of the available STEAM slots, list it in `unassigned_files`.
+      4. If a file does not match any of the available STEAM slots, list it ONLY in `unassigned_files` (never create a slot entry with confidence 0).
       5. Keep `reason` EXTREMELY short and concise (under 20 chars).
       6. Output JSON ONLY. No preamble, no thinking.
 
@@ -34,7 +34,7 @@ def build_differential_mapping_prompt(
 ```json
 {{
   "slots": {{
-    "STEAM_SLOT_NUMBER": {{
+    "<SLOT_KEY>": {{
       "files": ["FILE_ID"],
       "confidence": 0.95,
       "reason": "Brief reason (max 20 chars)"
@@ -75,10 +75,10 @@ def build_mapping_prompt(
         {json.dumps(s_chunk, ensure_ascii=False)}
 
       ### RULES:
-      1. STEAM defines the canonical slot structure. Assign local files (file_id) to STEAM slots using the exact slot number string from the STEAM slots above (e.g. "1", "2").
+      1. STEAM defines the canonical slot structure. Assign local files (file_id) to STEAM slots using each slot's exact `"slot_key"` (`"<disc>_<track_number>"` format, e.g. `"1_1"`, `"1_10"`, `"2_3"`). NEVER use relative chunk positions (1..N), 0-based indices, or standalone relative numbers.
       2. Each local file must belong to at most one STEAM slot.
       3. Multiple format variants of the same song (e.g. WAV and MP3) must be assigned to the SAME slot.
-      4. If a file does not match any STEAM slot, list it in `unassigned_files`.
+      4. If a file does not match any STEAM slot, list it ONLY in `unassigned_files` (never create a slot entry with confidence 0).
       5. Do not create titles or slot numbers that are not supported by the provided STEAM slots.
       6. Keep `reason` EXTREMELY short and concise (under 20 chars).
       7. Output JSON ONLY. No preamble, no thinking.
@@ -89,7 +89,7 @@ def build_mapping_prompt(
 ```json
 {{
   "slots": {{
-    "1": {{
+    "<SLOT_KEY>": {{
       "files": ["<FILE_ID>"],
       "confidence": 0.95,
       "reason": "Brief reason (max 20 chars)"
@@ -239,7 +239,7 @@ Return ONLY this minimal raw JSON object without markdown or reasoning:
 Return ONLY this minimal raw JSON object without reason fields or markdown:
 {
   "slots": {
-    "SLOT_NUMBER": {
+    "<SLOT_KEY>": {
       "files": ["FILE_ID"],
       "confidence": 0.95
     }

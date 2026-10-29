@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import List, Dict, Any, Optional, Tuple, Callable
 
 from ..config import DEFAULT_METADATA_SOURCE_PRIORITY
@@ -13,7 +14,8 @@ from .normalization import (
 from .prompts import build_mapping_prompt
 from .identity import is_connection_error_log, resolve_album_identity
 from .coherence import merge_track_instructions, resolve_mapping_references
-from .alignment_segments import run_differential_segments
+from .alignment_segments import is_same_track_variant, run_differential_segments
+from ..track_grouper import TrackManager
 from .prematch import extract_deterministic_prematches, resolve_prematch_signals
 from .assignment_validation import (
     reject_contradictory_slot_assignments,
@@ -200,8 +202,14 @@ class LLMOrganizer:
         track_res: Dict[str, Any],
         full_ref_steam: Optional[List[Dict[str, Any]]],
         prematch_map: Optional[Dict[str, Any]] = None,
+        local_tracks: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
-        return normalize_track_mapping_result(track_res, full_ref_steam, prematch_map)
+        return normalize_track_mapping_result(
+            track_res,
+            full_ref_steam,
+            prematch_map,
+            local_tracks=local_tracks,
+        )
 
     @staticmethod
     def _normalize_identity_result(global_res: Dict[str, Any]) -> Dict[str, Any]:
@@ -308,6 +316,7 @@ class LLMOrganizer:
             fids = track.get("file_ids", [])
             s_chunk.append({
                 "file_ids": fids,
+                "n": track.get("track_num") or track.get("filename_track"),
                 "t": track.get("title"),
                 "d": track.get("disc"),
                 "dur": (track.get("duration_ms", 0) // 1000) if track.get("duration_ms") else None,
@@ -376,6 +385,25 @@ class LLMOrganizer:
                             steam_title = full_ref_steam[idx].get("title") or full_ref_steam[idx].get("t")
 
                     if steam_title and titles_are_compatible(local_title, str(steam_title)):
+                        # 指示書 04 3.2-1: 先頭番号プレフィックス食い違い検査 (AppID 2943720 型)
+                        m_local = re.match(r"^\s*(\d{1,3})[\s._-]+", local_title)
+                        m_steam = re.match(r"^\s*(\d{1,3})[\s._-]+", str(steam_title))
+                        if m_local and m_steam and int(m_local.group(1)) != int(m_steam.group(1)):
+                            continue
+
+                        # 別スロット完全一致検査（サフィックス等含むより精密なスロットが存在する場合）
+                        has_better_exact_slot = False
+                        norm_local_full = TrackManager.normalize_title(local_title, strip_track_prefix=False)
+                        norm_steam_current = TrackManager.normalize_title(str(steam_title), strip_track_prefix=False)
+                        if norm_local_full != norm_steam_current:
+                            for other_st in full_ref_steam:
+                                o_title = str(other_st.get("title") or other_st.get("t") or "")
+                                if TrackManager.normalize_title(o_title, strip_track_prefix=False) == norm_local_full:
+                                    has_better_exact_slot = True
+                                    break
+                        if has_better_exact_slot:
+                            continue
+
                         slot_entry = fallback_slots.setdefault(
                             target_slot,
                             {
@@ -413,6 +441,12 @@ class LLMOrganizer:
 
         while offset < len(segment_tracks):
             current_chunk_size = min(current_base_chunk_size, len(segment_tracks) - offset)
+            end_idx = offset + current_chunk_size
+            while end_idx < len(segment_tracks) and is_same_track_variant(
+                segment_tracks[end_idx - 1], segment_tracks[end_idx]
+            ):
+                end_idx += 1
+            current_chunk_size = end_idx - offset
             chunk_start = start_idx + offset
             chunk = segment_tracks[offset:offset + current_chunk_size]
             s_chunk, chunk_prematch_hints = self._prepare_chunk_payload(chunk, prematch_map)
@@ -542,12 +576,18 @@ class LLMOrganizer:
             if not isinstance(t, dict): 
                 simplified_tracks.append(t)
                 continue
+            d_val = t.get("disc") or t.get("d") or 1
+            n_val = t.get("track_num") or t.get("n") or t.get("number")
             st = {
                 "v_idx": idx, # Unique index in this alignment input bundle
                 "d": t.get("disc") or t.get("d"),
-                "n": t.get("track_num") or t.get("n") or t.get("number"),
-                "t": t.get("title") or t.get("t")
+                "n": n_val,
+                "t": t.get("title") or t.get("t"),
             }
+            if n_val is not None:
+                st["slot_key"] = f"{d_val}_{n_val}"
+            if t.get("duration_ms"):
+                st["dur"] = int(t.get("duration_ms", 0)) // 1000
             # Keep credits if they exist (FINGERPRINT source)
             if t.get("credits"):
                 st["c"] = t["credits"]
@@ -736,7 +776,8 @@ class LLMOrganizer:
             global_res["strategy"] = "STEAM_BASED"
             global_res["semantic_label"] = "Archive"
             global_res["archive_vs_review_ratio"] = {"archive": 100, "review": 0}
-            global_res["confidence_reason"] = f"SYSTEM: すべてのトラックが決定論的プレマッチで確定 ({len(deterministic_instructions)}/{len(full_ref_steam)}スロット)"
+            if "STEAM-TRUST" not in str(global_res.get("confidence_reason") or ""):
+                global_res["confidence_reason"] = f"SYSTEM: すべてのトラックが決定論的プレマッチで確定 ({len(deterministic_instructions)}/{len(full_ref_steam)}スロット)"
             segment_results[0] = (deterministic_instructions, [])
         elif not unmatched_local_tracks:
             logger.info(

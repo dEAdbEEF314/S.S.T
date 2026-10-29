@@ -344,9 +344,12 @@ class AlignmentInputBuilder:
         }
         
         for track in steam_meta.store_tracklist:
+            d = int(track.get("disc", 1))
+            n = int(track.get("number") or track.get("track_number") or 0)
             signal_bundle["tracks"].append({
-                "disc": int(track.get("disc", 1)),
-                "track_num": int(track.get("number") or track.get("track_number") or 0),
+                "disc": d,
+                "track_num": n,
+                "slot_key": f"{d}_{n}",
                 "title": track.get("title") or track.get("name"),
                 "duration_ms": (int(track.get("duration_s", 0)) * 1000) if track.get("duration_s") else None
             })
@@ -391,6 +394,7 @@ class AlignmentInputBuilder:
                 "disc": key[0],
                 "track_num": track_num, 
                 "title": meta.get("title") or (best_path.stem if best_path is not None else ""),
+                "norm_stem": best.get("norm_stem", ""),
                 "duration_ms": int(best["duration"] * 1000)
             })
             

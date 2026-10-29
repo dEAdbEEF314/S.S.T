@@ -77,11 +77,14 @@ class TrackManager:
     @staticmethod
     def normalize_title(stem: str, strip_track_prefix: bool = True) -> str:
         stem = html.unescape(stem or "")
+        stem = re.sub(r"['’‘`´ʹʼˈˊˋ]", "", stem)
         stem = unicodedata.normalize("NFKC", stem)
         stem = re.sub(r'\.(?:aiff|aif|mp3|flac|wav|ogg|m4a|aac|wma|opus)$', '', stem, flags=re.IGNORECASE)
         if strip_track_prefix:
-            stem = re.sub(r'^\d+(?:[-_.]\d+)?[\s._-]+', '', stem)
+            stem = re.sub(r'^\s*0?[1-9]\s*[-_]\s*\d{1,3}(?![\d.])\s*[-_.]+\s*', '', stem)
+            stem = re.sub(r'^\s*(?!\d{1,3}\.\d)\d{1,3}(?:[a-z](?=[\s._-]+))?(?:[\s._-]+|\s*-\s*)', '', stem, flags=re.IGNORECASE)
         stem = re.sub(r'[\s(\[]+(?:aiff|mp3|flac|wav|lossless|high[\s-]*res|ost|soundtrack|official|[\s\-])+[\s)\]]+$', '', stem, flags=re.IGNORECASE)
+        stem = re.sub(r"['’‘`´]", "", stem)
         stem = "".join(ch if unicodedata.category(ch)[0] in {"L", "N"} else " " for ch in stem)
         stem = " ".join(stem.split()).lower()
         stem = stem.replace("artifical", "artificial")
@@ -93,6 +96,30 @@ class TrackManager:
         file_previews = []
         compound_candidates: Dict[Path, Tuple[int, int]] = {}
         discs_tracks_map: Dict[int, List[int]] = {}
+
+        # Detect numbered multi-disc subfolders (e.g. "01. Base_ver", "02. Tech_ver")
+        subfolder_disc_map: Dict[str, int] = {}
+        parent_counts: Dict[str, int] = {}
+        parent_num_candidates: Dict[str, int] = {}
+        for f in files:
+            for part in reversed(f.parts[:-1]):
+                if part.lower() in {"wav", "mp3", "flac", "ogg", "m4a", "aac", "aiff", "aif", "lossless", "lossy"}:
+                    continue
+                m_sub = re.match(r'^\s*0*(\d{1,2})[\s._-]+\S+', part)
+                if m_sub:
+                    d_num = int(m_sub.group(1))
+                    if 1 <= d_num <= 10:
+                        parent_num_candidates[part] = d_num
+                        parent_counts[part] = parent_counts.get(part, 0) + 1
+                break
+        if len(parent_num_candidates) >= 2:
+            distinct_nums = set(parent_num_candidates.values())
+            if (
+                len(distinct_nums) == len(parent_num_candidates)
+                and distinct_nums == set(range(1, len(distinct_nums) + 1))
+                and all(cnt >= 2 for cnt in parent_counts.values())
+            ):
+                subfolder_disc_map = dict(parent_num_candidates)
 
         for f in files:
             meta = EmbeddedMetadataExtractor.extract(f)
@@ -112,6 +139,9 @@ class TrackManager:
                     if d_match:
                         disc = int(d_match.group(1))
                         break
+                    if part in subfolder_disc_map:
+                        disc = subfolder_disc_map[part]
+                        break
 
             embedded_track = None
             if meta.get("track_number"):
@@ -123,25 +153,43 @@ class TrackManager:
                     pass
 
             clean_stem = f.stem
+            lead_disc_match = re.match(r'^(?:disc|cd)\s*0*(\d{1,2})\b[\s._-]*', clean_stem, flags=re.IGNORECASE)
+            if lead_disc_match:
+                lead_disc = int(lead_disc_match.group(1))
+                if disc == 1 and 1 <= lead_disc <= 10:
+                    disc = lead_disc
+                clean_stem = clean_stem[lead_disc_match.end():].strip(" -_")
+                clean_stem = re.sub(
+                    r'^.+?\((?:original\s+game\s+soundtrack|original\s+soundtrack|soundtrack|ost)\)\s*[-_]+\s*(?=\d)',
+                    '',
+                    clean_stem,
+                    flags=re.IGNORECASE,
+                )
+
             if album_name:
                 escaped_album = re.escape(album_name)
                 clean_stem = re.sub(escaped_album, '', clean_stem, flags=re.IGNORECASE)
                 short_album = re.sub(r'\s*(Soundtrack|Original Soundtrack|OST)\s*$', '', album_name, flags=re.IGNORECASE)
                 if short_album and short_album != album_name:
                     clean_stem = re.sub(re.escape(short_album), '', clean_stem, flags=re.IGNORECASE)
+            clean_stem = re.sub(
+                r'^.+?\((?:original\s+game\s+soundtrack|original\s+soundtrack|soundtrack|ost)\)\s*[-_]+\s*(?=\d)',
+                '',
+                clean_stem,
+                flags=re.IGNORECASE,
+            )
             clean_stem = clean_stem.strip(" -_")
 
             # Check for multi-disc compound pattern candidate:
-            # Must match ^(\d{1,2})[-_](\d{1,3})(?:[^\d]|$)
-            # and not be followed by decimal digit (e.g. 05_4.8)
-            c_match = re.match(r'^(\d{1,2})[-_](\d{1,3})(?:[^\d]|$)', clean_stem)
-            if c_match and not re.match(r'^\d{1,2}[-_]\d{1,3}\.\d', clean_stem):
+            # Matches ^(\d{1,2})\s*[-_]\s*(\d{1,3})(?![\d.])(?:[\s._-]+|(?=[^\x00-\x7F])|$)
+            c_match = re.match(r'^(\d{1,2})\s*[-_]\s*(\d{1,3})(?![\d.])(?:[\s._-]+|(?=[^\x00-\x7F])|$)', clean_stem)
+            if c_match:
                 c_disc = int(c_match.group(1))
                 c_track = int(c_match.group(2))
                 # Check non-conflict with embedded track
                 if embedded_track is not None and embedded_track == c_disc and embedded_track != c_track:
                     pass
-                elif 1 <= c_disc <= 10:
+                elif 1 <= c_disc <= 10 and 1 <= c_track <= 300:
                     compound_candidates[f] = (c_disc, c_track)
                     discs_tracks_map.setdefault(c_disc, []).append(c_track)
 
@@ -154,16 +202,11 @@ class TrackManager:
             })
 
         # Album-wide validation of compound pattern:
-        # Genuine multi-disc albums have:
-        # 1. Disc 1 must be present in the compound candidates
-        # 2. If multiple discs exist, each disc starts with track 1 (1 in tracks),
-        #    or at least one disc has multiple tracks (>= 2 tracks)
-        # 3. If only one disc exists (Disc 1), it must have multiple tracks (>= 2 tracks) starting with track 1
         is_genuine_compound = False
         if discs_tracks_map and 1 in discs_tracks_map:
             if len(discs_tracks_map) >= 2:
                 has_track_one_in_all = all(1 in tracks for tracks in discs_tracks_map.values())
-                has_multi_tracks = any(len(tracks) >= 2 for tracks in discs_tracks_map.values())
+                has_multi_tracks = all(len(tracks) >= 2 for tracks in discs_tracks_map.values())
                 is_genuine_compound = has_track_one_in_all or has_multi_tracks
             else:
                 is_genuine_compound = len(discs_tracks_map[1]) >= 2 and 1 in discs_tracks_map[1]
@@ -186,17 +229,17 @@ class TrackManager:
                     disc = file_disc
                 filename_track_val = file_track
                 t_num_str = str(file_track)
-                title_part = re.sub(r'^\d{1,2}[-_]\d{1,3}[\s._-]*', '', clean_stem)
+                title_part = re.sub(r'^\d{1,2}\s*[-_]\s*\d{1,3}[\s._-]*', '', clean_stem)
                 norm_stem = TrackManager.normalize_title(title_part, strip_track_prefix=False) if title_part else TrackManager.normalize_title(clean_stem)
             else:
-                leading_match = re.match(r'^(\d+)', clean_stem)
-                if leading_match:
+                leading_match = re.match(r'^(?!\d{1,3}\.\d)(\d{1,3})([a-z]?)(?=[\s._-]+|$)', clean_stem, re.IGNORECASE)
+                if leading_match and 1 <= int(leading_match.group(1)) <= 300:
                     file_track = int(leading_match.group(1))
                     filename_track_val = file_track
                     t_num_str = leading_match.group(1)
-                    title_part = re.sub(r'^\d+[\s._-]+', '', clean_stem)
+                    title_part = re.sub(r'^\d{1,3}[a-z]?[\s._-]+', '', clean_stem, flags=re.IGNORECASE)
                     if title_part == clean_stem:
-                        title_part = re.sub(r'^\d+', '', clean_stem)
+                        title_part = re.sub(r'^\d{1,3}[a-z]?', '', clean_stem, flags=re.IGNORECASE)
                     norm_stem = TrackManager.normalize_title(title_part, strip_track_prefix=False) if title_part else TrackManager.normalize_title(clean_stem)
                 else:
                     # No leading number: middle number search or embedded track
@@ -204,8 +247,9 @@ class TrackManager:
                         filename_track_val = embedded_track
                         t_num_str = str(embedded_track)
                         num_pattern = re.compile(rf'(?:^|[\s\-_])0*{embedded_track}(?=[\s\-_.]|$)')
-                        m = num_pattern.search(clean_stem)
-                        if m:
+                        matches_emb = list(num_pattern.finditer(clean_stem))
+                        if matches_emb:
+                            m = matches_emb[-1]
                             title_part = clean_stem[m.end():].strip(" -_") or clean_stem[:m.start()].strip(" -_")
                             norm_stem = TrackManager.normalize_title(title_part, strip_track_prefix=False) if title_part else TrackManager.normalize_title(clean_stem)
                         else:
@@ -214,9 +258,21 @@ class TrackManager:
                         matches = list(re.finditer(r'(?:^|[\s\-_])(\d{1,3})(?=[\s\-_.]|$)', clean_stem))
                         valid_matches = []
                         for m in matches:
+                            val_int = int(m.group(1))
+                            if val_int <= 0 or val_int > 300:
+                                continue
                             following = clean_stem[m.end():]
                             if re.match(r'^\s*(?:master|bit|kbps|khz|bpm|vbr|cbr)\b', following, re.IGNORECASE):
                                 continue
+                            preceding = clean_stem[:m.start(1)]
+                            # Skip alphanumeric identifiers like radio1_, stage2_, ch1_
+                            if re.search(r'[a-zA-Z]+\d+[_\-]$', preceding):
+                                continue
+                            # If preceded by underscore, only accept generic track keywords (track_, ost_, bgm_, etc.)
+                            if preceding.endswith('_'):
+                                prefix_word = re.split(r'[\s\-_]+', preceding.strip('_-'))[-1].lower() if preceding.strip('_-') else ""
+                                if prefix_word not in {"track", "trk", "ost", "bgm", "no", "num", "song"}:
+                                    continue
                             valid_matches.append(m)
 
                         if valid_matches:
@@ -226,6 +282,10 @@ class TrackManager:
                             title_part = clean_stem[best_match.end():].strip(" -_") or clean_stem[:best_match.start()].strip(" -_")
                             norm_stem = TrackManager.normalize_title(title_part, strip_track_prefix=False) if title_part else TrackManager.normalize_title(clean_stem)
                         else:
+                            ost_match = re.search(r'(?:ost|track|trk|bgm|no)[\s._-]*0*(\d{1,3})$', clean_stem, re.IGNORECASE)
+                            if ost_match and 1 <= int(ost_match.group(1)) <= 300:
+                                t_num_str = ost_match.group(1)
+                                filename_track_val = int(t_num_str)
                             norm_stem = TrackManager.normalize_title(clean_stem, strip_track_prefix=False)
 
             t_num_val = None

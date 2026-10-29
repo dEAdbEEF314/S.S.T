@@ -654,3 +654,148 @@ def test_fast_track_rejects_shifted_tracks_where_titles_match_other_steam_slots(
     ok, final_map, _ = processor._check_fast_track(100, steam_meta, track_groups, [])
     assert ok is False
     assert final_map is None
+
+
+def test_fast_track_rejects_swapped_extended_ver_tracks_with_artist_affixes():
+    """fix_0.2 指示書 06: '(Extended Ver.)' 等の共通汎用修飾語のみで誤一致せず、'by <Artist>' / '<Artist> - ' 除去でクロススロット入れ替わりを検出して Fast-Track を拒否する。"""
+    processor = make_processor()
+    steam_meta = SteamMetadata(
+        app_id=2086480,
+        name="Synthetic Rhythm OST",
+        developer="Dev",
+        publisher="Pub",
+        release_date="2024-01-01",
+        store_tracklist=[
+            {"disc": 1, "number": 14, "title": "ON (Extended Ver.) by ND Lee"},
+            {"disc": 1, "number": 15, "title": "Eternal Memory ~소녀의 꿈~ (Extended Ver.) by SoundTeMP"},
+        ],
+    )
+    track_groups = {
+        (1, "14. SoundTeMP - Eternal Memory ~소녀의 꿈~ (Extended Ver.)::f14"): [
+            {
+                "file_id": "f14",
+                "path": Path("/tmp/14. SoundTeMP - Eternal Memory ~소녀의 꿈~ (Extended Ver.).wav"),
+                "t_num_val": "14",
+                "duration": 210.0,
+                "format": "wav",
+                "norm_stem": "soundtemp eternal memory 소녀의 꿈 extended ver",
+                "meta": {"title": "Eternal Memory ~소녀의 꿈~ (Extended Ver.)"},
+            }
+        ],
+        (1, "15. ND Lee - ON (Extended Ver.)::f15"): [
+            {
+                "file_id": "f15",
+                "path": Path("/tmp/15. ND Lee - ON (Extended Ver.).wav"),
+                "t_num_val": "15",
+                "duration": 195.0,
+                "format": "wav",
+                "norm_stem": "nd lee on extended ver",
+                "meta": {"title": "ON (Extended Ver.)"},
+            }
+        ],
+    }
+
+    ok, final_map, _ = processor._check_fast_track(2086480, steam_meta, track_groups, [])
+    assert ok is False
+    assert final_map is None
+
+
+def test_validator_detects_artist_affixed_cross_slot_swap_and_allows_numbered_untitled_disambiguation():
+    """fix_0.2 指示書 06: ResultValidator が 'by <Artist>' / '<Artist> - ' 付きクロススロット入れ替わりを検出しつつ、'Untitled' -> 'Untitled 2' の連番区別は誤検知しない。"""
+    from sst.validator import ResultValidator
+
+    # Case A: Swapped #14 and #15 must be flagged as Official Title Mismatch
+    steam_swap = SteamMetadata(
+        app_id=2086480,
+        name="Synthetic Rhythm OST",
+        store_tracklist=[
+            {"disc": 1, "number": 14, "title": "ON (Extended Ver.) by ND Lee"},
+            {"disc": 1, "number": 15, "title": "Eternal Memory ~소녀의 꿈~ (Extended Ver.) by SoundTeMP"},
+        ],
+    )
+    tracks_swap = [
+        {
+            "original_filename": "14. SoundTeMP - Eternal Memory ~소녀의 꿈~ (Extended Ver.).wav",
+            "tags": {
+                "disc_number": "1",
+                "track_number": "14",
+                "title": "ON (Extended Ver.) by ND Lee",
+            },
+        },
+        {
+            "original_filename": "15. ND Lee - ON (Extended Ver.).wav",
+            "tags": {
+                "disc_number": "1",
+                "track_number": "15",
+                "title": "Eternal Memory ~소녀의 꿈~ (Extended Ver.) by SoundTeMP",
+            },
+        },
+    ]
+    llm_log_swap = {
+        "phase1_res": {
+            "identity_confidence": 100,
+            "album_confidence": 100,
+            "mapping_confidence": 100,
+            "integrity_quality": 100,
+            "data_quality": 100,
+            "strategy": "FAST_TRACK",
+            "archive_vs_review_ratio": {"archive": 100, "review": 0},
+        }
+    }
+    status_swap, msg_swap, _, _, _ = ResultValidator.validate(
+        app_id=2086480,
+        tracks=tracks_swap,
+        llm_log=llm_log_swap,
+        mbz_candidates=[],
+        steam_meta=steam_swap,
+        audio_fail=False,
+        audio_warn=False,
+        unassigned_manifest=[],
+    )
+    assert status_swap == "review"
+    assert "Official Title Mismatch" in msg_swap
+
+    # Case B: Numbered disambiguation ("08 Untitled.mp3" -> "Untitled", "14 Untitled.mp3" -> "Untitled 2") must pass as archive
+    steam_untitled = SteamMetadata(
+        app_id=355890,
+        name="Synthetic Untitled OST",
+        store_tracklist=[
+            {"disc": 1, "number": 8, "title": "Untitled"},
+            {"disc": 1, "number": 14, "title": "Untitled 2"},
+        ],
+    )
+    tracks_untitled = [
+        {
+            "original_filename": "08 Untitled.mp3",
+            "original_title": "Untitled",
+            "tags": {"disc_number": "1", "track_number": "8", "title": "Untitled"},
+        },
+        {
+            "original_filename": "14 Untitled.mp3",
+            "original_title": "Untitled",
+            "tags": {"disc_number": "1", "track_number": "14", "title": "Untitled 2"},
+        },
+    ]
+    llm_log_untitled = {
+        "phase1_res": {
+            "identity_confidence": 100,
+            "album_confidence": 100,
+            "mapping_confidence": 100,
+            "integrity_quality": 100,
+            "data_quality": 100,
+            "strategy": "MBZ_STEAM_VERIFIED",
+            "archive_vs_review_ratio": {"archive": 100, "review": 0},
+        }
+    }
+    status_ok, msg_ok, _, _, _ = ResultValidator.validate(
+        app_id=355890,
+        tracks=tracks_untitled,
+        llm_log=llm_log_untitled,
+        mbz_candidates=[],
+        steam_meta=steam_untitled,
+        audio_fail=False,
+        audio_warn=False,
+        unassigned_manifest=[],
+    )
+    assert status_ok == "archive"
+    assert "Official Title Mismatch" not in msg_ok

@@ -334,6 +334,37 @@ def test_normalize_title_preserves_japanese_korean_cyrillic_and_nfkc():
     assert TrackManager.normalize_title("01. Тёмная комната") == "тёмная комната"
     assert TrackManager.normalize_title("19 - Fath0m") == "fath0m"
     assert TrackManager.normalize_title("01 - 00001-01000") == "1 1000"
+    assert TrackManager.normalize_title("Coward's Redemption") == "cowards redemption"
+    assert TrackManager.normalize_title("Cowards Redemption") == "cowards redemption"
+    assert TrackManager.normalize_title("01 - 02 - Main Theme") == "main theme"
+    assert TrackManager.normalize_title("12b. Bonus Stage") == "bonus stage"
+    assert TrackManager.normalize_title("1bitarrange") == "1bitarrange"
+    assert TrackManager.normalize_title("01001-02000") == "1001 2000"
+
+
+def test_build_file_records_handles_numbered_disc_folders_and_trailing_ost_numbers(tmp_path):
+    from unittest.mock import patch
+    from sst.track_grouper import TrackManager
+
+    d1 = tmp_path / "01. Base_ver"
+    d2 = tmp_path / "02. Tech_ver"
+    d1.mkdir()
+    d2.mkdir()
+    f1 = d1 / "murasaki_ost01.wav"
+    f2 = d2 / "Disc 2 - Album (Original Game Soundtrack) - 02 Battle.mp3"
+    f1.write_bytes(b"wav")
+    f2.write_bytes(b"mp3")
+
+    with patch("sst.track_grouper.EmbeddedMetadataExtractor.extract", return_value={}), \
+         patch("sst.track_grouper.TrackManager.get_duration", return_value=120.0):
+        records = TrackManager.build_file_records([f1, f2], album_name="Test Album")
+
+    by_disc = {disc: variants[0] for (disc, _), variants in records.items()}
+    assert 1 in by_disc
+    assert 2 in by_disc
+    assert by_disc[1]["filename_track"] == 1
+    assert by_disc[2]["filename_track"] == 2
+    assert by_disc[2]["norm_stem"] == "battle"
 
 
 def test_build_tag_map_does_not_false_match_japanese_feat_track():

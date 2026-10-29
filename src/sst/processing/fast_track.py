@@ -5,6 +5,39 @@ from typing import Any, Dict, List, Optional
 from ..models import SteamMetadata
 from ..track_grouper import TrackManager
 
+_FAST_TRACK_STOPWORDS = frozenset({
+    "the", "a", "an", "and", "or", "of", "to", "in", "on", "at",
+    "by", "for", "with", "from", "theme", "ost", "bgm", "track", "music",
+    "version", "ver", "remix", "mix", "extended", "edit", "short", "long",
+    "full", "original", "inst", "instrumental", "remastered", "remaster",
+    "bonus", "stage", "boss", "loop", "arrange", "arranged", "feat", "ft",
+    "opening", "ending", "title", "mode", "select", "result", "soundtrack",
+    "song",
+})
+
+
+def _expand_title_variants(raw_title: str) -> List[str]:
+    text = str(raw_title or "").strip()
+    if not text:
+        return []
+    raw_cands = [text]
+    no_by = re.sub(r"\s+by\s+.+$", "", text, flags=re.IGNORECASE).strip()
+    if no_by and no_by != text:
+        raw_cands.append(no_by)
+    for item in list(raw_cands):
+        # Strip leading track number before checking "Artist - Title"
+        stripped_num = re.sub(r"^\d{1,3}(?:[\s._-]+)", "", item).strip()
+        if " - " in stripped_num:
+            after_sep = stripped_num.split(" - ", 1)[1].strip()
+            if after_sep:
+                raw_cands.append(after_sep)
+    result: List[str] = []
+    for item in raw_cands:
+        norm = TrackManager.normalize_title(item)
+        if norm and norm not in result:
+            result.append(norm)
+    return result
+
 
 def _fast_track_titles_compatible(normalized_titles: List[str], steam_title: str) -> bool:
     if not normalized_titles:
@@ -14,7 +47,7 @@ def _fast_track_titles_compatible(normalized_titles: List[str], steam_title: str
 
     s_clean = steam_title.strip().lower()
     s_compact = s_clean.replace(" ", "")
-    s_tokens = set(re.findall(r'[\w]+', s_clean))
+    s_tokens = set(re.findall(r"[\w]+", s_clean))
 
     for local_title in normalized_titles:
         if not local_title:
@@ -34,16 +67,11 @@ def _fast_track_titles_compatible(normalized_titles: List[str], steam_title: str
                 return True
 
         # 3. Meaningful word token overlap
-        l_tokens = set(re.findall(r'[\w]+', l_clean))
+        l_tokens = set(re.findall(r"[\w]+", l_clean))
         common = s_tokens & l_tokens
         if common:
             non_stop_common = {
-                tok for tok in common
-                if tok not in {
-                    "the", "a", "an", "and", "or", "of", "to", "in", "on", "at",
-                    "by", "for", "with", "theme", "ost", "bgm", "track", "music",
-                    "version", "remix", "mix",
-                }
+                tok for tok in common if tok not in _FAST_TRACK_STOPWORDS
             }
             if len(common) >= 2 and len(non_stop_common) >= 1:
                 return True
@@ -93,14 +121,18 @@ def build_fast_track_group_map(
     slot_durations: Dict[tuple[int, str], List[float]] = {}
     steam_title_map: Dict[str, List[tuple[int, str]]] = {}
     steam_tracks_by_slot: Dict[tuple[int, str], Dict[str, Any]] = {}
+    steam_norm_variants_by_slot: Dict[tuple[int, str], List[str]] = {}
 
     for track in (steam_meta.store_tracklist if steam_meta else []):
-        title = TrackManager.normalize_title(str(track.get("title") or track.get("name") or ""))
+        raw_s_title = str(track.get("title") or track.get("name") or "")
         slot_key = normalize_slot_key(track.get("disc", 1), track.get("number"))
         if slot_key is None:
             continue
-        if title:
-            steam_title_map.setdefault(title, []).append(slot_key)
+        s_variants = _expand_title_variants(raw_s_title)
+        steam_norm_variants_by_slot[slot_key] = s_variants
+        for s_var in s_variants:
+            if slot_key not in steam_title_map.setdefault(s_var, []):
+                steam_title_map[s_var].append(slot_key)
         steam_tracks_by_slot[slot_key] = track
 
     for (disc_number, record_title), variants in track_groups.items():
@@ -112,14 +144,19 @@ def build_fast_track_group_map(
         slot_key: Optional[tuple[int, str]] = None
 
         clean_title_part = record_title.split("::")[0] if "::" in record_title else record_title
-        normalized_titles = [
-            TrackManager.normalize_title(clean_title_part),
-            TrackManager.normalize_title(Path(clean_title_part).stem),
-            TrackManager.normalize_title(
-                str((variants[0].get("meta") or {}).get("title") or "")
-            ) if variants else "",
+        raw_local_sources = [
+            clean_title_part,
+            Path(clean_title_part).stem,
+            str((variants[0].get("meta") or {}).get("title") or "") if variants else "",
         ]
-        normalized_titles = [title for title in normalized_titles if title]
+        if variants and variants[0].get("path") is not None:
+            raw_local_sources.append(Path(variants[0]["path"]).stem)
+
+        normalized_titles: List[str] = []
+        for src in raw_local_sources:
+            for expanded in _expand_title_variants(src):
+                if expanded not in normalized_titles:
+                    normalized_titles.append(expanded)
 
         candidate_slot_key = None
         if len(track_numbers) == 1:
@@ -128,11 +165,13 @@ def build_fast_track_group_map(
                 return None
 
         steam_title = ""
+        candidate_steam_variants: List[str] = []
         if candidate_slot_key is not None and candidate_slot_key in steam_tracks_by_slot:
             steam_track = steam_tracks_by_slot[candidate_slot_key]
             steam_title = TrackManager.normalize_title(
                 str((steam_track or {}).get("title") or (steam_track or {}).get("name") or "")
             )
+            candidate_steam_variants = steam_norm_variants_by_slot.get(candidate_slot_key, [])
 
         other_slot_matches = []
         for t in normalized_titles:
@@ -141,9 +180,15 @@ def build_fast_track_group_map(
                     other_slot_matches.append(sm)
 
         if candidate_slot_key is not None and candidate_slot_key in steam_tracks_by_slot:
-            is_compat = _fast_track_titles_compatible(normalized_titles, steam_title)
-            # If local title matches another slot and does NOT match candidate slot's steam title
-            if other_slot_matches and not is_compat:
+            exact_cand_match = any(
+                t in candidate_steam_variants for t in normalized_titles
+            )
+            is_compat = exact_cand_match or any(
+                _fast_track_titles_compatible(normalized_titles, s_var)
+                for s_var in (candidate_steam_variants or [steam_title])
+            )
+            # If local title matches another slot and does NOT match candidate slot
+            if other_slot_matches and not exact_cand_match:
                 claimed_slots = {sk for sk, _ in group_map.values()}
                 if candidate_slot_key not in claimed_slots:
                     return None

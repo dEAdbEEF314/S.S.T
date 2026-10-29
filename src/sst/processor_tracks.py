@@ -224,6 +224,10 @@ def process_single_track(
             "track_meta": {
                 "file_path": f"{disc_subdir}/{processed_path.name}",
                 "original_filename": adopted_info["path"].name,
+                "clean_title": clean_title,
+                "original_embedded_title": (adopted_info.get("meta") or {}).get("title") or "",
+                "original_track_number": (adopted_info.get("meta") or {}).get("track_number") or adopted_info.get("filename_track") or "",
+                "duration_s": adopted_info.get("duration_s") or adopted_info.get("duration"),
                 "tags": tag_map,
                 "source": instr.get("reason") or ("STEAM" if tag_map.get("title_source") == "STEAM" else "Fallback"),
                 "title_source": tag_map.get("title_source", "UNKNOWN"),

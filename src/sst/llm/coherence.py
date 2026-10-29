@@ -57,6 +57,7 @@ def merge_track_instructions(
         track_res,
         full_ref_steam,
         prematch_map=prematch_map,
+        local_tracks=local_tracks,
     )
     if not normalized_track_res or "track_instructions" not in normalized_track_res:
         return merged
@@ -130,11 +131,20 @@ def merge_track_instructions(
             elif (
                 matched_v_idx is not None
                 and full_ref_steam
-                and matched_v_idx < len(full_ref_steam)
             ):
-                ref_track = full_ref_steam[matched_v_idx]
-                if data.get("override_track") is None and ref_track.get("n") is not None:
-                    data["override_track"] = str(ref_track.get("n"))
+                ref_track = next(
+                    (t for t in full_ref_steam if t.get("v_idx") == matched_v_idx),
+                    full_ref_steam[matched_v_idx]
+                    if 0 <= matched_v_idx < len(full_ref_steam)
+                    else None,
+                )
+                if ref_track is not None:
+                    if data.get("override_track") is None and ref_track.get("n") is not None:
+                        data["override_track"] = str(ref_track.get("n"))
+                    if data.get("override_disc") is None and (
+                        ref_track.get("d") is not None or ref_track.get("disc") is not None
+                    ):
+                        data["override_disc"] = str(ref_track.get("d") or ref_track.get("disc"))
 
         tags = global_res.get("global_tags", {})
         if not isinstance(tags, dict):

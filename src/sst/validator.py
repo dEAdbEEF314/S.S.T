@@ -168,6 +168,7 @@ class ResultValidator:
         if anomalous_unknown_count > 0:
             issues.append(f"Unknown Title x{anomalous_unknown_count}")
 
+        paren_pattern = r"\s*[\(\[（【][^)\]）】]*[\)\]）】]"
         # Build normalized titles for all Steam slots to detect cross-slot title misassignments
         all_steam_norm_titles_by_key: Dict[Tuple[str, str], Set[str]] = {}
         for s_key, exp_titles in expected_titles_by_key.items():
@@ -175,13 +176,30 @@ class ResultValidator:
             for t in exp_titles:
                 if not t:
                     continue
-                norm_off = _normalize_official_title(t)
-                if norm_off:
-                    norm_set.add(norm_off)
-                norm_tm = TrackManager.normalize_title(t)
-                if norm_tm:
-                    norm_set.add(norm_tm)
+                t_variants = [t]
+                t_no_by = re.sub(r"\s+by\s+.+$", "", str(t), flags=re.IGNORECASE).strip()
+                if t_no_by and t_no_by != t:
+                    t_variants.append(t_no_by)
+                t_no_paren = re.sub(paren_pattern, "", str(t)).strip()
+                if t_no_paren and t_no_paren != t:
+                    t_variants.append(t_no_paren)
+                for tv in t_variants:
+                    norm_off = _normalize_official_title(tv)
+                    if norm_off:
+                        norm_set.add(norm_off)
+                    norm_tm = TrackManager.normalize_title(tv)
+                    if norm_tm:
+                        norm_set.add(norm_tm)
             all_steam_norm_titles_by_key[s_key] = norm_set
+
+        track_by_key: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        for t in tracks:
+            t_tags = t.get("tags", {})
+            t_key = _norm_slot(
+                t_tags.get("disc_number", "1"),
+                t_tags.get("track_number", "0"),
+            )
+            track_by_key[t_key] = t
 
         official_title_mismatch_count = 0
         for track in tracks:
@@ -204,16 +222,47 @@ class ResultValidator:
             # Additional physical cross-slot title misassignment detection:
             # Check if local origin title belongs to another Steam slot and conflicts with this assigned slot
             assigned_norm_titles = all_steam_norm_titles_by_key.get(key, set())
-            local_candidates: List[str] = []
+            raw_local_candidates: List[str] = []
             orig_fn = track.get("original_filename")
+            fn_matches_slot_num = False
             if orig_fn:
-                local_candidates.append(Path(orig_fn).stem)
+                stem = Path(orig_fn).stem
+                raw_local_candidates.append(stem)
+                lead_m = re.match(r"^\D*(\d{1,3})(?:[\s._-]+)", stem)
+                if lead_m and str(int(lead_m.group(1))) == key[1]:
+                    fn_matches_slot_num = True
             if track.get("original_title"):
-                local_candidates.append(str(track["original_title"]))
+                raw_local_candidates.append(str(track["original_title"]))
             if track.get("clean_title"):
-                local_candidates.append(str(track["clean_title"]))
+                raw_local_candidates.append(str(track["clean_title"]))
             if track.get("original_embedded_title"):
-                local_candidates.append(str(track["original_embedded_title"]))
+                raw_local_candidates.append(str(track["original_embedded_title"]))
+
+            local_candidates: List[str] = []
+            for raw_cand in raw_local_candidates:
+                local_candidates.append(raw_cand)
+                no_paren = re.sub(paren_pattern, "", raw_cand).strip()
+                if no_paren and no_paren != raw_cand:
+                    local_candidates.append(no_paren)
+                stripped_num = re.sub(r"^\d{1,3}(?:[\s._-]+)", "", raw_cand).strip()
+                if " - " in stripped_num:
+                    after_sep = stripped_num.split(" - ", 1)[1].strip()
+                    if after_sep:
+                        local_candidates.append(after_sep)
+                        no_paren_sep = re.sub(paren_pattern, "", after_sep).strip()
+                        if no_paren_sep and no_paren_sep != after_sep:
+                            local_candidates.append(no_paren_sep)
+                no_by = re.sub(r"\s+by\s+.+$", "", raw_cand, flags=re.IGNORECASE).strip()
+                if no_by and no_by != raw_cand:
+                    local_candidates.append(no_by)
+                if no_paren:
+                    stripped_no_paren = re.sub(r"^\d{1,3}(?:[\s._-]+)", "", no_paren).strip()
+                    if stripped_no_paren and stripped_no_paren not in local_candidates:
+                        local_candidates.append(stripped_no_paren)
+                        if " - " in stripped_no_paren:
+                            after_sep_np = stripped_no_paren.split(" - ", 1)[1].strip()
+                            if after_sep_np and after_sep_np not in local_candidates:
+                                local_candidates.append(after_sep_np)
 
             is_cross_mismatch = False
             for cand in local_candidates:
@@ -227,6 +276,14 @@ class ResultValidator:
                 if any(n in assigned_norm_titles for n in cand_norms):
                     continue
 
+                # Guard against false positive on numbered disambiguation titles (e.g. "Untitled" -> "Untitled 2")
+                if (fn_matches_slot_num or is_verified_mbz_trust) and any(
+                    re.match(rf"^{re.escape(n)}\s*\d+$", assigned_t)
+                    for n in cand_norms
+                    for assigned_t in assigned_norm_titles
+                ):
+                    continue
+
                 # If local candidate matches a different Steam slot in this album, it's a cross-slot conflict
                 for other_key, other_norm_titles in all_steam_norm_titles_by_key.items():
                     if other_key != key and any(n in other_norm_titles for n in cand_norms):
@@ -234,6 +291,47 @@ class ResultValidator:
                         break
                 if is_cross_mismatch:
                     break
+
+            # 2. 埋め込みタイトル（original_embedded_title）とファイル名のスロット間矛盾（ハイブリッド汚染）の検出
+            if not is_cross_mismatch and track.get("original_embedded_title"):
+                emb_raw = str(track["original_embedded_title"]).strip()
+                if emb_raw:
+                    emb_off = _normalize_official_title(emb_raw)
+                    emb_tm = TrackManager.normalize_title(emb_raw)
+                    emb_norms = {n for n in (emb_off, emb_tm) if n and len(n) >= 2}
+                    matches_assigned = any(
+                        n in assigned_norm_titles or any(n in at or at in n for at in assigned_norm_titles)
+                        for n in emb_norms
+                    )
+                    if not matches_assigned:
+                        for other_k, other_norms in all_steam_norm_titles_by_key.items():
+                            if other_k != key and any(n in other_norms for n in emb_norms):
+                                other_track = track_by_key.get(other_k)
+                                if other_track:
+                                    o_emb = str(other_track.get("original_embedded_title") or "").strip()
+                                    o_fn = Path(str(other_track.get("original_filename") or "")).stem
+                                    o_norms = {
+                                        _normalize_official_title(s) for s in (o_emb, o_fn) if s
+                                    } | {
+                                        TrackManager.normalize_title(s) for s in (o_emb, o_fn) if s
+                                    }
+                                    if any(n in o_norms for n in emb_norms):
+                                        c_dur = track.get("duration_s")
+                                        o_dur = other_track.get("duration_s")
+                                        if c_dur is not None and o_dur is not None:
+                                            try:
+                                                if abs(float(c_dur) - float(o_dur)) <= 1.0:
+                                                    is_cross_mismatch = True
+                                                    break
+                                            except (ValueError, TypeError):
+                                                is_cross_mismatch = True
+                                                break
+                                        else:
+                                            is_cross_mismatch = True
+                                            break
+                                else:
+                                    is_cross_mismatch = True
+                                    break
 
             if is_cross_mismatch:
                 official_title_mismatch_count += 1

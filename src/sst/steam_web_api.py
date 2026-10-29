@@ -5,11 +5,63 @@ import time
 import html
 import re
 from html.parser import HTMLParser
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple, List
 
 from .db import DatabaseManager
 
 logger = logging.getLogger(__name__)
+
+CORRUPTED_PICS_PATTERN = re.compile(
+    r"^([^,\r\n]+?),*,\d+:\d+,\s*[\r\n]+\s*(\d+),(\d+),\"?([^\"\r\n]+)\"?$"
+)
+
+
+def sanitize_corrupted_pics_tracks(tracks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not tracks:
+        return []
+    sanitized: List[Dict[str, Any]] = []
+    seen_slots: set[Tuple[int, str]] = set()
+
+    for t in tracks:
+        disc = int(t.get("disc") or t.get("discnumber") or 1)
+        number = str(t.get("number") or t.get("tracknumber") or "")
+        raw_title = str(t.get("title") or t.get("originalname") or t.get("name") or "").strip()
+        dur = t.get("duration_s") or t.get("duration")
+
+        m = CORRUPTED_PICS_PATTERN.match(raw_title)
+        if m:
+            t1_title = html.unescape(m.group(1).strip())
+            t2_disc = int(m.group(2))
+            t2_num = str(m.group(3))
+            t2_title = html.unescape(m.group(4).strip())
+
+            t1 = dict(t)
+            t1["disc"] = disc
+            t1["number"] = number
+            t1["title"] = t1_title
+            sanitized.append(t1)
+            seen_slots.add((disc, number))
+
+            if (t2_disc, t2_num) not in seen_slots:
+                t2 = {
+                    "disc": t2_disc,
+                    "number": t2_num,
+                    "title": t2_title,
+                    "duration_s": dur,
+                    "source": t.get("source", "STEAM_PICS"),
+                }
+                sanitized.append(t2)
+                seen_slots.add((t2_disc, t2_num))
+        else:
+            t_copy = dict(t)
+            t_copy["disc"] = disc
+            t_copy["number"] = number
+            t_copy["title"] = html.unescape(raw_title) if raw_title else ""
+            sanitized.append(t_copy)
+            seen_slots.add((disc, number))
+
+    return sanitized
+
 
 class SteamWebClient:
     def __init__(
@@ -64,23 +116,23 @@ class SteamWebClient:
 
     @staticmethod
     def parse_pics_tracks(album_meta: dict) -> list[Dict[str, Any]]:
-        tracks = []
+        raw_tracks = []
         pics_tracks = album_meta.get("tracks", {})
         if isinstance(pics_tracks, dict):
             sorted_keys = sorted(pics_tracks.keys(), key=lambda x: int(x) if str(x).isdigit() else 9999)
             for k in sorted_keys:
                 t = pics_tracks[k]
-                raw_title = t.get("originalname", "")
+                raw_title = str(t.get("originalname") or t.get("name") or "").strip()
                 m_val = int(t.get("m", 0) or 0)
                 s_val = int(t.get("s", 0) or 0)
-                tracks.append({
+                raw_tracks.append({
                     "disc": int(t.get("discnumber", 1) or 1),
                     "number": str(t.get("tracknumber", "")),
-                    "title": html.unescape(raw_title) if raw_title else "",
+                    "title": raw_title,
                     "duration_s": str(m_val * 60 + s_val),
                     "source": "STEAM_PICS",
                 })
-        return tracks
+        return sanitize_corrupted_pics_tracks(raw_tracks)
 
     def fetch_store_tags(self, app_id: int) -> Dict[str, str]:
         """Fetch the official tagid/name pairs embedded in the Steam store page."""
@@ -128,7 +180,7 @@ class SteamWebClient:
         }
         
         if db_data:
-            result["store_tracklist"] = db_data.get("tracklist", [])
+            result["store_tracklist"] = sanitize_corrupted_pics_tracks(db_data.get("tracklist", []))
             result["store_credits"] = db_data.get("credits", "")
             if result["store_tracklist"]:
                 result["store_tracklist_source"] = result["store_tracklist"][0].get("source")

@@ -28,6 +28,10 @@ def initialize_album_context(
     track_groups = TrackManager.build_file_records(all_files, album_name=steam_meta.name)
     diag("FILE_RECORDS_BUILT", file_count=len(track_groups))
 
+    if steam_meta and steam_meta.store_tracklist:
+        from ..steam_web_api import sanitize_corrupted_pics_tracks
+        steam_meta.store_tracklist = sanitize_corrupted_pics_tracks(steam_meta.store_tracklist)
+
     store_description = steam_meta.store_description
     if not steam_meta.store_tracklist and store_description:
         from ..steam_web_api import SteamWebClient

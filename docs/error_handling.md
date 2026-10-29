@@ -127,7 +127,7 @@
   - 異なる論理タイトルが同一スロットを奪い合い、バリアント統合後もスロット欠落や未割当として矛盾が残存している場合。
 - **公式タイトル不一致（`Official Title Mismatch`）**:
   - 出力タグ `tags["title"]` が Steam 正本タイトルと一致しない。
-  - 物理ファイル由来タイトル（`original_filename`, `original_title`, `clean_title` 等）が同一アルバム内の別 Steam スロットタイトルと一致し、割当スロットと矛盾している（クロススロット誤割当）。
+  - 物理ファイル由来タイトル（`original_filename`, `original_title`, `clean_title`, `original_embedded_title`、および `"<Artist> - "` / `" by <Artist>"` 除去後のコアタイトル）が同一アルバム内の別 Steam スロットタイトルと一致し、割当スロットと矛盾している（クロススロット誤割当。ただしファイル名番号一致または `MBZ_STEAM_VERIFIED` 下の `"Untitled"` → `"Untitled 2"` 等の連番区別は除く）。
 - **LLM 通信エラー / 接続断**: 通信エラー時は STEAM-TRUST を発動させず確実に Review へ送る。
 
 ## 7. ログ要件

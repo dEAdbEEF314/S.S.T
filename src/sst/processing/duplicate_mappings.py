@@ -1,4 +1,5 @@
 import logging
+import re
 from collections import defaultdict
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple
@@ -7,6 +8,12 @@ from ..models import SteamMetadata
 from ..track_grouper import TrackManager
 
 logger = logging.getLogger("sst.processor")
+
+_VERSION_QUALIFIERS = {
+    "long", "short", "edit", "extended", "full", "ver", "version",
+    "mix", "remix", "chiptuned", "demo", "inst", "instrumental",
+    "bonus", "arrange", "arranged", "loop", "ed", "op",
+}
 
 
 def _parse_tid_group_key(tid: str) -> Optional[tuple[int, str]]:
@@ -30,16 +37,18 @@ def _get_tid_priority(tid: str, track_groups: Dict, priorities: List[str]) -> in
     return 999
 
 
-def _get_tid_stem_and_duration(tid: str, track_groups: Dict) -> tuple[str, float, str]:
+def _get_tid_stem_and_duration(tid: str, track_groups: Dict) -> tuple[str, float, str, Optional[str]]:
     group_key = _parse_tid_group_key(tid)
     if group_key is None or group_key not in track_groups or not track_groups[group_key]:
-        return "", 0.0, ""
+        return "", 0.0, "", None
     variants = track_groups[group_key]
     raw_title = group_key[1].split("::")[0] if "::" in group_key[1] else group_key[1]
     norm_title = TrackManager.normalize_title(raw_title)
     fmt = str(variants[0].get("format", "")).lower()
     duration = float(variants[0].get("duration", 0.0) or 0.0)
-    return norm_title, duration, fmt
+    t_num_val = variants[0].get("t_num_val")
+    t_num_str = str(t_num_val).strip() if t_num_val not in (None, "", "0") else None
+    return norm_title, duration, fmt, t_num_str
 
 
 def _deduplicate_format_variants_for_slot(
@@ -51,23 +60,55 @@ def _deduplicate_format_variants_for_slot(
 ) -> List[str]:
     tids_sorted = sorted(tids, key=lambda tid: _get_tid_priority(tid, track_groups, priorities))
     best_tid = tids_sorted[0]
-    best_norm_title, best_duration, best_format = _get_tid_stem_and_duration(best_tid, track_groups)
+    best_group_key = _parse_tid_group_key(best_tid)
+    best_norm_title, best_duration, best_format, best_t_num = _get_tid_stem_and_duration(best_tid, track_groups)
 
     merged_any = False
     tids_to_remove = []
     for tid in tids_sorted[1:]:
-        this_norm_title, this_duration, this_format = _get_tid_stem_and_duration(tid, track_groups)
+        group_key = _parse_tid_group_key(tid)
+        this_norm_title, this_duration, this_format, this_t_num = _get_tid_stem_and_duration(tid, track_groups)
 
         is_different_format = (best_format != this_format) and bool(best_format and this_format)
         duration_difference_ok = abs(best_duration - this_duration) <= 3.0 if (best_duration > 0 and this_duration > 0) else True
-        title_matches = (best_norm_title == this_norm_title) or (bool(best_norm_title and this_norm_title) and (best_norm_title in this_norm_title or this_norm_title in best_norm_title))
+        title_matches = (
+            (best_norm_title == this_norm_title and bool(best_norm_title))
+            or (
+                bool(best_norm_title and this_norm_title)
+                and (
+                    best_norm_title in this_norm_title
+                    or this_norm_title in best_norm_title
+                    or best_norm_title.replace(" ", "") == this_norm_title.replace(" ", "")
+                )
+            )
+        )
         slot_duration_matches = abs(best_duration - this_duration) <= 1.5 if (best_duration > 0 and this_duration > 0) else False
+        same_track_num = (
+            best_group_key is not None
+            and group_key is not None
+            and best_group_key[0] == group_key[0]
+            and best_t_num is not None
+            and best_t_num == this_t_num
+        )
+        both_durations_missing = best_duration <= 0 or this_duration <= 0
 
-        can_merge = is_different_format and duration_difference_ok and (title_matches or slot_duration_matches)
+        can_merge_diff_fmt = is_different_format and (
+            (duration_difference_ok and (title_matches or slot_duration_matches))
+            or (
+                best_norm_title == this_norm_title
+                and bool(best_norm_title)
+                and same_track_num
+                and (both_durations_missing or abs(best_duration - this_duration) <= 5.0)
+            )
+        )
+        can_merge_same_fmt = (not is_different_format) and (
+            (slot_duration_matches and (title_matches or same_track_num))
+            or (title_matches and same_track_num and both_durations_missing)
+            or (best_norm_title == this_norm_title and bool(best_norm_title) and both_durations_missing)
+        )
+        can_merge = can_merge_diff_fmt or can_merge_same_fmt
 
         if can_merge:
-            best_group_key = _parse_tid_group_key(best_tid)
-            group_key = _parse_tid_group_key(tid)
             if (
                 group_key is not None
                 and best_group_key is not None
@@ -85,7 +126,6 @@ def _deduplicate_format_variants_for_slot(
             logger.info(f"[{app_id}] フォーマット重複を解決: {tid} ({this_format}) を最高品質の {best_tid} ({best_format}) に統合しました (再生時間差: {abs(best_duration - this_duration):.2f}s)。")
 
     if merged_any:
-        best_group_key = _parse_tid_group_key(best_tid)
         if best_group_key is not None and best_group_key in track_groups:
             track_groups[best_group_key].sort(key=lambda variant: priorities.index(variant["format"].lower()) if variant["format"].lower() in priorities else 999)
         return [tid for tid in tids if tid not in tids_to_remove]
@@ -107,20 +147,39 @@ def _extract_local_titles_for_tid(tid: str, track_groups: Optional[Dict] = None)
 
 
 def _match_titles(norm_local: str, norm_steam: str) -> Tuple[bool, float]:
-    """完全一致/プレフィックス一致/空白無視一致、および類似度比率を返す"""
+    """完全一致/プレフィックス一致/空白無視一致、および類似度比率を返す（数値・バージョン矛盾を除外）"""
     if not norm_local or not norm_steam:
         return False, 0.0
-    if (
-        norm_steam == norm_local
-        or norm_steam.startswith(norm_local)
-        or norm_local.startswith(norm_steam)
-        or norm_steam.replace(" ", "") == norm_local.replace(" ", "")
-    ):
+    if norm_steam == norm_local or norm_steam.replace(" ", "") == norm_local.replace(" ", ""):
         return True, 1.0
+
+    # Check number token consistency and version qualifier consistency before prefix/fuzzy matching
+    local_nums = re.findall(r"\d+", norm_local)
+    steam_nums = re.findall(r"\d+", norm_steam)
+    if local_nums != steam_nums:
+        return False, 0.0
+
+    local_quals = set(norm_local.split()) & _VERSION_QUALIFIERS
+    steam_quals = set(norm_steam.split()) & _VERSION_QUALIFIERS
+    if local_quals != steam_quals:
+        return False, 0.0
+
+    if (
+        f" {norm_local} " in f" {norm_steam} "
+        or f" {norm_steam} " in f" {norm_local} "
+    ):
+        return True, 0.95
+
     sim = SequenceMatcher(None, norm_local, norm_steam).ratio()
     if sim >= 0.80:
         return True, sim
     return False, sim
+
+
+def _is_exact_title_match(norm_local: str, norm_steam: str) -> bool:
+    if not norm_local or not norm_steam:
+        return False
+    return norm_local == norm_steam or norm_local.replace(" ", "") == norm_steam.replace(" ", "")
 
 
 def _resolve_multidisc_index_conflicts(
@@ -171,27 +230,60 @@ def _resolve_disc_title_matches(
     track_groups: Optional[Dict] = None,
 ) -> List[str]:
     resolved_tids = set()
+    current_steam_track = store_tracks[v_idx] if 0 <= v_idx < len(store_tracks) else None
+    current_norm_steam = (
+        TrackManager.normalize_title(
+            str(current_steam_track.get("title") or current_steam_track.get("name") or "")
+        )
+        if current_steam_track
+        else ""
+    )
+
+    # Identify slots that already have a legitimate exact-title owner so fuzzy matches never overwrite them
+    exact_owner_slots = set()
+    for other_tid, instr in final_metadata.items():
+        other_v_idx = instr.get("matched_v_idx")
+        if other_v_idx is None or not (0 <= int(other_v_idx) < len(store_tracks)):
+            continue
+        s_tr = store_tracks[int(other_v_idx)]
+        s_norm = TrackManager.normalize_title(str(s_tr.get("title") or s_tr.get("name") or ""))
+        if not s_norm:
+            continue
+        for raw_l in _extract_local_titles_for_tid(other_tid, track_groups):
+            if _is_exact_title_match(TrackManager.normalize_title(raw_l), s_norm):
+                exact_owner_slots.add(int(other_v_idx))
+                break
 
     for tid in tids:
         local_disc = int(tid.split("_", 1)[0])
         local_titles = _extract_local_titles_for_tid(tid, track_groups)
+        local_norms = [TrackManager.normalize_title(raw_l) for raw_l in local_titles if TrackManager.normalize_title(raw_l)]
+
+        # Anchor guard: if this tid already matches the current slot v_idx, NEVER evict it to another slot!
+        if current_norm_steam and any(
+            _is_exact_title_match(nl, current_norm_steam) or _match_titles(nl, current_norm_steam)[0]
+            for nl in local_norms
+        ):
+            continue
 
         candidates_same_disc = []
         candidates_other_disc = []
 
         for steam_idx, steam_track in enumerate(store_tracks):
+            if steam_idx == v_idx:
+                continue
             s_disc = int(steam_track.get("disc", 1))
             raw_steam = steam_track.get("title") or steam_track.get("name", "")
             norm_steam = TrackManager.normalize_title(raw_steam)
             if not norm_steam:
                 continue
 
-            for raw_l in local_titles:
-                norm_local = TrackManager.normalize_title(raw_l)
-                if not norm_local:
-                    continue
-                matched, sim = _match_titles(norm_local, norm_steam)
+            for norm_local in local_norms:
+                is_exact = _is_exact_title_match(norm_local, norm_steam)
+                matched, sim = (True, 1.0) if is_exact else _match_titles(norm_local, norm_steam)
                 if matched:
+                    if not is_exact and steam_idx in exact_owner_slots:
+                        continue
                     entry = (steam_idx, raw_steam, sim)
                     if s_disc == local_disc:
                         candidates_same_disc.append(entry)
@@ -202,14 +294,11 @@ def _resolve_disc_title_matches(
         best_match = None
         if candidates_same_disc:
             candidates_same_disc.sort(key=lambda x: x[2], reverse=True)
-            for s_idx, s_name, sim in candidates_same_disc:
-                if s_idx != v_idx:
-                    best_match = (s_idx, s_name, sim, False)
-                    break
+            s_idx, s_name, sim = candidates_same_disc[0]
+            best_match = (s_idx, s_name, sim, False)
         elif len(candidates_other_disc) == 1:
             s_idx, s_name, sim = candidates_other_disc[0]
-            if s_idx != v_idx:
-                best_match = (s_idx, s_name, sim, True)
+            best_match = (s_idx, s_name, sim, True)
 
         if best_match is not None:
             s_idx, s_name, sim, is_other = best_match
@@ -236,13 +325,22 @@ def _resolve_sequential_track_duplicates(
     if not base_track:
         return
     base_name = TrackManager.normalize_title(base_track.get("title") or base_track.get("name", ""))
+    if not base_name:
+        return
+
+    occupied_indices = {
+        int(instr["matched_v_idx"])
+        for tid, instr in final_metadata.items()
+        if tid not in remaining_tids and instr.get("matched_v_idx") is not None
+    }
 
     sequence_indices = [v_idx]
     for next_idx in range(v_idx + 1, len(store_tracks)):
+        if next_idx in occupied_indices:
+            break
         next_track = store_tracks[next_idx]
         next_name = TrackManager.normalize_title(next_track.get("title") or next_track.get("name", ""))
-        matched, _ = _match_titles(base_name, next_name)
-        if matched:
+        if next_name == base_name:
             sequence_indices.append(next_idx)
         else:
             break

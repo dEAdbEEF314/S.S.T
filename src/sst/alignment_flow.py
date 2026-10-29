@@ -398,6 +398,51 @@ def execute_alignment_flow(
         multi_variant_slot_count=multi_variant_slot_count,
     )
 
+    # Promote confidence when 100% of Steam slots and 100% of local files are deterministically/coherently resolved
+    if phase1_result and effective_steam_meta.store_tracklist:
+        from .processing.fast_track import normalize_slot_key
+        expected_slot_keys = {
+            normalize_slot_key(st.get("disc", 1), st.get("number"))
+            for st in effective_steam_meta.store_tracklist
+        } - {None}
+        all_slots_filled = bool(expected_slot_keys) and all(
+            sk in slot_variant_index and len(slot_variant_index[sk]) > 0
+            for sk in expected_slot_keys
+        )
+        all_tracks_consolidated = bool(track_groups) and all(
+            track_to_slot_index.get(f"{gk[0]}_{gk[1]}") in expected_slot_keys
+            for gk in track_groups
+        )
+        alignment_res_obj = llm_log.get("alignment_res", {}) or {}
+        align_diag = alignment_res_obj.get("diagnostics") or {}
+        has_no_rejections = not (
+            alignment_res_obj.get("rejected_slot_keys")
+            or align_diag.get("rejected_slot_keys")
+            or alignment_res_obj.get("duplicate_assignment_file_ids")
+            or align_diag.get("duplicate_assignment_file_ids")
+        )
+        all_deterministic_reasons = bool(final_metadata) and all(
+            str(instr.get("reason") or "").startswith("SYSTEM:")
+            for instr in final_metadata.values()
+        )
+        if (
+            all_slots_filled
+            and all_tracks_consolidated
+            and has_no_rejections
+            and all_deterministic_reasons
+            and int(phase1_result.get("album_confidence", 0)) < 100
+        ):
+            phase1_result["identity_confidence"] = 100
+            phase1_result["album_confidence"] = 100
+            phase1_result["mapping_confidence"] = 100
+            phase1_result["integrity_quality"] = 100
+            phase1_result["data_quality"] = 100
+            phase1_result["archive_vs_review_ratio"] = {"archive": 100, "review": 0}
+            phase1_result["semantic_label"] = "Archive"
+            phase1_result["confidence_reason"] = (
+                f"SYSTEM: 全Steamスロットおよび全バリアントが決定論的に100%統合 ({len(expected_slot_keys)}/{len(expected_slot_keys)}スロット)"
+            )
+
     alignment_inputs_bundle = {
         "STEAM": v_steam,
         "ACOUSTID_MBID": v_fingerprint,

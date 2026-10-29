@@ -176,12 +176,68 @@ def select_slot_conflict_candidates(
             for key in adopted_keys
             if key in title_by_key and title_by_key[key]
         }
+        adopted_variants = [
+            v for key in adopted_keys for v in track_groups.get(key, [])
+        ]
+        adopted_formats = {
+            str(v.get("format", "")).lower() for v in adopted_variants if v.get("format")
+        }
+        adopted_durations = [
+            float(v.get("duration") or 0.0)
+            for v in adopted_variants
+            if float(v.get("duration") or 0.0) > 0
+        ]
+        adopted_t_nums = {
+            int(str(v.get("t_num_val")).split("/")[0])
+            for v in adopted_variants
+            if v.get("t_num_val") is not None and str(v.get("t_num_val")).split("/")[0].isdigit()
+        }
+
         candidates_by_title: Dict[str, List[tuple[Any, Dict[str, Any]]]] = defaultdict(list)
         for record_key in record_keys:
             title = title_by_key[record_key]
             if not title or title in adopted_titles or record_key in adopted_keys:
                 continue
-            for variant in track_groups.get(record_key, []):
+            rec_variants = track_groups.get(record_key, [])
+            rec_formats = {
+                str(v.get("format", "")).lower() for v in rec_variants if v.get("format")
+            }
+            rec_durations = [
+                float(v.get("duration") or 0.0)
+                for v in rec_variants
+                if float(v.get("duration") or 0.0) > 0
+            ]
+            rec_t_nums = {
+                int(str(v.get("t_num_val")).split("/")[0])
+                for v in rec_variants
+                if v.get("t_num_val") is not None and str(v.get("t_num_val")).split("/")[0].isdigit()
+            }
+            dur_diff = (
+                min(abs(d1 - d2) for d1 in adopted_durations for d2 in rec_durations)
+                if (adopted_durations and rec_durations)
+                else None
+            )
+            same_slot_num = bool(
+                adopted_t_nums
+                and rec_t_nums
+                and adopted_t_nums == rec_t_nums
+            )
+            if any(
+                title.replace(" ", "") == ad_title.replace(" ", "")
+                for ad_title in adopted_titles
+                if ad_title
+            ):
+                continue
+            if (
+                same_slot_num
+                and dur_diff is not None
+                and dur_diff <= 1.5
+                and adopted_formats
+                and rec_formats
+                and adopted_formats.isdisjoint(rec_formats)
+            ):
+                continue
+            for variant in rec_variants:
                 candidates_by_title[title].append((record_key, variant))
 
         for title, candidates in candidates_by_title.items():

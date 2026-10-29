@@ -297,3 +297,127 @@ def test_align_slots_does_not_bypass_phase2_when_steam_slots_remain_unfilled():
     assert p1.get("confidence_reason") != "SYSTEM: すべてのトラックが決定論的プレマッチで確定 (2/4スロット)"
     assert p1.get("album_confidence") == 70
 
+
+def test_phase2_chunking_never_splits_format_variants():
+    from sst.llm.alignment_segments import split_tracks_into_chunks
+
+    # 13 tracks x 2 formats (FLAC + MP3) = 26 files (AppID 336870 model)
+    unmatched_local_tracks = []
+    for t_num in range(1, 14):
+        unmatched_local_tracks.append({
+            "file_ids": [f"fid_{t_num}_flac"],
+            "track_num": t_num,
+            "disc": 1,
+            "title": f"Track {t_num}",
+            "norm_stem": f"track_{t_num}",
+            "format": "flac",
+            "duration_ms": 120000,
+        })
+        unmatched_local_tracks.append({
+            "file_ids": [f"fid_{t_num}_mp3"],
+            "track_num": t_num,
+            "disc": 1,
+            "title": f"Track {t_num}",
+            "norm_stem": f"track_{t_num}",
+            "format": "mp3",
+            "duration_ms": 120000,
+        })
+
+    # chunk_size=17: track 9 FLAC is at index 16, track 9 MP3 is at index 17
+    chunks = split_tracks_into_chunks(unmatched_local_tracks, base_chunk_size=17)
+
+    # Track 9 FLAC and MP3 must remain in the SAME chunk (chunk 0 extended to 18)
+    chunk0_fids = {fid for t in chunks[0][1] for fid in t["file_ids"]}
+    assert "fid_9_flac" in chunk0_fids
+    assert "fid_9_mp3" in chunk0_fids
+
+
+def test_normalize_track_mapping_prevents_partial_list_v_idx_off_by_one_collision():
+    from sst.llm.normalization import normalize_track_mapping_result
+
+    # Case A: unfilled_steam_slots has Slot 12 (v_idx=11). Local track 11 (dur=262) mapped to key "11".
+    # Must NOT resolve to v_idx=11 (Slot 12)
+    unfilled_steam_slots_a = [
+        {"v_idx": 11, "d": 1, "n": 12, "t": "Time to Leave", "dur": 120}
+    ]
+    local_tracks_a = [
+        {"file_ids": ["fid_11"], "track_num": 11, "disc": 1, "title": "Track 11", "duration_ms": 262000}
+    ]
+    track_res_a = {
+        "slots": {
+            "11": {
+                "files": ["fid_11"],
+                "confidence": 0.95,
+                "reason": "Track 11",
+            }
+        }
+    }
+    normalized_a = normalize_track_mapping_result(
+        track_res_a,
+        unfilled_steam_slots_a,
+        local_tracks=local_tracks_a,
+    )
+    assert "fid_11" not in normalized_a.get("track_instructions", {})
+    assert "11" in normalized_a.get("rejected_slot_keys", [])
+
+    # Case B: unfilled_steam_slots has Slot 24 (v_idx=23) and Slot 25 (v_idx=24).
+    # Local track 25 (dur=145) mapped to key "24" with reason mentioning 1_25 / d1n25.
+    # Must resolve to Slot 25 (v_idx=24), NOT Slot 24 (v_idx=23).
+    unfilled_steam_slots_b = [
+        {"v_idx": 23, "d": 1, "n": 24, "t": "Slot 24", "dur": 90},
+        {"v_idx": 24, "d": 1, "n": 25, "t": "Slot 25", "dur": 145},
+    ]
+    local_tracks_b = [
+        {"file_ids": ["fid_25"], "track_num": 25, "disc": 1, "title": "Slot 25", "duration_ms": 145000}
+    ]
+    track_res_b = {
+        "slots": {
+            "24": {
+                "files": ["fid_25"],
+                "confidence": 0.95,
+                "reason": "d1n25 matches 1_25",
+            }
+        }
+    }
+    normalized_b = normalize_track_mapping_result(
+        track_res_b,
+        unfilled_steam_slots_b,
+        local_tracks=local_tracks_b,
+    )
+    assert "fid_25" in normalized_b.get("track_instructions", {})
+    assert normalized_b["track_instructions"]["fid_25"]["matched_v_idx"] == 24
+
+
+def test_normalize_track_mapping_rescues_relative_keys_when_local_track_num_and_duration_match_slot():
+    from sst.llm.normalization import normalize_track_mapping_result
+
+    # AppID 2260070 model: unfilled steam slots are n=11, 12, 13 (v_idx 10, 11, 12)
+    unfilled_steam_slots = [
+        {"v_idx": 10, "d": 1, "n": 11, "t": "Song 11", "dur": 117},
+        {"v_idx": 11, "d": 1, "n": 12, "t": "Song 12", "dur": 117},
+        {"v_idx": 12, "d": 1, "n": 13, "t": "Song 13", "dur": 112},
+    ]
+    local_tracks = [
+        {"file_ids": ["fid_11"], "track_num": 11, "disc": 1, "title": "Song 11", "duration_ms": 117000},
+        {"file_ids": ["fid_12"], "track_num": 12, "disc": 1, "title": "Song 12", "duration_ms": 117000},
+        {"file_ids": ["fid_13"], "track_num": 13, "disc": 1, "title": "Song 13", "duration_ms": 112000},
+    ]
+    # LLM outputs relative keys "1", "2", "3"
+    track_res = {
+        "slots": {
+            "1": {"files": ["fid_11"], "confidence": 0.9, "reason": "chunk rel 1"},
+            "2": {"files": ["fid_12"], "confidence": 0.9, "reason": "chunk rel 2"},
+            "3": {"files": ["fid_13"], "confidence": 0.9, "reason": "chunk rel 3"},
+        }
+    }
+    normalized = normalize_track_mapping_result(
+        track_res,
+        unfilled_steam_slots,
+        local_tracks=local_tracks,
+    )
+    instructions = normalized.get("track_instructions", {})
+    assert len(instructions) == 3
+    assert instructions["fid_11"]["matched_v_idx"] == 10
+    assert instructions["fid_12"]["matched_v_idx"] == 11
+    assert instructions["fid_13"]["matched_v_idx"] == 12
+

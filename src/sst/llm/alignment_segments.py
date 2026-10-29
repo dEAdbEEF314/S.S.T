@@ -5,6 +5,50 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 logger = logging.getLogger("sst.llm.alignment_segments")
 
 
+def is_same_track_variant(t1: Dict[str, Any], t2: Dict[str, Any]) -> bool:
+    if not isinstance(t1, dict) or not isinstance(t2, dict):
+        return False
+    # 1. (disc, track_num)
+    d1 = t1.get("disc") or t1.get("d") or 1
+    d2 = t2.get("disc") or t2.get("d") or 1
+    n1 = t1.get("track_num") or t1.get("n") or t1.get("filename_track")
+    n2 = t2.get("track_num") or t2.get("n") or t2.get("filename_track")
+    if n1 is not None and n2 is not None and str(d1) == str(d2) and str(n1) == str(n2):
+        return True
+    # 2. norm_stem
+    ns1 = t1.get("norm_stem")
+    ns2 = t2.get("norm_stem")
+    if ns1 and ns2 and str(ns1).strip() == str(ns2).strip():
+        return True
+    # 3. clean_title or title with matching duration
+    title1 = t1.get("clean_title") or t1.get("title") or t1.get("t")
+    title2 = t2.get("clean_title") or t2.get("title") or t2.get("t")
+    if title1 and title2 and str(title1).strip().lower() == str(title2).strip().lower():
+        dur1 = t1.get("duration_ms") or ((t1.get("dur") or 0) * 1000)
+        dur2 = t2.get("duration_ms") or ((t2.get("dur") or 0) * 1000)
+        if dur1 and dur2 and abs(int(dur1) - int(dur2)) <= 3000:
+            return True
+    return False
+
+
+def split_tracks_into_chunks(
+    tracks: List[Dict[str, Any]], base_chunk_size: int
+) -> List[Tuple[int, List[Dict[str, Any]]]]:
+    chunks: List[Tuple[int, List[Dict[str, Any]]]] = []
+    chunk_size = max(1, base_chunk_size)
+    offset = 0
+    while offset < len(tracks):
+        c_size = min(chunk_size, len(tracks) - offset)
+        end_idx = offset + c_size
+        while end_idx < len(tracks) and is_same_track_variant(
+            tracks[end_idx - 1], tracks[end_idx]
+        ):
+            end_idx += 1
+        chunks.append((offset, tracks[offset:end_idx]))
+        offset = end_idx
+    return chunks
+
+
 def run_differential_segments(
     app_id: int,
     unmatched_local_tracks: List[Dict[str, Any]],
@@ -28,10 +72,7 @@ def run_differential_segments(
 ) -> Dict[int, Tuple[Dict[str, Dict[str, Any]], List[Dict[str, Any]]]]:
     segment_results: Dict[int, Tuple[Dict[str, Dict[str, Any]], List[Dict[str, Any]]]] = {}
     chunk_size = max(1, dynamic_chunk_size)
-    segments = [
-        (start_idx, unmatched_local_tracks[start_idx : start_idx + chunk_size])
-        for start_idx in range(0, len(unmatched_local_tracks), chunk_size)
-    ]
+    segments = split_tracks_into_chunks(unmatched_local_tracks, chunk_size)
 
     if should_parallelize:
         worker_count = resolve_worker_count(execution_profile, len(segments))
