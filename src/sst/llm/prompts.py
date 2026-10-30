@@ -25,8 +25,9 @@ def build_differential_mapping_prompt(
       2. Each local file must belong to at most one STEAM slot.
       3. Multiple format variants of the same song (e.g. WAV and MP3) must be assigned to the SAME slot.
       4. If a file does not match any of the available STEAM slots, list it ONLY in `unassigned_files` (never create a slot entry with confidence 0).
-      5. Keep `reason` EXTREMELY short and concise (under 20 chars).
-      6. Output JSON ONLY. No preamble, no thinking.
+      5. When file names contain track numbers (e.g. "13_Sonken", "14_Kannei") that correspond to slot track numbers ("1_13", "1_14"), prioritize matching by track number over slight differences in duration (differences of a few seconds are normal due to mastering/silence). NEVER swap adjacent numbered tracks simply because of minor duration differences.
+      6. Keep `reason` EXTREMELY short and concise (under 20 chars).
+      7. Output JSON ONLY. No preamble, no thinking.
 
 **NOTE: All reasoning (reason, unassigned_reason) MUST be output in the language code: {user_language}. If {user_language} is "ja" (Japanese), you MUST write in native Japanese. Keep reasons very short.**
 
@@ -80,8 +81,9 @@ def build_mapping_prompt(
       3. Multiple format variants of the same song (e.g. WAV and MP3) must be assigned to the SAME slot.
       4. If a file does not match any STEAM slot, list it ONLY in `unassigned_files` (never create a slot entry with confidence 0).
       5. Do not create titles or slot numbers that are not supported by the provided STEAM slots.
-      6. Keep `reason` EXTREMELY short and concise (under 20 chars).
-      7. Output JSON ONLY. No preamble, no thinking.
+      6. When file names contain track numbers (e.g. "13_Sonken", "14_Kannei") that correspond to slot track numbers ("1_13", "1_14"), prioritize matching by track number over slight differences in duration (differences of a few seconds are normal due to mastering/silence). NEVER swap adjacent numbered tracks simply because of minor duration differences.
+      7. Keep `reason` EXTREMELY short and concise (under 20 chars).
+      8. Output JSON ONLY. No preamble, no thinking.
 
 **NOTE: All reasoning (reason, unassigned_reason) MUST be output in the language code: {user_language}. If {user_language} is "ja" (Japanese), you MUST write in native Japanese. Keep reasons very short.**
 

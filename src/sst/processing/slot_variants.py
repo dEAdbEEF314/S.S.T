@@ -146,6 +146,13 @@ def build_slot_variant_index(
                 assigned_duration = float(assigned_variant.get("duration", 0.0) or 0.0)
                 assigned_raw_title = assigned_variant.get("norm_stem") or variant_titles.get(assigned_variant.get("file_id"), "")
                 assigned_title = TrackManager.normalize_title(str(assigned_raw_title or ""))
+                assigned_orig_track = assigned_variant.get("t_num_val") or assigned_variant.get("filename_track")
+                same_orig_track = (
+                    inferred_track is not None
+                    and assigned_orig_track is not None
+                    and str(inferred_track).lstrip("0") == str(assigned_orig_track).lstrip("0")
+                )
+                effective_same_track = same_track_number or same_orig_track
 
                 is_different_format = (assigned_format != unaligned_format) and bool(assigned_format and unaligned_format)
                 dur_diff = (
@@ -178,9 +185,9 @@ def build_slot_variant_index(
                 )
                 effective_title_matches = title_matches or matches_this_steam
 
-                # 指示書 05 3.2-1: 同一 (disc, n) または同一トラック番号・異フォーマット・同一 norm_stem（または高類似度）の最優先判定
+                # 指示書 05 3.2-1 / fix_0.5 指示書 02: 同一 (disc, n) または同一トラック番号・元トラック番号一致・異フォーマット・同一 norm_stem の最優先判定
                 is_sibling_stem_match = (
-                    (same_slot_number or same_track_number)
+                    (same_slot_number or effective_same_track or same_orig_track)
                     and is_different_format
                     and (dur_diff is None or dur_diff <= 2.0)
                     and (
@@ -215,7 +222,7 @@ def build_slot_variant_index(
                 if not (cond1_diff_fmt or cond2_same_fmt_dup or cond3_coherent_bilingual):
                     continue
 
-                if is_sibling_stem_match and (slot_key[0] == disc or same_track_number):
+                if is_sibling_stem_match and (slot_key[0] == disc or effective_same_track or same_orig_track):
                     matching_slot_keys = {slot_key}
                     break
 
