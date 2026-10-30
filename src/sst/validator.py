@@ -7,6 +7,7 @@ from typing import Tuple, List, Dict, Any, Optional, Set
 
 from .models import SteamMetadata
 from .track_grouper import TrackManager
+from .llm.assignment_validation import titles_are_compatible
 
 logger = logging.getLogger("sst.validator")
 
@@ -169,6 +170,51 @@ class ResultValidator:
             issues.append(f"Unknown Title x{anomalous_unknown_count}")
 
         paren_pattern = r"\s*[\(\[（【][^)\]）】]*[\)\]）】]"
+
+        def _expand_title_variants(text_val: Any) -> Set[str]:
+            variants: Set[str] = set()
+            if not text_val:
+                return variants
+            s = str(text_val).strip()
+            if not s:
+                return variants
+            variants.add(s)
+
+            # 1. Strip "by <Artist>"
+            no_by = re.sub(r"\s+by\s+.+$", "", s, flags=re.IGNORECASE).strip()
+            if no_by and no_by != s:
+                variants.add(no_by)
+
+            # 2. Split on " - "
+            base_parts = [s]
+            if no_by and no_by != s:
+                base_parts.append(no_by)
+            for p in list(base_parts):
+                if " - " in p:
+                    p1, p2 = p.split(" - ", 1)
+                    if p1.strip():
+                        base_parts.append(p1.strip())
+                    if p2.strip():
+                        base_parts.append(p2.strip())
+
+            for p in base_parts:
+                variants.add(p)
+                np = re.sub(paren_pattern, "", p).strip()
+                if np and np != p:
+                    variants.add(np)
+
+            # 3. Strip leading track numbers and leading articles
+            for v in list(variants):
+                sn = re.sub(r"^\d{1,3}[\s._-]+", "", v).strip()
+                if sn and sn != v:
+                    variants.add(sn)
+                    v = sn
+                na = re.sub(r"^(?:the|a|an)\s+", "", v, flags=re.IGNORECASE).strip()
+                if na and na != v:
+                    variants.add(na)
+
+            return variants
+
         # Build normalized titles for all Steam slots to detect cross-slot title misassignments
         all_steam_norm_titles_by_key: Dict[Tuple[str, str], Set[str]] = {}
         for s_key, exp_titles in expected_titles_by_key.items():
@@ -176,20 +222,14 @@ class ResultValidator:
             for t in exp_titles:
                 if not t:
                     continue
-                t_variants = [t]
-                t_no_by = re.sub(r"\s+by\s+.+$", "", str(t), flags=re.IGNORECASE).strip()
-                if t_no_by and t_no_by != t:
-                    t_variants.append(t_no_by)
-                t_no_paren = re.sub(paren_pattern, "", str(t)).strip()
-                if t_no_paren and t_no_paren != t:
-                    t_variants.append(t_no_paren)
-                for tv in t_variants:
+                for tv in _expand_title_variants(t):
                     norm_off = _normalize_official_title(tv)
                     if norm_off:
                         norm_set.add(norm_off)
                     norm_tm = TrackManager.normalize_title(tv)
                     if norm_tm:
                         norm_set.add(norm_tm)
+            norm_set.discard("")
             all_steam_norm_titles_by_key[s_key] = norm_set
 
         track_by_key: Dict[Tuple[str, str], Dict[str, Any]] = {}
@@ -240,57 +280,54 @@ class ResultValidator:
 
             local_candidates: List[str] = []
             for raw_cand in raw_local_candidates:
-                local_candidates.append(raw_cand)
-                no_paren = re.sub(paren_pattern, "", raw_cand).strip()
-                if no_paren and no_paren != raw_cand:
-                    local_candidates.append(no_paren)
-                stripped_num = re.sub(r"^\d{1,3}(?:[\s._-]+)", "", raw_cand).strip()
-                if " - " in stripped_num:
-                    after_sep = stripped_num.split(" - ", 1)[1].strip()
-                    if after_sep:
-                        local_candidates.append(after_sep)
-                        no_paren_sep = re.sub(paren_pattern, "", after_sep).strip()
-                        if no_paren_sep and no_paren_sep != after_sep:
-                            local_candidates.append(no_paren_sep)
-                no_by = re.sub(r"\s+by\s+.+$", "", raw_cand, flags=re.IGNORECASE).strip()
-                if no_by and no_by != raw_cand:
-                    local_candidates.append(no_by)
-                if no_paren:
-                    stripped_no_paren = re.sub(r"^\d{1,3}(?:[\s._-]+)", "", no_paren).strip()
-                    if stripped_no_paren and stripped_no_paren not in local_candidates:
-                        local_candidates.append(stripped_no_paren)
-                        if " - " in stripped_no_paren:
-                            after_sep_np = stripped_no_paren.split(" - ", 1)[1].strip()
-                            if after_sep_np and after_sep_np not in local_candidates:
-                                local_candidates.append(after_sep_np)
+                for cv in _expand_title_variants(raw_cand):
+                    if cv not in local_candidates:
+                        local_candidates.append(cv)
 
-            is_cross_mismatch = False
+            # 1. Self-slot match check: if any candidate matches the assigned slot
+            matches_assigned = False
             for cand in local_candidates:
                 cand_off = _normalize_official_title(cand)
                 cand_tm = TrackManager.normalize_title(cand)
                 cand_norms = {n for n in (cand_off, cand_tm) if n and len(n) >= 2}
-                if not cand_norms:
-                    continue
-
-                # If local candidate matches this assigned slot, it's valid
                 if any(n in assigned_norm_titles for n in cand_norms):
-                    continue
-
-                # Guard against false positive on numbered disambiguation titles (e.g. "Untitled" -> "Untitled 2")
-                if (fn_matches_slot_num or is_verified_mbz_trust) and any(
-                    re.match(rf"^{re.escape(n)}\s*\d+$", assigned_t)
-                    for n in cand_norms
-                    for assigned_t in assigned_norm_titles
-                ):
-                    continue
-
-                # If local candidate matches a different Steam slot in this album, it's a cross-slot conflict
-                for other_key, other_norm_titles in all_steam_norm_titles_by_key.items():
-                    if other_key != key and any(n in other_norm_titles for n in cand_norms):
-                        is_cross_mismatch = True
-                        break
-                if is_cross_mismatch:
+                    matches_assigned = True
                     break
+
+            # Secondary self-slot match: track number matches and titles are compatible
+            if not matches_assigned and fn_matches_slot_num:
+                if is_verified_mbz_trust or any(
+                    titles_are_compatible(c, exp)
+                    for c in local_candidates
+                    for exp in expected_titles
+                ):
+                    matches_assigned = True
+
+            # 2. Cross-slot conflict check: ONLY if this track does NOT match its assigned slot
+            is_cross_mismatch = False
+            if not matches_assigned:
+                for cand in local_candidates:
+                    cand_off = _normalize_official_title(cand)
+                    cand_tm = TrackManager.normalize_title(cand)
+                    cand_norms = {n for n in (cand_off, cand_tm) if n and len(n) >= 2}
+                    if not cand_norms:
+                        continue
+
+                    # Guard against false positive on numbered disambiguation titles (e.g. "Untitled" -> "Untitled 2")
+                    if (fn_matches_slot_num or is_verified_mbz_trust) and any(
+                        re.match(rf"^{re.escape(n)}\s*\d+$", assigned_t)
+                        for n in cand_norms
+                        for assigned_t in assigned_norm_titles
+                    ):
+                        continue
+
+                    # If local candidate matches a different Steam slot in this album, it's a cross-slot conflict
+                    for other_key, other_norm_titles in all_steam_norm_titles_by_key.items():
+                        if other_key != key and any(n in other_norm_titles for n in cand_norms):
+                            is_cross_mismatch = True
+                            break
+                    if is_cross_mismatch:
+                        break
 
             # 2. 埋め込みタイトル（original_embedded_title）とファイル名のスロット間矛盾（ハイブリッド汚染）の検出
             if not is_cross_mismatch and track.get("original_embedded_title"):
@@ -299,11 +336,11 @@ class ResultValidator:
                     emb_off = _normalize_official_title(emb_raw)
                     emb_tm = TrackManager.normalize_title(emb_raw)
                     emb_norms = {n for n in (emb_off, emb_tm) if n and len(n) >= 2}
-                    matches_assigned = any(
+                    matches_assigned_emb = any(
                         n in assigned_norm_titles or any(n in at or at in n for at in assigned_norm_titles)
                         for n in emb_norms
                     )
-                    if not matches_assigned:
+                    if not matches_assigned_emb:
                         for other_k, other_norms in all_steam_norm_titles_by_key.items():
                             if other_k != key and any(n in other_norms for n in emb_norms):
                                 other_track = track_by_key.get(other_k)

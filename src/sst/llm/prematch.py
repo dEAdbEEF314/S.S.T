@@ -255,9 +255,6 @@ def _titles_match(
                     m_suffix = re.match(rf"^{re.escape(s_var)}\s+(\d{{1,2}})$", l_norm)
                     if m_suffix:
                         return True
-                    l_norm_fixed = l_norm.replace("artifical", "artificial")
-                    if re.match(rf"^{re.escape(s_var)}\s+(\d{{1,2}})$", l_norm_fixed):
-                        return True
                     if SequenceMatcher(None, s_var, re.sub(r"\s+\d+$", "", l_norm)).ratio() >= 0.88:
                         return True
 

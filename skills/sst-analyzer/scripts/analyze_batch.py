@@ -18,7 +18,7 @@ def analyze(db_path, since_hours=24):
     c.execute("SELECT processed_at FROM processed_albums ORDER BY processed_at DESC LIMIT 1")
     last_record = c.fetchone()
     if not last_record:
-        print(f"データベースに処理履歴が存在しません。")
+        print("データベースに処理履歴が存在しません。")
         return
         
     c.execute("SELECT app_id, status, album_name, metadata_json, processed_at FROM processed_albums WHERE processed_at >= ? ORDER BY processed_at", (since_time,))
@@ -67,7 +67,7 @@ def analyze(db_path, since_hours=24):
     
     # Generate Report
     print(f"# バッチ処理実行結果 詳細分析レポート (過去{since_hours}時間)")
-    print(f"\n## 1. テスト概要と結果サマリー")
+    print("\n## 1. テスト概要と結果サマリー")
     print(f"* **テスト件数**: {len(rows)}件")
     print(f"* **集計期間**: {since_time} 〜 最新")
     print("\n| ステータス | 件数 | 割合 |")
@@ -93,18 +93,18 @@ def analyze(db_path, since_hours=24):
         print("  * **対象例**: " + ", ".join([f"『{r['album_name']}』" for r in validator_downgrade[:3]]) + (" など" if len(validator_downgrade) > 3 else ""))
 
     print(f"\n## 3. Archive 送り内容の妥当性検証 ({len(archives)}件)")
-    print(f"### 3.1. 基準を満たさない不当なArchiveの有無")
+    print("### 3.1. 基準を満たさない不当なArchiveの有無")
     if invalid_archives:
         print(f"❌ 警告: 信頼度95未満の不当なArchiveが **{len(invalid_archives)}件** 検出されました。ロジックのバグが疑われます。")
     else:
         print(f"✅ **問題なし**: 全{len(archives)}件において、LLMの信頼度スコアは95以上を記録しており、不当なArchive行きは **0件** でした。Validatorの保護が完璧に機能しています。")
 
-    print(f"\n### 3.2. STEAM-TRUST PATH によるリカバリー成功数")
+    print("\n### 3.2. STEAM-TRUST PATH によるリカバリー成功数")
     print(f"✅ **{len(steam_trust)}件**: FINGERPRINT（波形照合）が失敗・誤検知したにも関わらず、LLMがSteam公式データとローカルファイルの構造的一致を見抜き、意図通りにSTEAM-TRUSTルールを適用してArchiveへリカバリーした優秀な推論ケースです。")
     if steam_trust:
         print("  * **対象例**: " + ", ".join([f"『{r['album_name']}』" for r in steam_trust[:3]]) + (" など" if len(steam_trust) > 3 else ""))
 
-    print(f"\n## 4. 総括")
+    print("\n## 4. 総括")
     print("システムの「権力分立 (Separation of Powers)」アーキテクチャが意図通りに機能しており、安全かつ強固な振り分けロジックが実現されています。ロジックの矛盾は一切検出されませんでした。")
 
 if __name__ == "__main__":

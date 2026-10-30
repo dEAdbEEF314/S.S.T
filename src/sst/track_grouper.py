@@ -87,7 +87,6 @@ class TrackManager:
         stem = re.sub(r"['’‘`´]", "", stem)
         stem = "".join(ch if unicodedata.category(ch)[0] in {"L", "N"} else " " for ch in stem)
         stem = " ".join(stem.split()).lower()
-        stem = stem.replace("artifical", "artificial")
         stem = re.sub(r'(?:^|(?<=\s))0+(\d+)', r'\1', stem)
         return stem.strip()
 
@@ -269,9 +268,10 @@ class TrackManager:
                             if re.search(r'[a-zA-Z]+\d+[_\-]$', preceding):
                                 continue
                             # If preceded by underscore, only accept generic track keywords (track_, ost_, bgm_, etc.)
+                            # or single letter section/disc prefixes (a_, b_, c_, etc.)
                             if preceding.endswith('_'):
                                 prefix_word = re.split(r'[\s\-_]+', preceding.strip('_-'))[-1].lower() if preceding.strip('_-') else ""
-                                if prefix_word not in {"track", "trk", "ost", "bgm", "no", "num", "song"}:
+                                if prefix_word not in {"track", "trk", "ost", "bgm", "no", "num", "song"} and not (len(prefix_word) == 1 and prefix_word.isalpha()):
                                     continue
                             valid_matches.append(m)
 

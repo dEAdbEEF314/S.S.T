@@ -19,10 +19,45 @@ def _repair_duplicate_quote_before_chosen_mbz_id(
 
     repaired = json_str[:error.pos - 1] + json_str[error.pos:]
     try:
-        parsed = json.loads(repaired)
+        parsed = json.loads(repaired, object_pairs_hook=_merge_json_object_pairs)
     except json.JSONDecodeError:
         return None
     return repaired if isinstance(parsed, dict) else None
+
+
+def _merge_json_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    res: dict[str, Any] = {}
+    for k, v in pairs:
+        if k not in res:
+            res[k] = v
+            continue
+        prev = res[k]
+        if isinstance(prev, dict) and isinstance(v, dict):
+            merged = dict(prev)
+            for sub_k, sub_v in v.items():
+                if sub_k == "files" and isinstance(sub_v, list):
+                    prev_files = prev.get("files")
+                    if isinstance(prev_files, list):
+                        combined = list(prev_files)
+                        for f in sub_v:
+                            if f not in combined:
+                                combined.append(f)
+                        merged["files"] = combined
+                    else:
+                        merged["files"] = sub_v
+                elif sub_v is not None and (sub_k not in merged or not merged[sub_k]):
+                    merged[sub_k] = sub_v
+            res[k] = merged
+        elif isinstance(prev, list) and isinstance(v, list):
+            combined = list(prev)
+            for item in v:
+                if item not in combined:
+                    combined.append(item)
+            res[k] = combined
+        else:
+            if not prev and v:
+                res[k] = v
+    return res
 
 
 def _lower_mapping_keys(value: Any) -> Any:
@@ -54,7 +89,7 @@ def parse_llm_response(
     json_str = clean_content[start_idx : end_idx + 1]
     json_str = re.sub(r",\s*([\]}])", r"\1", json_str)
     try:
-        parsed = json.loads(json_str)
+        parsed = json.loads(json_str, object_pairs_hook=_merge_json_object_pairs)
     except json.JSONDecodeError as parse_error:
         if request_kind != "identity":
             raise
@@ -64,7 +99,7 @@ def parse_llm_response(
         )
         if repaired_json is None:
             raise
-        parsed = json.loads(repaired_json)
+        parsed = json.loads(repaired_json, object_pairs_hook=_merge_json_object_pairs)
         if repair_callback:
             repair_callback(
                 {

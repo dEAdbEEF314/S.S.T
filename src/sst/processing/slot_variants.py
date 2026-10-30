@@ -134,6 +134,9 @@ def build_slot_variant_index(
         for slot_key, assigned_variants in list(slot_variants.items()):
             if not isinstance(slot_key, tuple) or len(slot_key) != 2 or not str(slot_key[1]).isdigit():
                 continue
+            same_track_number = (
+                inferred_track is not None and str(inferred_track) == str(slot_key[1])
+            )
             same_slot_number = (
                 (inferred_slot_key is not None and inferred_slot_key == slot_key)
                 or (is_single_slot_album and inferred_track in (None, "1", 1))
@@ -175,9 +178,9 @@ def build_slot_variant_index(
                 )
                 effective_title_matches = title_matches or matches_this_steam
 
-                # 指示書 05 3.2-1: 同一 (disc, n)・異フォーマット・同一 norm_stem（または高類似度）の最優先判定
+                # 指示書 05 3.2-1: 同一 (disc, n) または同一トラック番号・異フォーマット・同一 norm_stem（または高類似度）の最優先判定
                 is_sibling_stem_match = (
-                    same_slot_number
+                    (same_slot_number or same_track_number)
                     and is_different_format
                     and (dur_diff is None or dur_diff <= 2.0)
                     and (
@@ -212,7 +215,7 @@ def build_slot_variant_index(
                 if not (cond1_diff_fmt or cond2_same_fmt_dup or cond3_coherent_bilingual):
                     continue
 
-                if is_sibling_stem_match and slot_key[0] == disc:
+                if is_sibling_stem_match and (slot_key[0] == disc or same_track_number):
                     matching_slot_keys = {slot_key}
                     break
 
