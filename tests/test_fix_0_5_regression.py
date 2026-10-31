@@ -123,3 +123,4 @@ def test_prompts_include_track_number_anchor_rules():
     )
     assert "prioritize matching by track number over slight differences in duration" in mapping_prompt
     assert "NEVER swap adjacent numbered tracks simply because of minor duration differences" in mapping_prompt
+

@@ -26,10 +26,14 @@ def render_batch_row(result: Any, escape: Callable[[Any], str]) -> str:
     if "duplicate titles" in message_lower:
         badges.append('<span class="badge badge-duplicate">Duplicate Titles</span>')
 
+    review_sub_status = audit.get("review_sub_status") or metadata.get("review_sub_status")
+    if review_sub_status == "BONUS_OR_SE_ISOLATED":
+        badges.append('<span class="badge" style="background-color: #e67e22;">Bonus/SE Isolated</span>')
+
     badge_str = "".join(badges)
     app_id = escape(result.app_id)
     album_name = escape(result.album_name)
-    status_text = escape(status_raw.upper())
+    status_text = escape(f"{status_raw.upper()} ({review_sub_status})" if review_sub_status else status_raw.upper())
     message = escape(result.message)
     confidence_reason = escape(result.confidence_reason)
     steam_expected = escape(audit.get("steam_expected_slots", "-"))

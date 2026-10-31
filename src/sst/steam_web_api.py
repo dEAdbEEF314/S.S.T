@@ -157,7 +157,7 @@ class SteamWebClient:
             logger.warning(f"AppID {app_id} の公式Steamタグ取得に失敗しました: {e}")
             return {}
 
-    def fetch_web_enrichment(self, app_id: int, force: bool = False) -> Optional[Dict[str, Any]]:
+    def fetch_web_enrichment(self, app_id: int, force: bool = False, local_album_meta: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """Fetches metadata from 3 tiers of APIs (Official Store, PICS Bridge, Official Tags) with DB persistence."""
         # 1. Check Database first
         db_data = None if force else self.db.get_store_data(app_id)
@@ -357,7 +357,10 @@ class SteamWebClient:
                     )
 
                 album_meta = app_pics.get("albummetadata", {})
-                
+                if not album_meta and local_album_meta:
+                    album_meta = local_album_meta
+                    logger.debug(f"AppID {app_id} でローカル appinfo.vdf の albummetadata をフォールバック利用します")
+
                 # Maximum Information: Change Number and Raw PICS
                 pics_change_num = app_pics.get("_change_number")
                 

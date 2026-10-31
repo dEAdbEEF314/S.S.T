@@ -19,9 +19,11 @@ AppID を起点に次を集め、全体の骨格とします。
 - リリース年
 - 親ゲーム情報
 - ジャンル
-- ストア上のトラック一覧
+- ストア上のトラック一覧（PICS API / ローカル `appcache/appinfo.vdf` フォールバック / ストア説明文ルール・LLM抽出）
 
 ここで得たスロット一覧が、以後のトラック整列の基準です。
+外部 PICS Bridge API がオフラインまたは未起動の場合でも、Steam クライアント自身が保持するローカルの `appcache/appinfo.vdf` 内の `albummetadata.tracks` から PICS トラックリストおよびクレジット（アーティスト・作曲者等）を自動抽出し、正本（`source = "STEAM_PICS"`）としてスロット骨格を復元します。
+
 
 ### 2.2 シグナル収集
 
@@ -157,11 +159,16 @@ APIC や既存 COMMENT のように EMBED が必要な場合、同一 STEAM ス�
 
 Fast-Trackはconfidence thresholdを迂回できますが、slot・割当・audio・Archive preflightのReview条件は引き続き適用されます。実装上のroute名とvalidator経路・結果の区別は [data_flow_diagram.md §2](data_flow_diagram.md) を参照してください。
 
+Review サブステータス (`BONUS_OR_SE_ISOLATED`):
+
+Review 判定となったアルバムのうち、Steam スロットが 100% 充足（`adopted == expected`、重複 0件、Track 0なし、音声破損なし、公式タイトル乖離なし）し、Review 要因が余剰ファイル（ボーナストラックやゲーム効果音）の未割当隔離およびそれに付随する確信度ペナルティのみである場合、`review_sub_status = "BONUS_OR_SE_ISOLATED"` を付与する。これにより、監査者は「本編は完全であり外部プレイヤー投入可能（余剰ファイル隔離のみ）」であることを即断できる。
+
 指標の意味:
 
 - album_confidence: アルバム同一性
 - mapping_confidence: トラック整列の品質
 - data_quality: 必須フィールド充足率
+
 
 ### 2.10 STEAM トラックリスト不在時
 

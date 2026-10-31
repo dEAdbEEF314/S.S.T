@@ -37,6 +37,7 @@ class SteamScanner:
     ):
         self.install_path = ensure_path(install_path)
         self.db = db
+        self.language = language
         
         self.cache_manager = ScannerCacheManager(
             cache_path,
@@ -222,14 +223,43 @@ class SteamScanner:
         if not force:
             metadata.update(enriched)
 
+        # 1.5. Extract PICS tracks and credits from local appinfo.vdf
+        local_album_meta = data.get("albummetadata") or extended.get("albummetadata") or common.get("albummetadata")
+        if local_album_meta and not metadata.get("store_tracklist"):
+            local_tracks = self.web_client.parse_pics_tracks(local_album_meta)
+            if local_tracks:
+                metadata["store_tracklist"] = local_tracks
+                metadata["store_tracklist_source"] = "STEAM_PICS"
+                logger.debug(f"AppID {app_id}: ローカル appinfo.vdf から {len(local_tracks)} 曲の PICS トラックリストを抽出しました")
+
+            meta_section = local_album_meta.get("metadata", {})
+            credits_parts = []
+            target_lang = {"ja": "japanese", "en": "english"}.get(self.language, "english")
+            for role in ["artist", "composer", "label", "othercredits"]:
+                role_data = meta_section.get(role, {})
+                val = role_data.get(target_lang) or role_data.get("english")
+                if val:
+                    if role == "label":
+                        metadata["label"] = val
+                    else:
+                        credits_parts.append(f"{role.capitalize()}: {val}")
+            if credits_parts and not metadata.get("store_credits"):
+                metadata["store_credits"] = "\n".join(credits_parts)
+
         # 2. Extract tags from local appinfo (Topic: Local Tags)
         if not metadata.get("tags") and "store_tags" in common:
             metadata["tags"] = self._resolve_tags(app_id, common["store_tags"])
 
         # 3. Ensure Tracklist/Credits/PICS data are fetched during signal gathering
         if force or not metadata.get("store_tracklist"):
-            web_data = self.web_client.fetch_web_enrichment(app_id, force=force)
+            web_data = self.web_client.fetch_web_enrichment(app_id, force=force, local_album_meta=local_album_meta)
             if web_data:
+                # Do not overwrite valid local PICS tracklist/credits with empty web response
+                if not web_data.get("store_tracklist") and metadata.get("store_tracklist"):
+                    web_data["store_tracklist"] = metadata["store_tracklist"]
+                    web_data["store_tracklist_source"] = metadata.get("store_tracklist_source")
+                if not web_data.get("store_credits") and metadata.get("store_credits"):
+                    web_data["store_credits"] = metadata["store_credits"]
                 metadata.update(web_data)
                 # Update cache too for basic fields
                 self.cache_manager.set_enriched(cache_key, web_data)

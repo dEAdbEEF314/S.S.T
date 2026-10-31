@@ -511,6 +511,15 @@ class LocalProcessor:
             io_retry_logs=io_retry_logs,
             diagnostics=diagnostics,
         )
+        if summary_meta.get("review_sub_status") == "BONUS_OR_SE_ISOLATED":
+            logger.info(
+                "[%s] %s: [Review: BONUS_OR_SE_ISOLATED] 本編全 %d/%d スロット充足、余剰ファイル %d 件を unassigned/ に隔離",
+                app_id,
+                steam_meta.name,
+                len(processed_tracks_meta),
+                len(steam_meta.store_tracklist or []),
+                len(unassigned_manifest),
+            )
         discord_msg = self._send_notifications(app_id, steam_meta.name, status, message, score, reason, llm_log, any_audio_failures, len(processed_tracks_meta), mbz_candidates)
 
         return save_album_package(

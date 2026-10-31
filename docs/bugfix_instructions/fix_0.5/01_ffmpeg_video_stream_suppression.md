@@ -41,3 +41,4 @@ cmd = ["ffmpeg", "-y", "-i", str(source_path), "-vn"]
 
 - 対象は FFmpeg による音声変換処理のみであり、ID3 タグ書き込み（mutagen による APIC フレーム付与）には一切影響を与えない。
 - ロスレス変換（AIFF）およびロッシー変換（MP3）の双方が保護される。
+

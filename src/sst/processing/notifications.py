@@ -32,9 +32,12 @@ def send_notifications(
     }
     route_display = route_display_map.get(route, f"🛣️ {route}")
 
+    sub_status = (llm_log.get("diagnostics") or {}).get("review_sub_status")
+    status_display = f"**{status.upper()} ({sub_status})**" if sub_status else f"**{status.upper()}**"
+
     fields = [
         {"name": "AppID", "value": f"[{app_id}](https://store.steampowered.com/app/{app_id})", "inline": True},
-        {"name": "Status", "value": f"**{status.upper()}**", "inline": True},
+        {"name": "Status", "value": status_display, "inline": True},
         {"name": "Tracks", "value": str(track_count), "inline": True},
         {"name": "🛣️ 処理経路 (Route)", "value": f"**{route_display}**", "inline": False},
         {"name": "Album / Mapping / Data", "value": f"Alb: {id_conf}% / Map: {mapping_conf}% / Data: {quality}%", "inline": True},

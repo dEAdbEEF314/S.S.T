@@ -159,15 +159,24 @@ UTF-16で2000バイト超の場合、末尾のタグ要素から `pop()` で調�
 4. 取得失敗や名称解決不能を「Steam上にタグがない」とみなしてはならない。`store_tags`にIDがある限り、未解決状態として扱い、既存の空タグキャッシュだけを根拠に処理を確定しない。
 5. キャッシュは処理対象アプリのページから段階的に育つため、Steam全体のタグ辞書を事前配布する必要はない。タグ取得不能時も、既存の解決済み名称とSteamの生IDを保持して処理を継続する。
 
-### 3.5 Steam説明文トラックリストのフォールバック
+### 3.5 Steamトラックリストの取得とフォールバック規約
 
-Steam PICSの構造化トラックリストが存在しない場合に限り、公式ストアの`detailed_description`をHTMLテキスト化し、連番付きの曲名行を抽出する。抽出結果は`STEAM_TEXT_TRACKLIST`として記録し、PICSの構造化データと同じ信頼度とは扱わない。連番が連続しない、曲名候補が2件未満、または自由文との区別ができない場合は抽出せず、空のSteamスロットを維持する。説明文から曲名を生成・修正してはならない。
-
-ソース優先順位は次のとおりとする。
+Steam 公式トラックリスト（曲名、トラック番号、再生時間、ディスク番号等）は、以下の優先順位に従って決定論的かつ安全に取得する。
 
 ```text
-STEAM_PICS > STEAM_TEXT_TRACKLIST > ローカルファイル名
+STEAM_PICS (Remote Bridge / Local appinfo.vdf) > STEAM_TEXT_TRACKLIST_RULE > STEAM_TEXT_TRACKLIST_LLM > 縮退プロンプト / Review
 ```
+
+1. **STEAM_PICS (最優先・構造の絶対的正本)**:
+   - 外部 PICS Bridge API (`/v1/info/{appid}`) からの取得を試行する。
+   - 外部 Bridge API がオフライン、未設定、または該当 AppID を返さない場合、Steam クライアントのローカルバイナリキャッシュ `appcache/appinfo.vdf` に含まれる `albummetadata.tracks` から直接抽出する（ローカル PICS フォールバック）。
+   - クレジット情報（アーティスト、作曲者、レーベル等）も同様にローカル PICS `albummetadata.metadata` からフォールバック抽出する。
+   - いずれの経路でも、PICS 由来のトラックリストは等しく `source = "STEAM_PICS"` として正本スロット構造を形成する。
+2. **STEAM_TEXT_TRACKLIST_RULE (説明文HTMLテキスト抽出)**:
+   - Steam PICS の構造化トラックリストが取得できない場合に限り、公式ストアの `detailed_description` を HTML テキスト化し、連番付きの曲名行を決定論的に抽出する。抽出結果は `STEAM_TEXT_TRACKLIST` として記録し、PICS の構造化データと同じ信頼度とは扱わない。連番が連続しない、曲名候補が2件未満、または自由文との区別ができない場合は抽出せず、空の Steam スロットを維持する。説明文から曲名を生成・修正してはならない。
+3. **STEAM_TEXT_TRACKLIST_LLM (説明文LLM抽出)**:
+   - 決定論的 HTML 抽出でトラックリストを得られない場合に限り、公式 `detailed_description` を LLM へ渡して候補を抽出する。PICS の取得結果が存在する場合、または決定論的抽出が成功した場合、LLM 抽出を呼び出してはならない。
+
 
 #### 3.5.1 LLMによる説明文抽出
 
@@ -764,6 +773,11 @@ Archive判定前に、`ResultValidator` において以下の二重のタイト�
 
 4. **未割当判定の参照整合契約**:
    - `ResultValidator` が未割当ファイル（`Unassigned Files`）の有無を判定する際は、LLM 推論直後の未整列生データ（`alignment_res["unassigned_files"]`）ではなく、マルチフォーマットバリアント統合（§7.1）および決定論的残差確定を経た **最終的な未割当マニフェスト（`unassigned_manifest`）** を検査基準とする。スロットに採用されたトラックの別フォーマット（従属バリアント）は未割当から完全除外され、Review の判定要因とはならない。
+
+5. **余剰ボーナス・効果音混入アルバムへのサブステータス付与規約 (`BONUS_OR_SE_ISOLATED`)**:
+   - Steamスロットが 100% 充足（`adopted == expected`、重複0、Track 0なし、音声破損なし、公式タイトル乖離なし）し、発生している Review 要因が余剰ファイル（ボーナストラックやゲーム内効果音SE）の隔離およびそれに付随する確信度ペナルティのみである場合、当該アルバムの監査メタデータおよびステータスに `review_sub_status = "BONUS_OR_SE_ISOLATED"` を付与する。
+   - 本サブステータスにより、監査者は「本編は完全に整理・保護されており外部プレイヤー投入可能（余剰ファイルが `unassigned/` に隔離されただけ）」であることを一目で判別でき、目視監査コストを大幅に削減する。
+
 
 ### 11.5 LLMトークンバジェットおよび Truncation 対策・フォールバック規約
 
