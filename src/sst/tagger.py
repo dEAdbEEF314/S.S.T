@@ -107,8 +107,8 @@ class AudioTagger:
         out_rel_dir.mkdir(parents=True, exist_ok=True)
         target_path = out_rel_dir / (source_path.stem + target_ext)
 
-        # Basic command
-        cmd = ["ffmpeg", "-y", "-i", str(source_path)]
+        # Basic command with -vn to discard embedded video/attached pictures (artwork handled by mutagen in write_tags)
+        cmd = ["ffmpeg", "-y", "-i", str(source_path), "-vn"]
         
         # Enforce ID3v2.3 for both AIFF and MP3
         if is_lossless:

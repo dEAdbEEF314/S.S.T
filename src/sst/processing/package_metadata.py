@@ -152,10 +152,15 @@ def build_album_summary_metadata(
         processed_tracks_meta,
     )
     field_provenance_audit = _build_field_provenance_audit(processed_tracks_meta)
+    review_sub_status = None
+    if status == "review" and not artifact_issues:
+        review_sub_status = diagnostics.get("review_sub_status") or llm_diagnostics.get("review_sub_status")
+
     return {
         "app_id": app_id,
         "album_name": steam_meta.name,
         "status": status,
+        "review_sub_status": review_sub_status,
         "processing_route": processing_route,
         "message": message,
         "confidence_score": score,
@@ -165,6 +170,7 @@ def build_album_summary_metadata(
         "integrity_quality": quality,
         "archive_vs_review_ratio": archive_vs_review_ratio,
         "audit": {
+            "review_sub_status": review_sub_status,
             "steam_expected_slots": len(steam_meta.store_tracklist or []),
             "final_adopted_slots": len(processed_tracks_meta),
             "final_duplicate_slots": final_duplicate_slot_count,

@@ -482,9 +482,46 @@ class ResultValidator:
         diagnostics["review_causes"] = list(issues)
         diagnostics["primary_review_cause"] = issues[0] if issues else None
         diagnostics["secondary_review_causes"] = issues[1:]
+
+        review_sub_status = None
         if issues:
             status = "review"
             message = f"[{', '.join(issues)}]"
+
+            # BONUS_OR_SE_ISOLATED サブステータス判定
+            # 本編スロット100%充足、重複なし、音声破損・Track0等の致命的欠陥なしで、余剰未割当ファイルのみが存在する場合
+            fatal_issue_patterns = [
+                "Steam Tracklist Missing",
+                "Steam Slots Missing",
+                "Steam Slots Unexpected",
+                "Output Track Count Mismatch",
+                "CRITICAL: Audio Source Error",
+                "Audio quality warning",
+                "Track#0",
+                "Unknown Title",
+                "Official Title Mismatch",
+                "Duplicates",
+                "Duplicate Output Paths",
+                "Duplicate Titles",
+                "Dirty Tags",
+                "LLM Rejected Slots",
+                "LLM Duplicate Assignment",
+                "Deferred Copy Recovery Exhausted",
+            ]
+            has_fatal_issue = any(any(pat in iss for pat in fatal_issue_patterns) for iss in issues)
+            slots_fully_adopted = (steam_expected_slots > 0 and adopted_slots == steam_expected_slots)
+            no_duplicates = (len(duplicate_pairs) == 0 and duplicate_output_path_count == 0)
+            has_unassigned = len(actual_unassigned) > 0
+            no_fatal_defects = (
+                not audio_fail
+                and not audio_warn
+                and z_count == 0
+                and anomalous_unknown_count == 0
+                and official_title_mismatch_count == 0
+            )
+
+            if slots_fully_adopted and no_duplicates and has_unassigned and no_fatal_defects and not has_fatal_issue:
+                review_sub_status = "BONUS_OR_SE_ISOLATED"
         else:
             status = "archive"
             if is_fast_track:
@@ -498,4 +535,5 @@ class ResultValidator:
             else:
                 message = f"Success {badge_str}".strip() or "Success (Validated)"
 
+        diagnostics["review_sub_status"] = review_sub_status
         return status, message, album_confidence, data_quality, reason
