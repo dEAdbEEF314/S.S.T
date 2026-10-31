@@ -50,3 +50,4 @@ Steam 公式メタデータ（PICS トラックリスト）の取得フローを
 - `docs/METADATA_SOURCE_SPEC.md` において、PICS は最高位の正本（構造決定権を持つ正本）として定められている。
 - ローカル `appinfo.vdf` の `albummetadata` は Steam 公式クライアントが保持する PICS そのものであるため、外部 Bridge API から取得した PICS と完全に等価であり、仕様の整合性を 100% 遵守する。
 - これにより、`PRE_ALIGNMENT_REVIEW_GATE: Steam Tracklist Missing` で停止していたアルバムが、本来の Steam 公式トラックリストに基づいて正常にアライメントされるようになる。
+
