@@ -3,6 +3,7 @@ from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
 from ..track_grouper import TrackManager
+from .fast_track import normalize_slot_key
 
 
 def _is_aligned_slot_key(slot_key: Any) -> bool:
@@ -141,6 +142,7 @@ def select_slot_conflict_candidates(
     track_groups: Dict,
     slot_variant_index: Dict[tuple[int, str], List[Dict[str, Any]]],
     adopted_files: Dict[tuple[int, str], Dict[str, Any]],
+    steam_meta: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
     """Select one best physical candidate for each non-adopted title in a conflicting slot."""
     priorities = TrackManager.get_audio_format_priority()
@@ -181,9 +183,6 @@ def select_slot_conflict_candidates(
         adopted_variants = [
             v for key in adopted_keys for v in track_groups.get(key, [])
         ]
-        adopted_formats = {
-            str(v.get("format", "")).lower() for v in adopted_variants if v.get("format")
-        }
         adopted_durations = [
             float(v.get("duration") or 0.0)
             for v in adopted_variants
@@ -195,15 +194,33 @@ def select_slot_conflict_candidates(
             if v.get("t_num_val") is not None and str(v.get("t_num_val")).split("/")[0].isdigit()
         }
 
+        # 他スロットの Steam 公式タイトルセットを収集（クロススロット誤割当ガード）
+        other_steam_titles: set[str] = set()
+        if steam_meta and getattr(steam_meta, "store_tracklist", None):
+            for st in steam_meta.store_tracklist:
+                st_key = normalize_slot_key(st.get("disc", 1), st.get("number"))
+                if st_key != slot_key:
+                    st_title = str(st.get("title") or st.get("name") or "").strip()
+                    if st_title:
+                        norm = TrackManager.normalize_title(st_title)
+                        if norm and len(norm) >= 2:
+                            other_steam_titles.add(norm)
+
+        # 他スロットの採用タイトルセットを収集
+        other_adopted_titles: set[str] = set()
+        for record_k, ad_info in adopted_files.items():
+            ad_slot = ad_info.get("slot_key")
+            if ad_slot is not None and tuple(ad_slot) != slot_key:
+                ad_t = title_by_key.get(record_k)
+                if ad_t and len(ad_t) >= 2:
+                    other_adopted_titles.add(ad_t)
+
         candidates_by_title: Dict[str, List[tuple[Any, Dict[str, Any]]]] = defaultdict(list)
         for record_key in record_keys:
             title = title_by_key[record_key]
             if not title or title in adopted_titles or record_key in adopted_keys:
                 continue
             rec_variants = track_groups.get(record_key, [])
-            rec_formats = {
-                str(v.get("format", "")).lower() for v in rec_variants if v.get("format")
-            }
             rec_durations = [
                 float(v.get("duration") or 0.0)
                 for v in rec_variants
@@ -230,13 +247,29 @@ def select_slot_conflict_candidates(
                 if ad_title
             ):
                 continue
+
+            # 他スロットとの衝突検査（クロススロット誤割当ガード）
+            has_cross_slot_conflict = False
+            check_titles = {title}
+            for v in rec_variants:
+                n_stem = TrackManager.normalize_title(str(v.get("norm_stem") or ""))
+                if n_stem and len(n_stem) >= 2:
+                    check_titles.add(n_stem)
+                emb = TrackManager.normalize_title(str((v.get("meta") or {}).get("title") or ""))
+                if emb and len(emb) >= 2:
+                    check_titles.add(emb)
+
+            for t in check_titles:
+                if t in other_steam_titles or t in other_adopted_titles:
+                    has_cross_slot_conflict = True
+                    break
+
+            # 同一スロット番号・再生時間差1.5秒以下・他スロット非競合の正当多言語/異フォーマットバリアント
             if (
                 same_slot_num
                 and dur_diff is not None
                 and dur_diff <= 1.5
-                and adopted_formats
-                and rec_formats
-                and adopted_formats.isdisjoint(rec_formats)
+                and not has_cross_slot_conflict
             ):
                 continue
             for variant in rec_variants:

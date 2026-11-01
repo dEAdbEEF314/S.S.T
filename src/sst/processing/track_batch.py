@@ -260,7 +260,10 @@ def encode_and_tag_tracks(
     if include_unassigned:
         candidate_inputs.extend(
             select_slot_conflict_candidates(
-                track_groups, slot_variant_index, adopted_files
+                track_groups,
+                slot_variant_index,
+                adopted_files,
+                steam_meta=steam_meta,
             )
         )
 
