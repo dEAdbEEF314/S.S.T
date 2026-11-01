@@ -49,7 +49,14 @@ def test_format_selection_audit_records_candidate_formats_and_detects_bad_adopti
             }
         ],
         final_duplicate_slot_count=0,
-        llm_log={},
+        llm_log={
+            "diagnostics": {
+                "review_candidates": [
+                    {"candidate_type": "slot_conflict"},
+                    {"candidate_type": "unassigned"},
+                ]
+            }
+        },
         all_files_count=2,
         adopted_file_count=1,
         unassigned_manifest=[],
@@ -67,6 +74,8 @@ def test_format_selection_audit_records_candidate_formats_and_detects_bad_adopti
     )
 
     format_audit = metadata["audit"]["format_selection"]
+    assert metadata["audit"]["review_candidate_count"] == 2
+    assert metadata["audit"]["slot_conflict_candidate_count"] == 1
     assert format_audit["candidate_slot_count"] == 1
     assert format_audit["verified_slot_count"] == 0
     assert format_audit["mismatch_slot_count"] == 1

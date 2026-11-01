@@ -2,6 +2,15 @@ from unittest.mock import MagicMock, patch
 from sst.models import SteamMetadata
 from sst.processor_support import fetch_album_artwork
 
+
+def _mock_image_response(content: bytes) -> MagicMock:
+    response = MagicMock()
+    response.status_code = 200
+    response.headers = {"Content-Type": "image/jpeg", "Content-Length": str(len(content))}
+    response.iter_content.return_value = iter([content])
+    return response
+
+
 def test_single_soundtrack_prefers_parent_header():
     steam_meta = SteamMetadata(
         app_id=1001,
@@ -18,10 +27,7 @@ def test_single_soundtrack_prefers_parent_header():
     mock_mbz.get_release_artwork_url.return_value = None
 
     with patch("requests.get") as mock_get:
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.content = b"fake_parent_image_bytes"
-        mock_get.return_value = mock_resp
+        mock_get.return_value = _mock_image_response(b"fake_parent_image_bytes")
 
         art = fetch_album_artwork(mock_config, mock_mbz, steam_meta, [], track_groups=None)
         assert art == b"fake_parent_image_bytes"
@@ -43,10 +49,7 @@ def test_sibling_soundtracks_prefer_soundtrack_header():
     mock_mbz.get_release_artwork_url.return_value = None
 
     with patch("requests.get") as mock_get:
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.content = b"fake_soundtrack_image_bytes"
-        mock_get.return_value = mock_resp
+        mock_get.return_value = _mock_image_response(b"fake_soundtrack_image_bytes")
 
         art = fetch_album_artwork(mock_config, mock_mbz, steam_meta, [], track_groups=None)
         assert art == b"fake_soundtrack_image_bytes"
@@ -66,10 +69,7 @@ def test_standalone_soundtrack_uses_soundtrack_header():
     mock_mbz.get_release_artwork_url.return_value = None
 
     with patch("requests.get") as mock_get:
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.content = b"fake_standalone_image_bytes"
-        mock_get.return_value = mock_resp
+        mock_get.return_value = _mock_image_response(b"fake_standalone_image_bytes")
 
         art = fetch_album_artwork(mock_config, mock_mbz, steam_meta, [], track_groups=None)
         assert art == b"fake_standalone_image_bytes"
@@ -106,10 +106,7 @@ def test_lazy_mbz_artwork_candidate_precedes_steam_fallback():
     mbz_artwork_candidate_provider = MagicMock(return_value={"mbid": "release-id"})
 
     with patch("requests.get") as mock_get:
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.content = b"mbz_cover_bytes"
-        mock_get.return_value = mock_resp
+        mock_get.return_value = _mock_image_response(b"mbz_cover_bytes")
 
         art = fetch_album_artwork(
             MagicMock(),
@@ -136,10 +133,7 @@ def test_lazy_mbz_candidate_is_also_returned_for_metadata_enrichment():
     mock_mbz.get_release_artwork_url.return_value = "https://example.com/cover.jpg"
 
     with patch("requests.get") as mock_get:
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.content = b"synthetic-cover"
-        mock_get.return_value = mock_response
+        mock_get.return_value = _mock_image_response(b"synthetic-cover")
         fetch_album_artwork(
             MagicMock(),
             mock_mbz,

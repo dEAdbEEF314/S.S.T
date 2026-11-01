@@ -1,4 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from time import monotonic
 from types import SimpleNamespace
 
 import pytest
@@ -99,6 +101,90 @@ def test_direct_steam_link_candidate_outranks_higher_scoring_release(monkeypatch
     assert candidates[0]["tracks"][0]["disc"] == 1
     assert candidates[0]["direct_steam_link_candidate_count"] == 1
     assert search_log["ranked_candidates"][0]["mbid"] == "linked-release"
+
+
+def test_musicbrainz_rate_limit_is_shared_across_parallel_clients(monkeypatch):
+    monkeypatch.setattr(MusicBrainzIdentifier, "MIN_REQUEST_INTERVAL_SECONDS", 0.02)
+    monkeypatch.setattr(MusicBrainzIdentifier, "_last_request_started", 0.0)
+    clients = [
+        MusicBrainzIdentifier("test", "1", "test@example.invalid", rate_limit_delay=0.02)
+        for _ in range(2)
+    ]
+    request_starts = []
+
+    def request():
+        request_starts.append(monotonic())
+
+    def make_request(index):
+        clients[index % len(clients)]._rate_limited_request(request)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(make_request, range(8)))
+
+    assert len(request_starts) == 8
+    assert all(
+        later - earlier >= 0.018
+        for earlier, later in zip(request_starts, request_starts[1:])
+    )
+
+
+def test_musicbrainz_rate_limit_delay_has_one_second_minimum():
+    identifier = MusicBrainzIdentifier(
+        "test", "1", "test@example.invalid", rate_limit_delay=0.1
+    )
+
+    assert identifier.rate_limit_delay == 1.0
+
+
+def test_all_musicbrainz_request_paths_use_shared_rate_limiter(monkeypatch):
+    identifier = MusicBrainzIdentifier("test", "1", "test@example.invalid")
+    limited_calls = []
+
+    def run_limited(request, *args, **kwargs):
+        limited_calls.append(request.__name__)
+        return request(*args, **kwargs)
+
+    def fake_release(*args, **kwargs):
+        return {"release": {}}
+
+    def fake_recording(*args, **kwargs):
+        return {"recording": {}}
+
+    def fake_search(**kwargs):
+        return {"release-list": []}
+
+    def fake_images(*args, **kwargs):
+        return {"images": []}
+
+    monkeypatch.setattr(identifier, "_rate_limited_request", run_limited)
+    monkeypatch.setattr(
+        "sst.ident.mbz.musicbrainzngs.get_release_by_id",
+        fake_release,
+    )
+    monkeypatch.setattr(
+        "sst.ident.mbz.musicbrainzngs.get_recording_by_id",
+        fake_recording,
+    )
+    monkeypatch.setattr(
+        "sst.ident.mbz.musicbrainzngs.search_releases",
+        fake_search,
+    )
+    monkeypatch.setattr(
+        "sst.ident.mbz.musicbrainzngs.get_image_list",
+        fake_images,
+    )
+
+    identifier._fetch_release("release-id")
+    identifier._fetch_recording("recording-id")
+    identifier.search_release("Album", expected_track_count=0)
+    identifier.get_release_artwork_url("release-id")
+
+    assert limited_calls == [
+        "fake_release",
+        "fake_recording",
+        "fake_search",
+        "fake_images",
+    ]
 
 
 def test_forced_fingerprint_scan_checks_every_local_file():

@@ -22,8 +22,13 @@ def resolve_slot_key_to_v_idx(
     local_t = assigned_local_tracks[0] if assigned_local_tracks else None
     local_d = local_t.get("disc") or local_t.get("d") or 1 if local_t else None
     local_n = local_t.get("track_num") or local_t.get("n") or local_t.get("filename_track") if local_t else None
-    local_dur = local_t.get("dur") if local_t and local_t.get("dur") is not None else (
-        (local_t.get("duration_ms") // 1000) if (local_t and local_t.get("duration_ms")) else None
+    local_duration_ms = local_t.get("duration_ms") if local_t else None
+    local_dur = (
+        local_t.get("dur")
+        if local_t and local_t.get("dur") is not None
+        else local_duration_ms // 1000
+        if isinstance(local_duration_ms, (int, float))
+        else None
     )
 
     # 1. reason 内の明示的スロット表記 ("d1n25", "1_25", "slot 25") とローカル情報の一致検証
@@ -52,15 +57,17 @@ def resolve_slot_key_to_v_idx(
     if composite_match:
         disc_part = normalize_key(composite_match.group(1))
         num_part = normalize_key(composite_match.group(2))
-        comp_matches = [
-            track.get("v_idx")
-            for track in full_ref_steam
-            if normalize_key(track.get("d") or track.get("disc") or 1) == disc_part
-            and normalize_key(track.get("n", "")) == num_part
-            and track.get("v_idx") is not None
-        ]
+        comp_matches = []
+        for track in full_ref_steam:
+            v_idx = track.get("v_idx")
+            if (
+                normalize_key(track.get("d") or track.get("disc") or 1) == disc_part
+                and normalize_key(track.get("n", "")) == num_part
+                and v_idx is not None
+            ):
+                comp_matches.append(int(v_idx))
         if len(comp_matches) == 1:
-            return int(comp_matches[0])
+            return comp_matches[0]
         return None
 
     # 3. 明示的な v_idx 指定 ("v_idx:12", "v12")
@@ -71,11 +78,11 @@ def resolve_slot_key_to_v_idx(
     )
     if v_idx_prefix:
         target_v = int(v_idx_prefix.group(1))
-        v_matches = [
-            int(track["v_idx"])
-            for track in full_ref_steam
-            if track.get("v_idx") is not None and int(track["v_idx"]) == target_v
-        ]
+        v_matches = []
+        for track in full_ref_steam:
+            v_idx = track.get("v_idx")
+            if v_idx is not None and int(v_idx) == target_v:
+                v_matches.append(int(v_idx))
         if len(v_matches) == 1:
             return v_matches[0]
         return None
@@ -88,10 +95,12 @@ def resolve_slot_key_to_v_idx(
     except (TypeError, ValueError):
         value = None
 
-    is_partial_list = any(
-        track.get("v_idx") is not None and int(track.get("v_idx")) != idx
-        for idx, track in enumerate(full_ref_steam)
-    )
+    is_partial_list = False
+    for idx, track in enumerate(full_ref_steam):
+        v_idx = track.get("v_idx")
+        if v_idx is not None and int(v_idx) != idx:
+            is_partial_list = True
+            break
 
     # 4. 相対連番キー救済ガード（指示書 01 3.2-3）
     # 万が一 LLM が複合キー指示に従わず "1".."K" 等の連番キーを返した場合：

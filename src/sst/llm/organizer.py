@@ -43,8 +43,6 @@ class LLMOrganizer:
                  llm_request_parallelism_max_workers: int = 4,
                  request_timeout: int = 3600,
                  chunk_size_virtual: int = 20,
-                 chunk_size_metadata_ollama: int = 10,
-                 chunk_size_metadata_cloud: int = 30,
                  chunk_adaptive: bool = True,
                  chunk_output_tokens_per_track: int = 180,
                  chunk_output_safety_ratio: float = 0.75,
@@ -336,16 +334,18 @@ class LLMOrganizer:
     ) -> Dict[str, Any]:
         fallback_slots: Dict[str, Any] = {}
         for track in chunk:
+            local_key = track.get("local_key")
+            local_key_parts = local_key if isinstance(local_key, (tuple, list)) else ()
             local_title = str(
                 track.get("title")
                 or track.get("t")
-                or (track.get("local_key") and track.get("local_key")[1])
+                or (local_key_parts[1] if len(local_key_parts) > 1 else "")
                 or ""
             )
             local_disc = (
                 track.get("disc")
                 or track.get("d")
-                or (track.get("local_key") and track.get("local_key")[0])
+                or (local_key_parts[0] if local_key_parts else None)
             )
             for fid in track.get("file_ids", []):
                 fid_str = str(fid)

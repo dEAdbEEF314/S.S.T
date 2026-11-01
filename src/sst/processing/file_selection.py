@@ -157,11 +157,13 @@ def select_slot_conflict_candidates(
 
     selected = []
     for slot_key, variants in slot_variant_index.items():
-        record_keys = list(dict.fromkeys(
-            record_keys_by_file_id.get(variant.get("file_id"))
-            for variant in variants
-            if record_keys_by_file_id.get(variant.get("file_id")) is not None
-        ))
+        record_keys: List[tuple[int, str]] = []
+        seen_record_keys: set[tuple[int, str]] = set()
+        for variant in variants:
+            record_key = record_keys_by_file_id.get(variant.get("file_id"))
+            if record_key is not None and record_key not in seen_record_keys:
+                seen_record_keys.add(record_key)
+                record_keys.append(record_key)
         title_by_key = {
             key: TrackManager.normalize_title(str(key[1]).split("::", 1)[0])
             for key in record_keys

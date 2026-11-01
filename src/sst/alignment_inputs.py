@@ -449,11 +449,14 @@ def verify_steam_linked_mbz_release(
     verified_mapping: Dict[str, Dict[str, Any]] = {}
     matched_recording_ids = set()
     for local_key in track_groups:
-        target_recording_ids = {
-            candidate.get("mbid")
-            for candidate in acoustid_candidates_by_key[local_key]
-            if candidate.get("mbid") in recording_to_track
-        }
+        target_recording_ids = set()
+        for candidate in acoustid_candidates_by_key[local_key]:
+            candidate_recording_id = candidate.get("mbid")
+            if (
+                isinstance(candidate_recording_id, str)
+                and candidate_recording_id in recording_to_track
+            ):
+                target_recording_ids.add(candidate_recording_id)
         if len(target_recording_ids) != 1:
             return None
         recording_id = next(iter(target_recording_ids))

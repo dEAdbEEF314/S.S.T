@@ -162,16 +162,20 @@ def encode_and_tag_tracks(
     if artwork_prepared:
         album_artwork_path = prepared_album_artwork_path
     else:
-        llm_diagnostics = llm_log.setdefault("diagnostics", {})
+        def record_artwork_source(source: str) -> None:
+            llm_diagnostics = llm_log.get("diagnostics")
+            if not isinstance(llm_diagnostics, dict):
+                llm_diagnostics = {}
+                llm_log["diagnostics"] = llm_diagnostics
+            llm_diagnostics["album_artwork_source"] = source
+
         raw_album_artwork = fetch_artwork(
             steam_meta,
             mbz_candidates,
             track_groups,
             allow_mbz_artwork_search=llm_log.get("processing_route") == "FAST_TRACK",
             on_mbz_candidate=apply_fast_track_mbz_artists,
-            on_artwork_source=lambda source: llm_diagnostics.__setitem__(
-                "album_artwork_source", source
-            ),
+            on_artwork_source=record_artwork_source,
         )
         album_artwork_path = tagger.process_artwork(raw_album_artwork) if raw_album_artwork else None
 

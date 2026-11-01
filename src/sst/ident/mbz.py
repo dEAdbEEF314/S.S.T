@@ -1,6 +1,7 @@
 import musicbrainzngs
 import logging
 import re
+import threading
 import time
 from urllib.parse import urlparse
 from typing import List, Optional, Dict, Any, Tuple
@@ -10,6 +11,10 @@ from difflib import SequenceMatcher
 logger = logging.getLogger("sst.ident.mbz")
 
 class MusicBrainzIdentifier:
+    MIN_REQUEST_INTERVAL_SECONDS = 1.0
+    _request_lock = threading.Lock()
+    _last_request_started = 0.0
+
     def __init__(
         self,
         app_name: str,
@@ -22,7 +27,10 @@ class MusicBrainzIdentifier:
     ):
         musicbrainzngs.set_useragent(app_name, version, contact)
         self.db = db
-        self.rate_limit_delay = float(rate_limit_delay)
+        self.rate_limit_delay = max(
+            self.MIN_REQUEST_INTERVAL_SECONDS,
+            float(rate_limit_delay),
+        )
         self.search_limit = int(search_limit)
         self.scores = scoring_config or {
             "direct_steam_link": 500,
@@ -41,6 +49,21 @@ class MusicBrainzIdentifier:
             "fingerprint_match": 200,
             "direct_recording_match": 1000
         }
+
+    def _rate_limited_request(self, request, *args, **kwargs):
+        """Serialize MusicBrainz requests and enforce process-wide start spacing."""
+        with MusicBrainzIdentifier._request_lock:
+            now = time.monotonic()
+            wait_seconds = (
+                MusicBrainzIdentifier._last_request_started
+                + self.rate_limit_delay
+                - now
+            )
+            if wait_seconds > 0:
+                time.sleep(wait_seconds)
+
+            MusicBrainzIdentifier._last_request_started = time.monotonic()
+            return request(*args, **kwargs)
 
     def _safe_year(self, date_str: Any) -> Optional[int]:
         """Safely extracts a 4-digit year from any string."""
@@ -70,8 +93,11 @@ class MusicBrainzIdentifier:
                 return cached
             
         try:
-            time.sleep(self.rate_limit_delay)
-            res = musicbrainzngs.get_release_by_id(mbid, includes=includes)
+            res = self._rate_limited_request(
+                musicbrainzngs.get_release_by_id,
+                mbid,
+                includes=includes,
+            )
             release_data = res.get('release', {})
             if self.db and release_data:
                 self.db.set_api_cache("mbz", cache_key, release_data)
@@ -90,8 +116,11 @@ class MusicBrainzIdentifier:
                 return cached
             
         try:
-            time.sleep(self.rate_limit_delay)
-            res = musicbrainzngs.get_recording_by_id(mbid, includes=includes)
+            res = self._rate_limited_request(
+                musicbrainzngs.get_recording_by_id,
+                mbid,
+                includes=includes,
+            )
             rec_data = res.get('recording', {})
             if self.db and rec_data:
                 self.db.set_api_cache("mbz", cache_key, rec_data)
@@ -175,9 +204,12 @@ class MusicBrainzIdentifier:
                 
         if not all_raw_releases and cached_search is None:
             try:
-                time.sleep(self.rate_limit_delay)
                 # 1. Primary: Text-based search
-                result = musicbrainzngs.search_releases(release=album_name, limit=self.search_limit)
+                result = self._rate_limited_request(
+                    musicbrainzngs.search_releases,
+                    release=album_name,
+                    limit=self.search_limit,
+                )
                 all_raw_releases = result.get('release-list', [])
                 if self.db:
                     self.db.set_api_cache("mbz", search_cache_key, all_raw_releases)
@@ -428,7 +460,10 @@ class MusicBrainzIdentifier:
 
     def get_release_artwork_url(self, mbid: str) -> Optional[str]:
         try:
-            images = musicbrainzngs.get_image_list(mbid)
+            images = self._rate_limited_request(
+                musicbrainzngs.get_image_list,
+                mbid,
+            )
             for img in images.get('images', []):
                 if img.get('front') and img.get('image'):
                     return img.get('image')

@@ -130,15 +130,6 @@ class SteamScanner:
                 last_updated = app_state.get("LastUpdated", "0")
                 library_root = acf_file.parent # The root containing common/music/workshop
                 
-                # Check for main app and DLCs
-                potential_ids = [parent_appid]
-                depots = app_state.get("InstalledDepots", {})
-                for d_id, d_data in depots.items():
-                    try:
-                        potential_ids.append(int(d_id))
-                    except Exception:
-                        pass
-                
                 enriched = self._get_local_metadata(current_id, force=force)
                 if not enriched and not target_appids:
                     # If we can't find metadata locally and it wasn't a targeted scan, skip

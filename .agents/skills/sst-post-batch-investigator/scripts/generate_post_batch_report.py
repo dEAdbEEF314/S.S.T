@@ -3,6 +3,7 @@ import json
 import html
 import re
 import unicodedata
+import zipfile
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -93,7 +94,26 @@ def _integrity_snapshot(meta, tracks):
     }
 
 
-def _archive_integrity_issues(meta, tracks, integrity):
+def _read_slot_conflict_candidate_count(output_root, app_id, status):
+    archives = sorted((Path(output_root) / status).glob(f"{app_id}_*.zip"))
+    if len(archives) != 1:
+        return None
+    try:
+        with zipfile.ZipFile(archives[0]) as archive:
+            manifest_name = "json/review_manifest.json"
+            if manifest_name not in archive.namelist():
+                return 0
+            manifest = json.loads(archive.read(manifest_name))
+        return sum(
+            isinstance(candidate, dict)
+            and candidate.get("candidate_type") == "slot_conflict"
+            for candidate in (manifest.get("review_candidates") or [])
+        )
+    except (OSError, KeyError, json.JSONDecodeError, zipfile.BadZipFile):
+        return None
+
+
+def _archive_integrity_issues(meta, tracks, integrity, slot_conflict_candidate_count=None):
     issues = []
     html_entities = []
     for track in tracks:
@@ -127,6 +147,14 @@ def _archive_integrity_issues(meta, tracks, integrity):
         issues.append(f"正本タイトル不一致 ({integrity['official_title_mismatch_count']})")
     if integrity["fallback_count"] or integrity["local_title_count"]:
         issues.append(f"Fallback/LOCAL残留 ({integrity['fallback_count']}/{integrity['local_title_count']})")
+    audit = meta.get("audit") or {}
+    if slot_conflict_candidate_count is None:
+        slot_conflict_candidate_count = audit.get("slot_conflict_candidate_count")
+    if slot_conflict_candidate_count is None:
+        if audit.get("review_candidate_count"):
+            issues.append("Review候補manifest読取不能")
+    elif slot_conflict_candidate_count:
+        issues.append(f"Slot Conflict Candidates ({slot_conflict_candidate_count})")
     return issues
 
 
@@ -216,6 +244,9 @@ def _classify_review_causes(item, io_error_events):
     if has_structural_issue:
         causes.append("structural")
 
+    if "Slot Conflict Candidates" in evidence:
+        causes.append("slot_conflict")
+
     if item["unassigned_count"] > 0 or "Unassigned Files" in evidence:
         causes.append("unassigned")
     if not causes:
@@ -247,6 +278,7 @@ def analyze_and_generate_report(db_path="data/sst_local_state.db", output_dir="r
         "audio_warning": [],
         "early_review": [],
         "structural": [],
+        "slot_conflict": [],
         "unassigned": [],
         "confidence_or_other": [],
     }
@@ -288,7 +320,20 @@ def analyze_and_generate_report(db_path="data/sst_local_state.db", output_dir="r
 
         if status == 'archive':
             archives.append(item)
-            issues = _archive_integrity_issues(meta, tracks, integrity)
+            audit = meta.get("audit") or {}
+            slot_conflict_candidate_count = audit.get("slot_conflict_candidate_count")
+            if not isinstance(slot_conflict_candidate_count, int):
+                slot_conflict_candidate_count = _read_slot_conflict_candidate_count(
+                    output_path.parent / "output",
+                    app_id,
+                    status,
+                )
+            issues = _archive_integrity_issues(
+                meta,
+                tracks,
+                integrity,
+                slot_conflict_candidate_count,
+            )
             if issues:
                 unnatural_archives.append({
                     'app_id': app_id,
@@ -307,6 +352,7 @@ def analyze_and_generate_report(db_path="data/sst_local_state.db", output_dir="r
         ("audio_warning", "音声品質警告", "変換またはデコード警告があり、物理破損の確定とは区別します。"),
         ("early_review", "早期Review / Steam情報不足", "通常のalignment・validatorより前にReviewとなった結果です。"),
         ("structural", "Steam構造・slot不整合", "重複、欠落・余分なslot、track 0、Steam根拠のないUnknown等。"),
+        ("slot_conflict", "slot競合候補", "採用slotと異なる論理タイトルの音源候補が残っており、選別が必要です。"),
         ("unassigned", "未割当ファイル / alignment残差", "最終的な未割当マニフェストまたはReview理由に未割当が記録されています。"),
         ("confidence_or_other", "信頼度不足・その他", "上記の物理・構造要因で説明されないReviewです。"),
     )

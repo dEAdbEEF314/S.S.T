@@ -131,6 +131,12 @@ def build_album_summary_metadata(
         1 for variants in slot_variant_index.values() if len(variants) > 1
     )
     llm_diagnostics = llm_log.get("diagnostics") or {}
+    review_candidates = llm_diagnostics.get("review_candidates") or []
+    slot_conflict_candidate_count = sum(
+        isinstance(candidate, dict)
+        and candidate.get("candidate_type") == "slot_conflict"
+        for candidate in review_candidates
+    )
     deferred_copy_diagnostics = {
         key: llm_diagnostics.get(key, default)
         for key, default in (
@@ -188,7 +194,8 @@ def build_album_summary_metadata(
             "adopted_slot_count": adopted_file_count,
             "io_retry_count": io_retry_count,
             "io_retry_logs": audit_copy_logs,
-            "review_candidate_count": len(llm_diagnostics.get("review_candidates") or []),
+            "review_candidate_count": len(review_candidates),
+            "slot_conflict_candidate_count": slot_conflict_candidate_count,
             **deferred_copy_diagnostics,
         },
         "strategy": (llm_log.get("phase1_res") or {}).get("strategy"),

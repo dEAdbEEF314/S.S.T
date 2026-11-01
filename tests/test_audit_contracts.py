@@ -56,6 +56,23 @@ def test_review_causes_are_structured():
     assert isinstance(log["diagnostics"]["secondary_review_causes"], list)
 
 
+def test_validator_reviews_retained_slot_conflict_candidates():
+    log = llm_log()
+    log["diagnostics"] = {
+        "review_candidates": [
+            {"candidate_type": "slot_conflict", "included": True},
+            {"candidate_type": "processing_failure", "included": True},
+        ]
+    }
+
+    status, message, _, _, _ = ResultValidator.validate(
+        1, [track("Real Title")], log, [], steam_meta("Real Title"), False, False
+    )
+
+    assert status == "review"
+    assert "Slot Conflict Candidates (1)" in message
+
+
 def _early_review_mocks():
     class _Diag:
         def __call__(self, *a, **k):

@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import sqlite3
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -119,6 +120,39 @@ def test_archive_integrity_flags_official_title_mismatch_after_safe_normalizatio
     assert "structural" in REPORT._classify_review_causes(review_item, [])
 
 
+def test_archive_integrity_flags_retained_slot_conflict_candidates():
+    meta = _archive_meta(
+        [{"disc": "1", "number": "1", "title": "Song"}],
+        [_track("1", "Song", "1_1")],
+    )
+    meta["audit"] = {"slot_conflict_candidate_count": 1}
+    integrity = REPORT._integrity_snapshot(meta, meta["tracks"])
+
+    issues = REPORT._archive_integrity_issues(meta, meta["tracks"], integrity)
+
+    assert issues == ["Slot Conflict Candidates (1)"]
+
+
+def test_archive_candidate_count_reads_legacy_zip_manifest(tmp_path):
+    output_root = tmp_path / "output"
+    archive_path = output_root / "archive" / "4242_Synthetic.zip"
+    archive_path.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr(
+            "json/review_manifest.json",
+            json.dumps(
+                {
+                    "review_candidates": [
+                        {"candidate_type": "slot_conflict"},
+                        {"candidate_type": "unassigned"},
+                    ]
+                }
+            ),
+        )
+
+    assert REPORT._read_slot_conflict_candidate_count(output_root, 4242, "archive") == 1
+
+
 def test_io_error_evidence_requires_matching_app_and_recent_timestamp():
     item = {
         "app_id": 100,
@@ -199,6 +233,7 @@ def test_report_uses_explicit_route_and_multilabel_review_causes(tmp_path):
             (203, {"message": "N/A (Early Review)", "diagnostics": {"review_phase": "EARLY_REVIEW"}}),
             (204, {"message": "Low Confidence", "processed_at": "2026-01-01T00:01:00"}),
             (205, {"message": "Other review"}),
+            (206, {"message": "[Slot Conflict Candidates (1)]"}),
         ]
         for app_id, metadata in review_metadata:
             _insert_result(connection, app_id, "review", metadata)
@@ -212,8 +247,9 @@ def test_report_uses_explicit_route_and_multilabel_review_causes(tmp_path):
 
     assert "Fast-Track 実行route件数</div>" in report
     assert '<div class="kpi-value info">1 ' in report
-    assert "Reviewアルバム: 5件。複数原因に該当: 1件。" in report
+    assert "Reviewアルバム: 6件。複数原因に該当: 1件。" in report
     assert "Steam構造・slot不整合 (1件)" in report
+    assert "slot競合候補 (1件)" in report
     assert "未割当ファイル / alignment残差 (1件)" in report
     assert "物理I/O / 音声ソース障害 (2件)" in report
     assert "早期Review / Steam情報不足 (1件)" in report

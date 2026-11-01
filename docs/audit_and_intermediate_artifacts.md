@@ -62,6 +62,7 @@ LLM 応答の `done_reason=length` / `max_tokens` は成功扱いにしない。
 - 最終トラック数だけから特定のSteam行が欠落したと断定しない。欠落・余分なslotは一意キー集合で比較し、同じキー内に複数タイトルがある場合は曖昧さとして人間の確認を促す。
 - LLMの信頼度やMusicBrainz候補件数は構造差分を上書きしない。レポートは証拠を可視化するものであり、自動採番・Steam構造の置換・Review条件の緩和は行わない。
 - Review候補音源は採用トラックと分けて `review_candidates/` に格納する。slot競合、Steam未割当、コピー/変換/タグ処理失敗を分類し、元basename、関連slot、理由、変換状態、ZIP内パスを `review_manifest.json` と `AUDIT_REPORT.html` の双方に記録する。
+- 最終候補マニフェストに `candidate_type == "slot_conflict"` が残るアルバムは、Steam slotが全数採用済みでもArchiveにしない。候補音源は採用トラック数に算入せず、Reviewとして選別可能な状態を維持する。
 - 候補音源は通常トラックと同じ品質tierで変換する。変換後の拡張子は実際の出力形式に合わせ、basenameは維持する。変換に失敗した場合は読み出し可能なら元ファイルを退避し、元ファイルも読めない場合は格納失敗と例外型を記録する。Review候補は採用slot数・最終タグ検証に加算しない。
 
 ## 回帰テスト方針

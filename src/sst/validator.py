@@ -112,6 +112,18 @@ class ResultValidator:
         if actual_unassigned:
             issues.append(f"Unassigned Files ({len(actual_unassigned)})")
 
+        llm_diagnostics = llm_log.get("diagnostics") or {}
+        review_candidates = llm_diagnostics.get("review_candidates") or []
+        slot_conflict_candidate_count = sum(
+            isinstance(candidate, dict)
+            and candidate.get("candidate_type") == "slot_conflict"
+            for candidate in review_candidates
+        )
+        if slot_conflict_candidate_count:
+            issues.append(
+                f"Slot Conflict Candidates ({slot_conflict_candidate_count})"
+            )
+
         # 提案3: LLM矛盾の拒否を明示（自動修正で隠さない）
         alignment_diagnostics = alignment_res.get("diagnostics") or {}
         rejected_slot_keys = alignment_res.get("rejected_slot_keys") or alignment_diagnostics.get("rejected_slot_keys") or []

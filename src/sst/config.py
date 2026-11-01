@@ -122,8 +122,6 @@ class Config(BaseSettings):
     llm_output_budget_safety_ratio: float = _unit_field(0.25, "LLM output budget safety margin", "ratio", "比率")
     llm_adaptive_degraded_prompt_enabled: bool = True
     llm_chunk_size_virtual: int = _unit_field(20, "Virtual-track chunk size", "tracks", "トラック")
-    llm_chunk_size_metadata_ollama: int = _unit_field(10, "Ollama metadata chunk size", "tracks", "トラック")
-    llm_chunk_size_metadata_cloud: int = _unit_field(30, "Cloud metadata chunk size", "tracks", "トラック")
     llm_chunk_adaptive: bool = True
     llm_chunk_output_tokens_per_track: int = _unit_field(180, "Output token budget per track", "tokens/track", "トークン")
     llm_chunk_output_safety_ratio: float = _unit_field(0.75, "Chunk output budget safety ratio", "ratio", "比率")
@@ -272,8 +270,6 @@ class Config(BaseSettings):
             "llm_request_parallelism_max_workers": self.llm_request_parallelism_max_workers,
             "request_timeout": self.llm_request_timeout,
             "chunk_size_virtual": self.llm_chunk_size_virtual,
-            "chunk_size_metadata_ollama": self.llm_chunk_size_metadata_ollama,
-            "chunk_size_metadata_cloud": self.llm_chunk_size_metadata_cloud,
             "chunk_adaptive": self.llm_chunk_adaptive,
             "chunk_output_tokens_per_track": self.llm_chunk_output_tokens_per_track,
             "chunk_output_safety_ratio": self.llm_chunk_output_safety_ratio,

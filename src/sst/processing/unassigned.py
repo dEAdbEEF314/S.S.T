@@ -1,6 +1,6 @@
 import logging
 import re
-from typing import Any, Dict, List, Set
+from typing import AbstractSet, Any, Dict, List
 
 from ..models import SteamMetadata
 from ..track_grouper import TrackManager
@@ -23,7 +23,7 @@ def _find_candidate_unassigned_matches(
     final_metadata: Dict[str, Any],
     *,
     exact_only: bool = False,
-    all_steam_slot_keys: Set[tuple[int, str]] = frozenset(),
+    all_steam_slot_keys: AbstractSet[tuple[int, str]] = frozenset(),
 ) -> List[tuple[Any, str, List[Dict[str, Any]]]]:
     matching_groups = []
     if not s_title:

@@ -19,7 +19,8 @@ def test_fetch_album_artwork_steam_fallback():
 
     with patch("requests.get") as mock_get:
         mock_get.return_value.status_code = 200
-        mock_get.return_value.content = b"FAKE_JPEG_BINARY"
+        mock_get.return_value.headers = {"Content-Type": "image/jpeg", "Content-Length": "16"}
+        mock_get.return_value.iter_content.return_value = iter([b"FAKE_JPEG_BINARY"])
         
         art = fetch_album_artwork(
             config=config,
@@ -29,7 +30,12 @@ def test_fetch_album_artwork_steam_fallback():
             track_groups=None,
         )
         assert art == b"FAKE_JPEG_BINARY"
-        mock_get.assert_called_once_with("http://example.com/header.jpg", timeout=15)
+        mock_get.assert_called_once_with(
+            "http://example.com/header.jpg",
+            timeout=15,
+            stream=True,
+            allow_redirects=False,
+        )
 
 
 def test_validator_uses_unassigned_manifest():

@@ -112,8 +112,6 @@ API の輻輳やレート制限を防ぎ、通信エラーに対する復旧性�
 - `LLM_OUTPUT_BUDGET_SAFETY_RATIO`: 動的トークン天井の安全マージン比率（既定: 0.25）
 - `LLM_ADAPTIVE_DEGRADED_PROMPT_ENABLED`: トークン上限到達時の縮退プロンプト自動適用（既定: true）
 - `LLM_CHUNK_SIZE_VIRTUAL`: 仮想トラックalignmentのchunk上限（既定: 20）
-- `LLM_CHUNK_SIZE_METADATA_OLLAMA`: Ollama向けmetadata chunkのトラック数上限（既定: 10）
-- `LLM_CHUNK_SIZE_METADATA_CLOUD`: cloud向けmetadata chunkのトラック数上限（既定: 30）
 - `LLM_CHUNK_ADAPTIVE`: 実行profileに応じたchunkサイズ調整（既定: true）
 - `LLM_CHUNK_OUTPUT_TOKENS_PER_TRACK`: trackごとの出力トークンbudget見積もり（既定: 180）
 - `LLM_CHUNK_OUTPUT_SAFETY_RATIO`: chunk出力budgetの安全比率（既定: 0.75）
@@ -133,7 +131,7 @@ API の輻輳やレート制限を防ぎ、通信エラーに対する復旧性�
 - `MBZ_APP_NAME`: MusicBrainz 問い合わせ時のアプリケーション名（既定: `SST-Scout`）
 - `MBZ_APP_VERSION`: アプリケーションバージョン（既定: `1.0.0`）
 - `MBZ_CONTACT`: 連絡先メールアドレス（既定: `contact@example.lan`。運用時は有効な連絡先を指定）
-- `MBZ_RATE_LIMIT_DELAY`: MusicBrainz API 連続アクセス待機秒数（既定: 1.0秒）
+- `MBZ_RATE_LIMIT_DELAY`: MusicBrainz API 要求の開始間隔（既定: 1.0秒、1.0秒未満は1.0秒に補正。詳細は[外部API運用方針](api_rate_limit.md)を参照）
 - `MBZ_SEARCH_LIMIT`: MusicBrainz 検索候補の最大取得件数（既定: 20）
 - `ACOUSTID_API_KEY`: AcoustID API クライアントキー
 - `ACOUSTID_TIMEOUT`: AcoustID API タイムアウト秒数（既定: 10.0）

@@ -1,5 +1,6 @@
 import logging
 from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urljoin
 
 import requests
 
@@ -21,11 +22,6 @@ def safe_download_image(
         return None
 
     block_private_bool = block_private if isinstance(block_private, bool) else True
-    valid, reason = safe_validate_url(url, block_private=block_private_bool)
-    if not valid:
-        logger.warning(f"安全ガード: 画像URLを拒否しました ({reason}): {url}")
-        return None
-
     try:
         timeout_float = float(timeout) if isinstance(timeout, (int, float)) else 15.0
         max_bytes_int = int(max_bytes) if isinstance(max_bytes, (int, float)) else 25 * 1024 * 1024
@@ -34,26 +30,63 @@ def safe_download_image(
         max_bytes_int = 25 * 1024 * 1024
 
     try:
-        response = requests.get(str(url).strip(), timeout=timeout_float)
-        if getattr(response, "status_code", None) == 200:
-            headers = getattr(response, "headers", None)
-            if headers and isinstance(headers, dict):
+        current_url = str(url).strip()
+        max_redirects = 5
+        for redirect_count in range(max_redirects + 1):
+            valid, reason = safe_validate_url(current_url, block_private=block_private_bool)
+            if not valid:
+                logger.warning("安全ガード: 画像リダイレクト先を拒否しました (%s): %s", reason, current_url)
+                return None
+
+            response = requests.get(
+                current_url,
+                timeout=timeout_float,
+                stream=True,
+                allow_redirects=False,
+            )
+            try:
+                status_code = getattr(response, "status_code", None)
+                headers = getattr(response, "headers", {}) or {}
+                if status_code in {301, 302, 303, 307, 308}:
+                    location = headers.get("Location")
+                    if not location or redirect_count == max_redirects:
+                        return None
+                    current_url = urljoin(current_url, str(location))
+                    continue
+
+                if status_code != 200:
+                    return None
+
                 content_type = str(headers.get("Content-Type", "")).lower()
                 if content_type and not (
                     content_type.startswith("image/")
                     or "octet-stream" in content_type
                     or "binary" in content_type
                 ):
-                    logger.warning(f"安全ガード: 非画像Content-Typeを拒否しました ({content_type}): {url}")
+                    logger.warning("安全ガード: 非画像Content-Typeを拒否しました (%s): %s", content_type, current_url)
                     return None
 
-            content = getattr(response, "content", None)
-            if content and isinstance(content, (bytes, bytearray)):
-                if len(content) > max_bytes_int:
-                    logger.warning(f"画像サイズが上限（{max_bytes_int} bytes）を超過したためダウンロードを中止しました: {url}")
+                try:
+                    content_length = int(headers.get("Content-Length", ""))
+                except (TypeError, ValueError):
+                    content_length = 0
+                if content_length > max_bytes_int:
+                    logger.warning("画像サイズが上限（%s bytes）を超過したためダウンロードを中止しました: %s", max_bytes_int, current_url)
                     return None
-                if len(content) > 0:
-                    return bytes(content)
+
+                chunks = []
+                total_bytes = 0
+                for chunk in response.iter_content(chunk_size=64 * 1024):
+                    if not chunk:
+                        continue
+                    total_bytes += len(chunk)
+                    if total_bytes > max_bytes_int:
+                        logger.warning("画像サイズが上限（%s bytes）を超過したためダウンロードを中止しました: %s", max_bytes_int, current_url)
+                        return None
+                    chunks.append(chunk)
+                return b"".join(chunks) if total_bytes else None
+            finally:
+                response.close()
     except Exception as error:
         logger.debug(f"画像のダウンロードに失敗しました ({url}): {error}")
     return None

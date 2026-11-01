@@ -133,7 +133,8 @@ def test_safe_download_image_scheme_and_size_validation() -> None:
     with patch("requests.get") as mock_get:
         mock_resp = MagicMock()
         mock_resp.status_code = 200
-        mock_resp.content = b"x" * 100
+        mock_resp.headers = {"Content-Type": "image/jpeg", "Content-Length": "100"}
+        mock_resp.iter_content.return_value = iter([b"x" * 100])
         mock_get.return_value = mock_resp
 
         # Limit to 50 bytes -> should be rejected
@@ -141,6 +142,53 @@ def test_safe_download_image_scheme_and_size_validation() -> None:
 
         # Limit to 200 bytes -> should be accepted
         assert safe_download_image("https://example.com/fine.jpg", max_bytes=200) == b"x" * 100
+
+        assert mock_get.call_args.kwargs["stream"] is True
+        assert mock_get.call_args.kwargs["allow_redirects"] is False
+
+
+def test_safe_download_image_revalidates_redirect_destination() -> None:
+    from sst.processor_support import safe_download_image
+    from unittest.mock import MagicMock, patch
+
+    redirect = MagicMock()
+    redirect.status_code = 302
+    redirect.headers = {"Location": "http://127.0.0.1/private"}
+
+    with patch("requests.get", return_value=redirect) as mock_get:
+        assert safe_download_image("https://8.8.8.8/art.jpg") is None
+        assert mock_get.call_count == 1
+
+
+def test_safe_download_image_follows_public_redirect() -> None:
+    from sst.processor_support import safe_download_image
+    from unittest.mock import MagicMock, patch
+
+    redirect = MagicMock()
+    redirect.status_code = 302
+    redirect.headers = {"Location": "/cover.jpg"}
+    image = MagicMock()
+    image.status_code = 200
+    image.headers = {"Content-Type": "image/jpeg", "Content-Length": "5"}
+    image.iter_content.return_value = iter([b"cover"])
+
+    with patch("requests.get", side_effect=[redirect, image]) as mock_get:
+        assert safe_download_image("https://8.8.8.8/art.jpg") == b"cover"
+        assert mock_get.call_count == 2
+        assert mock_get.call_args_list[1].args[0] == "https://8.8.8.8/cover.jpg"
+
+
+def test_safe_download_image_caps_stream_when_content_length_is_untrusted() -> None:
+    from sst.processor_support import safe_download_image
+    from unittest.mock import MagicMock, patch
+
+    response = MagicMock()
+    response.status_code = 200
+    response.headers = {"Content-Type": "image/jpeg", "Content-Length": "1"}
+    response.iter_content.return_value = iter([b"x" * 51])
+
+    with patch("requests.get", return_value=response):
+        assert safe_download_image("https://8.8.8.8/art.jpg", max_bytes=50) is None
 
 
 def test_package_manager_path_traversal_protection(tmp_path: Path) -> None:
