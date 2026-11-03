@@ -1,5 +1,6 @@
 import html
 import logging
+import re
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 from .models import SteamMetadata
@@ -234,6 +235,199 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
         <p>同一slotへ正規化されるSteam複数行は、件数差だけで特定行の欠落と断定しません。LLM割当と最終採用タイトルを併記しています。</p>
     </div>
     """
+
+    @staticmethod
+    def _resolve_unassigned_item(
+        item: Any,
+        local_lookup: Dict[str, Dict[str, Any]],
+        rc_lookup: Dict[str, Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Resolves human-readable metadata (filename, title, track, disc, id, path, reason) for an unassigned item."""
+        res: Dict[str, Any] = {
+            "original_filename": None,
+            "title": None,
+            "track_number": None,
+            "disc_number": None,
+            "file_id": None,
+            "file_path": None,
+            "reason": None,
+        }
+
+        # 1. item が辞書の場合
+        if isinstance(item, dict):
+            res["original_filename"] = item.get("original_filename") or item.get("filename") or item.get("name")
+            res["title"] = item.get("title") or item.get("t")
+            res["track_number"] = item.get("track_number") or item.get("track_num") or item.get("n")
+            res["disc_number"] = item.get("disc_number") or item.get("disc") or item.get("d")
+            res["file_id"] = item.get("file_id") or (
+                item.get("file_ids", [None])[0]
+                if isinstance(item.get("file_ids"), list) and item.get("file_ids")
+                else None
+            )
+            res["file_path"] = item.get("file_path") or item.get("output_filename")
+            res["reason"] = item.get("reason")
+        else:
+            res["file_id"] = str(item)
+
+        fid = str(res["file_id"]) if res["file_id"] else None
+
+        # 2. rc_lookup (review_candidates) からの補完
+        if fid and fid in rc_lookup:
+            rc = rc_lookup[fid]
+            res["original_filename"] = res["original_filename"] or rc.get("original_filename")
+            res["title"] = res["title"] or rc.get("title")
+            res["track_number"] = res["track_number"] or rc.get("track_number")
+            res["disc_number"] = res["disc_number"] or rc.get("disc_number")
+            res["file_path"] = res["file_path"] or rc.get("file_path") or rc.get("output_filename")
+            res["reason"] = res["reason"] or rc.get("reason")
+
+        # 3. local_lookup (LOCAL_SIGNALS) からの補完
+        if fid and fid in local_lookup:
+            lt = local_lookup[fid]
+            res["title"] = res["title"] or lt.get("title")
+            res["track_number"] = res["track_number"] or lt.get("track_num")
+            res["disc_number"] = res["disc_number"] or lt.get("disc")
+
+        # 4. original_filename からのトラック番号・タイトル抽出
+        fn = res["original_filename"]
+        if fn:
+            stem = Path(fn).stem
+            m = re.search(r"(?:^|[-_\s])(\d{1,3})[\s._-]+([^\-._].*)$", stem)
+            if m:
+                if not res["track_number"]:
+                    res["track_number"] = str(int(m.group(1)))
+                if not res["title"]:
+                    res["title"] = m.group(2).strip()
+            elif not res["title"]:
+                if " - " in stem:
+                    res["title"] = stem.split(" - ")[-1].strip()
+                else:
+                    res["title"] = stem.strip()
+
+        # 5. track_id (例: '1_yourself::a448c48077b5e35c') からのフォールバック
+        track_id = (
+            item.get("track_id") if isinstance(item, dict) else None
+        ) or (rc_lookup.get(fid, {}).get("track_id") if fid else None)
+        if track_id:
+            clean = str(track_id).split("::")[0]
+            if "_" in clean:
+                parts = clean.split("_", 1)
+                if not res["disc_number"] and parts[0].isdigit():
+                    res["disc_number"] = parts[0]
+                if not res["title"]:
+                    res["title"] = parts[1].replace("_", " ").strip()
+            elif not res["title"]:
+                res["title"] = clean.strip()
+
+        if not res["original_filename"] and res["file_id"]:
+            res["original_filename"] = f"File [{res['file_id']}]"
+
+        return res
+
+    @staticmethod
+    def _render_unassigned_warning_html(
+        llm_log: Dict[str, Any],
+        alignment_inputs: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        esc = ReportGenerator._esc
+        diagnostics = (llm_log or {}).get("diagnostics", {}) if isinstance(llm_log, dict) else {}
+        review_candidates = diagnostics.get("review_candidates") or []
+        unassigned_candidates = [
+            c for c in review_candidates if isinstance(c, dict) and c.get("candidate_type") == "unassigned"
+        ]
+
+        alignment_res = (llm_log or {}).get("alignment_res", {}) if isinstance(llm_log, dict) else {}
+        raw_unassigned = alignment_res.get("unassigned_files", []) if isinstance(alignment_res, dict) else []
+
+        if unassigned_candidates:
+            target_items = unassigned_candidates
+        elif raw_unassigned:
+            target_items = raw_unassigned
+        else:
+            return ""
+
+        local_lookup: Dict[str, Dict[str, Any]] = {}
+        if alignment_inputs and isinstance(alignment_inputs, dict):
+            local_tracks = (alignment_inputs.get("LOCAL_SIGNALS") or {}).get("tracks") or []
+            for lt in local_tracks:
+                if not isinstance(lt, dict):
+                    continue
+                for fid in lt.get("file_ids") or []:
+                    local_lookup[str(fid)] = lt
+                lk = lt.get("local_key")
+                if lk:
+                    local_lookup[str(lk)] = lt
+
+        rc_lookup: Dict[str, Dict[str, Any]] = {}
+        for rc in review_candidates:
+            if isinstance(rc, dict) and rc.get("file_id"):
+                rc_lookup[str(rc["file_id"])] = rc
+
+        item_rows_html = []
+        for item in target_items:
+            resolved = ReportGenerator._resolve_unassigned_item(item, local_lookup, rc_lookup)
+
+            track_parts = []
+            if resolved["disc_number"] is not None and str(resolved["disc_number"]) not in ("", "0", "1"):
+                track_parts.append(f"Disc {resolved['disc_number']}")
+            if resolved["track_number"] is not None and str(resolved["track_number"]) not in ("", "0"):
+                track_parts.append(f"Track {resolved['track_number']}")
+
+            track_prefix = " ".join(track_parts)
+            title_part = resolved["title"] or ""
+
+            meta_display = ""
+            if track_prefix and title_part:
+                meta_display = f"[{track_prefix}: {title_part}]"
+            elif track_prefix:
+                meta_display = f"[{track_prefix}]"
+            elif title_part:
+                meta_display = f"[{title_part}]"
+
+            filename_disp = esc(resolved["original_filename"] or "Unknown file")
+            meta_html = (
+                f'<span style="color: #58a6ff; margin-left: 6px;">{esc(meta_display)}</span>'
+                if meta_display
+                else ""
+            )
+            file_id_html = (
+                f'<code style="font-size: 0.75rem; color: #8b949e; margin-left: 6px;">ID: {esc(resolved["file_id"])}</code>'
+                if resolved["file_id"]
+                else ""
+            )
+
+            extra_details = []
+            if resolved["file_path"]:
+                extra_details.append(f'保存先: <code>{esc(resolved["file_path"])}</code>')
+            if resolved["reason"]:
+                extra_details.append(f'理由: {esc(resolved["reason"])}')
+
+            details_html = ""
+            if extra_details:
+                details_html = (
+                    f'<div style="font-size: 0.8rem; color: #8b949e; margin-top: 3px;">{" / ".join(extra_details)}</div>'
+                )
+
+            item_rows_html.append(
+                f'<li style="margin-bottom: 8px;">'
+                f'<strong>{filename_disp}</strong>'
+                f'{meta_html}'
+                f'{file_id_html}'
+                f'{details_html}'
+                f'</li>'
+            )
+
+        items_content = "".join(item_rows_html)
+        count = len(target_items)
+        return f"""
+    <div class="card" style="border: 2px solid var(--accent-yellow); background: #261f0d; margin-bottom: 20px;">
+        <h3 style="color: var(--accent-yellow); margin-top: 0;">⚠️ Steamスロット充足（余剰未割当ファイルあり: {count}件）</h3>
+        <p style="font-size: 0.85rem; margin-top: 0; color: #c9d1d9;">以下のローカルファイルはどのSteamスロットにも割り当てられなかったため、Review候補として分離保存されました。</p>
+        <ul style="font-size: 0.85rem; color: #c9d1d9; margin-bottom: 0; padding-left: 20px;">
+            {items_content}
+        </ul>
+    </div>
+"""
 
     @staticmethod
     def _render_review_candidates_html(llm_log: Dict[str, Any]) -> str:
@@ -513,19 +707,9 @@ footer { margin-top: 40px; font-size: 0.8rem; color: #8b949e; text-align: center
     </div>
 """
 
-        alignment_res = (llm_log or {}).get("alignment_res", {}) if isinstance(llm_log, dict) else {}
-        unassigned_list = alignment_res.get("unassigned_files", []) if isinstance(alignment_res, dict) else []
-        if unassigned_list:
-            items_html = "".join([f"<li><code>{esc(str(fid))}</code></li>" for fid in unassigned_list])
-            unassigned_warning_html = f"""
-    <div class="card" style="border: 2px solid var(--accent-yellow); background: #261f0d; margin-bottom: 20px;">
-        <h3 style="color: var(--accent-yellow); margin-top: 0;">⚠️ Steamスロット充足（余剰未割当ファイルあり: {len(unassigned_list)}件）</h3>
-        <p style="font-size: 0.85rem; margin-top: 0; color: #c9d1d9;">以下のローカルファイルはどのSteamスロットにも割り当てられなかったため、Review候補として分離保存されました。</p>
-        <ul style="font-size: 0.85rem; color: #8b949e; margin-bottom: 0;">
-            {items_html}
-        </ul>
-    </div>
-"""
+        unassigned_warning_html = ReportGenerator._render_unassigned_warning_html(
+            llm_log, alignment_inputs=alignment_inputs
+        )
 
         return f"""<!DOCTYPE html>
 <html lang="ja">

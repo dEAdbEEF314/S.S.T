@@ -1,4 +1,5 @@
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import shutil
@@ -31,9 +32,31 @@ def _convert_review_candidates(
         base_folder = "unassigned" if is_unassigned else "review_candidates"
         candidate_subdir = Path(base_folder) / f"candidate_{index:03d}"
         output_dir = temp_output / candidate_subdir
+        orig_tags = candidate.get("original_tags") or {}
+        track_num = orig_tags.get("track_number") or candidate.get("t_num_val") or candidate.get("track_num")
+        if track_num is not None:
+            track_num = str(track_num).split("/")[0].strip()
+        disc_num = orig_tags.get("disc_number") or candidate.get("disc") or candidate.get("disc_num")
+        if disc_num is not None:
+            disc_num = str(disc_num).split("/")[0].strip()
+        title = orig_tags.get("title") or candidate.get("title")
+        if not title and candidate.get("track_id"):
+            clean_part = str(candidate["track_id"]).split("::")[0]
+            if "_" in clean_part:
+                clean_part = clean_part.split("_", 1)[1]
+            title = clean_part.strip()
+        if not title:
+            stem = source_path.stem
+            m = re.search(r"^(?:\d+[\s._-]+)?(.+)$", stem)
+            title = m.group(1).strip() if m else stem
+
         manifest = {
             "candidate_type": candidate.get("candidate_type", "unassigned"),
             "original_filename": source_path.name,
+            "title": title or None,
+            "track_number": track_num or None,
+            "disc_number": disc_num or None,
+            "artist": orig_tags.get("artist") or candidate.get("artist") or None,
             "file_id": candidate.get("file_id"),
             "track_id": candidate.get("track_id"),
             "slot_key": (
